@@ -16,7 +16,7 @@ use ratatui::{Frame, Terminal};
 use resvg::tiny_skia::{Pixmap, Transform};
 use resvg::usvg;
 use serde::{Deserialize, Serialize};
-use std::collections::HashSet;
+use std::collections::{BTreeMap, HashSet};
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
@@ -115,6 +115,8 @@ struct Manifest {
     glyph_size: u32,
     threshold: u8,
     codepoint_start: String,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    threshold_overrides: BTreeMap<String, u8>,
 }
 
 impl Default for Manifest {
@@ -126,6 +128,7 @@ impl Default for Manifest {
             glyph_size: 64,
             threshold: 64,
             codepoint_start: "U+100000".to_string(),
+            threshold_overrides: BTreeMap::new(),
         }
     }
 }
@@ -136,13 +139,15 @@ struct RuntimeConfig {
     out_dir: PathBuf,
     font_name: String,
     glyph_size: u32,
-    threshold: u8,
+    base_threshold: u8,
+    threshold_overrides: BTreeMap<String, u8>,
     codepoint_start: u32,
 }
 
 #[derive(Debug, Clone)]
 struct PreprocessedGlyph {
     source_path: PathBuf,
+    source_key: String,
     glyph_name: String,
     size: u32,
     coverage: Vec<u8>,
@@ -236,6 +241,18 @@ fn init_manifest(output: &Path, force: bool) -> Result<()> {
     Ok(())
 }
 
+fn read_manifest(manifest_path: &Path) -> Result<Manifest> {
+    let data = fs::read_to_string(manifest_path)
+        .with_context(|| format!("failed to read {}", manifest_path.display()))?;
+    toml::from_str(&data).with_context(|| format!("failed to parse {}", manifest_path.display()))
+}
+
+fn write_manifest(manifest_path: &Path, manifest: &Manifest) -> Result<()> {
+    let data = toml::to_string_pretty(manifest).context("failed to serialize manifest")?;
+    fs::write(manifest_path, data)
+        .with_context(|| format!("failed to write {}", manifest_path.display()))
+}
+
 fn build_font(
     manifest_path: PathBuf,
     input_override: Option<PathBuf>,
@@ -263,7 +280,11 @@ fn build_font(
     println!("  input-dir: {}", config.input_dir.display());
     println!("  out-dir: {}", config.out_dir.display());
     println!("  glyphs: {}", summary.glyph_count);
-    println!("  threshold: {}", config.threshold);
+    println!("  threshold: {}", config.base_threshold);
+    println!(
+        "  threshold-overrides: {}",
+        config.threshold_overrides.len()
+    );
     println!("  glyph-size: {}", config.glyph_size);
     println!("  bdf: {}", summary.bdf_path.display());
     println!("  ttf: {}", summary.ttf_path.display());
@@ -276,7 +297,7 @@ fn build_font(
 
 fn build_outputs(config: &RuntimeConfig) -> Result<BuildSummary> {
     let sources = collect_source_files(&config.input_dir)?;
-    let glyphs = preprocess_sources(&sources, config.glyph_size)?;
+    let glyphs = preprocess_sources(&sources, &config.input_dir, config.glyph_size)?;
 
     let previews_dir = config.out_dir.join("previews");
     fs::create_dir_all(&previews_dir)
@@ -287,22 +308,20 @@ fn build_outputs(config: &RuntimeConfig) -> Result<BuildSummary> {
 
     for (idx, glyph) in glyphs.iter().enumerate() {
         let codepoint = config.codepoint_start + idx as u32;
-        let bitmap = threshold_bitmap(glyph, config.threshold);
+        let threshold = effective_threshold(
+            config.base_threshold,
+            &config.threshold_overrides,
+            &glyph.source_key,
+        );
+        let bitmap = threshold_bitmap(glyph, threshold);
 
         let preview_path = previews_dir.join(format!("{}.png", glyph.glyph_name));
         write_preview_png(&preview_path, &bitmap)
             .with_context(|| format!("failed to write {}", preview_path.display()))?;
 
-        let source_file = glyph
-            .source_path
-            .strip_prefix(&config.input_dir)
-            .unwrap_or(&glyph.source_path)
-            .to_string_lossy()
-            .to_string();
-
         mapping.push(MappingEntry {
             glyph_name: glyph.glyph_name.clone(),
-            source_file,
+            source_file: glyph.source_key.clone(),
             codepoint: format!("U+{:04X}", codepoint),
         });
 
@@ -364,15 +383,29 @@ fn interactive(
     )?;
 
     let sources = collect_source_files(&config.input_dir)?;
-    let glyphs = preprocess_sources(&sources, config.glyph_size)?;
+    let glyphs = preprocess_sources(&sources, &config.input_dir, config.glyph_size)?;
+    let glyphs = glyphs
+        .into_iter()
+        .map(|glyph| {
+            let saved_threshold = config.threshold_overrides.get(&glyph.source_key).copied();
+            let working_threshold = saved_threshold.unwrap_or(config.base_threshold);
+            InteractiveGlyph {
+                glyph,
+                saved_threshold,
+                working_threshold,
+            }
+        })
+        .collect();
 
     let mut app = App {
+        manifest_path,
         font_name: config.font_name,
-        threshold: config.threshold,
+        base_threshold: config.base_threshold,
         codepoint_start: config.codepoint_start,
         selected: 0,
         glyphs,
         quit: false,
+        status: None,
     };
 
     let mut session = TerminalSession::start()?;
@@ -387,7 +420,14 @@ fn interactive(
         }
     }
 
-    println!("interactive session closed (threshold={})", app.threshold);
+    println!(
+        "interactive session closed (base threshold={}, overrides={})",
+        app.base_threshold,
+        app.glyphs
+            .iter()
+            .filter(|glyph| glyph.saved_threshold.is_some())
+            .count()
+    );
     Ok(())
 }
 
@@ -415,7 +455,8 @@ fn demo_terminal(
     println!("petiglyph glyph demo");
     println!("font: {}", config.font_name);
     println!("glyphs: {}", summary.glyph_count);
-    println!("threshold: {}", config.threshold);
+    println!("threshold: {}", config.base_threshold);
+    println!("threshold-overrides: {}", config.threshold_overrides.len());
     println!("glyph-size: {}", config.glyph_size);
     println!("ttf: {}", summary.ttf_path.display());
     println!("sample: {}", summary.sample_path.display());
@@ -433,28 +474,29 @@ fn load_runtime_config(
     glyph_size_override: Option<u32>,
     codepoint_start_override: Option<String>,
 ) -> Result<RuntimeConfig> {
-    let data = fs::read_to_string(manifest_path)
-        .with_context(|| format!("failed to read {}", manifest_path.display()))?;
-    let manifest: Manifest = toml::from_str(&data)
-        .with_context(|| format!("failed to parse {}", manifest_path.display()))?;
+    let manifest = read_manifest(manifest_path)?;
 
     let base = manifest_path.parent().unwrap_or_else(|| Path::new("."));
 
     let input_dir = input_override.unwrap_or_else(|| base.join(&manifest.input_dir));
     let out_dir = out_override.unwrap_or_else(|| base.join(&manifest.out_dir));
 
-    let threshold = threshold_override.unwrap_or(manifest.threshold);
+    let base_threshold = threshold_override.unwrap_or(manifest.threshold);
     let glyph_size = glyph_size_override.unwrap_or(manifest.glyph_size);
 
-    let codepoint_start =
-        parse_codepoint(codepoint_start_override.as_deref().unwrap_or(&manifest.codepoint_start))?;
+    let codepoint_start = parse_codepoint(
+        codepoint_start_override
+            .as_deref()
+            .unwrap_or(&manifest.codepoint_start),
+    )?;
 
     Ok(RuntimeConfig {
         input_dir,
         out_dir,
         font_name: manifest.font_name,
         glyph_size,
-        threshold,
+        base_threshold,
+        threshold_overrides: manifest.threshold_overrides,
         codepoint_start,
     })
 }
@@ -521,7 +563,24 @@ fn is_supported_source(path: &Path) -> bool {
     }
 }
 
-fn preprocess_sources(sources: &[PathBuf], glyph_size: u32) -> Result<Vec<PreprocessedGlyph>> {
+fn source_manifest_key(source: &Path, input_dir: &Path) -> String {
+    let relative = source.strip_prefix(input_dir).unwrap_or(source);
+    relative.to_string_lossy().replace('\\', "/")
+}
+
+fn effective_threshold(
+    base_threshold: u8,
+    overrides: &BTreeMap<String, u8>,
+    source_key: &str,
+) -> u8 {
+    overrides.get(source_key).copied().unwrap_or(base_threshold)
+}
+
+fn preprocess_sources(
+    sources: &[PathBuf],
+    input_dir: &Path,
+    glyph_size: u32,
+) -> Result<Vec<PreprocessedGlyph>> {
     let mut used_names = HashSet::new();
     let mut out = Vec::with_capacity(sources.len());
 
@@ -529,8 +588,10 @@ fn preprocess_sources(sources: &[PathBuf], glyph_size: u32) -> Result<Vec<Prepro
         let source_rgba = load_source_rgba(source, glyph_size)?;
         let coverage = coverage_map(&source_rgba, glyph_size)?;
         let glyph_name = unique_glyph_name(source, &mut used_names);
+        let source_key = source_manifest_key(source, input_dir);
         out.push(PreprocessedGlyph {
             source_path: source.clone(),
+            source_key,
             glyph_name,
             size: glyph_size,
             coverage,
@@ -1109,7 +1170,9 @@ fn build_loca_table(offsets: &[u32]) -> Vec<u8> {
 fn build_cmap_table(mappings: &[(u32, u16)]) -> Vec<u8> {
     let bmp_mappings: Vec<(u16, u16)> = mappings
         .iter()
-        .filter_map(|(codepoint, glyph_id)| u16::try_from(*codepoint).ok().map(|cp| (cp, *glyph_id)))
+        .filter_map(|(codepoint, glyph_id)| {
+            u16::try_from(*codepoint).ok().map(|cp| (cp, *glyph_id))
+        })
         .collect();
 
     let mut subtables = Vec::new();
@@ -1586,12 +1649,21 @@ fn bdf_font_name(font_name: &str, glyph_size: u32) -> String {
 }
 
 struct App {
+    manifest_path: PathBuf,
     font_name: String,
-    threshold: u8,
+    base_threshold: u8,
     codepoint_start: u32,
     selected: usize,
-    glyphs: Vec<PreprocessedGlyph>,
+    glyphs: Vec<InteractiveGlyph>,
     quit: bool,
+    status: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+struct InteractiveGlyph {
+    glyph: PreprocessedGlyph,
+    saved_threshold: Option<u8>,
+    working_threshold: u8,
 }
 
 struct TerminalSession {
@@ -1619,6 +1691,94 @@ impl Drop for TerminalSession {
     }
 }
 
+fn persist_threshold_override(
+    manifest_path: &Path,
+    source_key: &str,
+    threshold: Option<u8>,
+) -> Result<()> {
+    let mut manifest = read_manifest(manifest_path)?;
+    match threshold {
+        Some(value) => {
+            manifest
+                .threshold_overrides
+                .insert(source_key.to_string(), value);
+        }
+        None => {
+            manifest.threshold_overrides.remove(source_key);
+        }
+    }
+    write_manifest(manifest_path, &manifest)
+}
+
+fn selected_glyph_mut(app: &mut App) -> Option<&mut InteractiveGlyph> {
+    app.glyphs.get_mut(app.selected)
+}
+
+fn selected_glyph(app: &App) -> Option<&InteractiveGlyph> {
+    app.glyphs.get(app.selected)
+}
+
+fn set_selected_threshold(app: &mut App, threshold: u8) {
+    let Some(glyph) = selected_glyph(app) else {
+        app.status = Some("no glyph selected".to_string());
+        return;
+    };
+
+    let source_key = glyph.glyph.source_key.clone();
+    let glyph_name = glyph.glyph.glyph_name.clone();
+    let threshold_override = if threshold == app.base_threshold {
+        None
+    } else {
+        Some(threshold)
+    };
+
+    match persist_threshold_override(&app.manifest_path, &source_key, threshold_override) {
+        Ok(()) => {
+            if let Some(glyph) = selected_glyph_mut(app) {
+                glyph.working_threshold = threshold;
+                glyph.saved_threshold = threshold_override;
+            }
+            app.status = Some(match threshold_override {
+                Some(value) => format!("saved override for {glyph_name}: {source_key} -> {value}"),
+                None => format!(
+                    "cleared override for {glyph_name}: now using base threshold {}",
+                    app.base_threshold
+                ),
+            });
+        }
+        Err(err) => {
+            app.status = Some(format!("failed to save override for {glyph_name}: {err}"));
+        }
+    }
+}
+
+fn remove_selected_threshold_override(app: &mut App) {
+    let Some(glyph) = selected_glyph(app) else {
+        app.status = Some("no glyph selected".to_string());
+        return;
+    };
+
+    let source_key = glyph.glyph.source_key.clone();
+    let glyph_name = glyph.glyph.glyph_name.clone();
+
+    match persist_threshold_override(&app.manifest_path, &source_key, None) {
+        Ok(()) => {
+            let base_threshold = app.base_threshold;
+            if let Some(glyph) = selected_glyph_mut(app) {
+                glyph.saved_threshold = None;
+                glyph.working_threshold = base_threshold;
+            }
+            app.status = Some(format!(
+                "removed override for {glyph_name}: now using base threshold {}",
+                base_threshold
+            ));
+        }
+        Err(err) => {
+            app.status = Some(format!("failed to remove override for {glyph_name}: {err}"));
+        }
+    }
+}
+
 fn handle_key(app: &mut App, code: KeyCode) {
     match code {
         KeyCode::Esc | KeyCode::Char('q') => app.quit = true,
@@ -1629,32 +1789,65 @@ fn handle_key(app: &mut App, code: KeyCode) {
             app.selected = app.selected.saturating_sub(1);
         }
         KeyCode::Right | KeyCode::Char('l') | KeyCode::Char('+') | KeyCode::Char('=') => {
-            app.threshold = app.threshold.saturating_add(1);
+            if let Some(glyph) = selected_glyph(app) {
+                let next = glyph.working_threshold.saturating_add(1);
+                set_selected_threshold(app, next);
+            }
         }
         KeyCode::Left | KeyCode::Char('h') | KeyCode::Char('-') => {
-            app.threshold = app.threshold.saturating_sub(1);
+            if let Some(glyph) = selected_glyph(app) {
+                let next = glyph.working_threshold.saturating_sub(1);
+                set_selected_threshold(app, next);
+            }
         }
         KeyCode::PageUp => {
-            app.threshold = app.threshold.saturating_add(10);
+            if let Some(glyph) = selected_glyph(app) {
+                let next = glyph.working_threshold.saturating_add(10);
+                set_selected_threshold(app, next);
+            }
         }
         KeyCode::PageDown => {
-            app.threshold = app.threshold.saturating_sub(10);
+            if let Some(glyph) = selected_glyph(app) {
+                let next = glyph.working_threshold.saturating_sub(10);
+                set_selected_threshold(app, next);
+            }
         }
+        KeyCode::Char('r') => remove_selected_threshold_override(app),
         _ => {}
     }
 }
 
 fn draw_ui(frame: &mut Frame, app: &App) {
+    let (threshold, source_key, has_override, dirty, status_text) = match selected_glyph(app) {
+        Some(glyph) => (
+            glyph.working_threshold,
+            glyph.glyph.source_key.as_str(),
+            glyph.saved_threshold.is_some(),
+            glyph.saved_threshold.unwrap_or(app.base_threshold) != glyph.working_threshold,
+            match glyph.saved_threshold {
+                Some(saved) => format!("override saved={saved}"),
+                None => "using base threshold".to_string(),
+            },
+        ),
+        None => (
+            app.base_threshold,
+            "",
+            false,
+            false,
+            "no glyphs loaded".to_string(),
+        ),
+    };
+
     let root = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(3),
+            Constraint::Length(5),
             Constraint::Min(8),
-            Constraint::Length(3),
+            Constraint::Length(4),
         ])
         .split(frame.area());
 
-    let header = Paragraph::new(Line::from(vec![
+    let mut header_lines = vec![Line::from(vec![
         Span::styled(
             "petiglyph interactive",
             Style::default()
@@ -1666,9 +1859,41 @@ fn draw_ui(frame: &mut Frame, app: &App) {
         Span::raw("  |  "),
         Span::raw(format!("glyphs={}", app.glyphs.len())),
         Span::raw("  |  "),
-        Span::raw(format!("threshold={}", app.threshold)),
-    ]))
-    .block(Block::default().borders(Borders::ALL).title("Status"));
+        Span::raw(format!("base={}", app.base_threshold)),
+        Span::raw("  |  "),
+        Span::raw(format!("current={threshold}")),
+    ])];
+    header_lines.push(Line::from(vec![
+        Span::raw(format!("source={source_key}  |  ")),
+        Span::raw(status_text),
+        Span::raw("  |  "),
+        Span::styled(
+            if dirty { "unsaved changes" } else { "synced" },
+            Style::default().fg(if dirty { Color::Yellow } else { Color::Green }),
+        ),
+        Span::raw("  |  "),
+        Span::styled(
+            if has_override {
+                "override present"
+            } else {
+                "no override"
+            },
+            Style::default().fg(if has_override {
+                Color::LightBlue
+            } else {
+                Color::DarkGray
+            }),
+        ),
+    ]));
+    if let Some(status) = &app.status {
+        header_lines.push(Line::from(Span::styled(
+            status.clone(),
+            Style::default().fg(Color::Magenta),
+        )));
+    }
+
+    let header =
+        Paragraph::new(header_lines).block(Block::default().borders(Borders::ALL).title("Status"));
     frame.render_widget(header, root[0]);
 
     let body = Layout::default()
@@ -1685,7 +1910,15 @@ fn draw_ui(frame: &mut Frame, app: &App) {
         .enumerate()
         .map(|(idx, glyph)| {
             let codepoint = app.codepoint_start + idx as u32;
-            ListItem::new(format!("{}  U+{:04X}", glyph.glyph_name, codepoint))
+            let marker = if glyph.saved_threshold.is_some() {
+                "*"
+            } else {
+                " "
+            };
+            ListItem::new(format!(
+                "{marker} {}  U+{:04X}",
+                glyph.glyph.glyph_name, codepoint
+            ))
         })
         .collect();
 
@@ -1704,8 +1937,8 @@ fn draw_ui(frame: &mut Frame, app: &App) {
         vec![Line::from("No glyphs")]
     } else {
         preview_lines(
-            &app.glyphs[app.selected],
-            app.threshold,
+            &app.glyphs[app.selected].glyph,
+            app.glyphs[app.selected].working_threshold,
             body[1].width.saturating_sub(2),
             body[1].height.saturating_sub(2),
         )
@@ -1716,16 +1949,23 @@ fn draw_ui(frame: &mut Frame, app: &App) {
         .wrap(Wrap { trim: false });
     frame.render_widget(preview_widget, body[1]);
 
-    let footer = Paragraph::new(Line::from(vec![
-        Span::styled("q/esc", Style::default().fg(Color::Yellow)),
-        Span::raw(" quit  |  "),
-        Span::styled("j/k or ↑/↓", Style::default().fg(Color::Yellow)),
-        Span::raw(" select glyph  |  "),
-        Span::styled("+/-", Style::default().fg(Color::Yellow)),
-        Span::raw(" threshold ±1  |  "),
-        Span::styled("PgUp/PgDn", Style::default().fg(Color::Yellow)),
-        Span::raw(" threshold ±10"),
-    ]))
+    let footer = Paragraph::new(vec![
+        Line::from(vec![
+            Span::styled("q/esc", Style::default().fg(Color::Yellow)),
+            Span::raw(" quit  |  "),
+            Span::styled("j/k or ↑/↓", Style::default().fg(Color::Yellow)),
+            Span::raw(" select glyph  |  "),
+            Span::styled("+/-", Style::default().fg(Color::Yellow)),
+            Span::raw(" threshold ±1  |  "),
+            Span::styled("PgUp/PgDn", Style::default().fg(Color::Yellow)),
+            Span::raw(" threshold ±10"),
+        ]),
+        Line::from(vec![
+            Span::styled("r", Style::default().fg(Color::Yellow)),
+            Span::raw(" remove override  |  "),
+            Span::raw("* list marker = saved override"),
+        ]),
+    ])
     .block(Block::default().borders(Borders::ALL).title("Keys"));
     frame.render_widget(footer, root[2]);
 }
@@ -1856,7 +2096,8 @@ mod tests {
             out_dir: out_dir.clone(),
             font_name: "Petiglyph".to_string(),
             glyph_size: 64,
-            threshold: 64,
+            base_threshold: 64,
+            threshold_overrides: BTreeMap::new(),
             codepoint_start: 0x10_0000,
         };
 

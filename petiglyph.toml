@@ -4,3 +4,9 @@ font_name = "Petiglyph"
 glyph_size = 64
 threshold = 64
 codepoint_start = "U+100000"
+
+[threshold_overrides]
+"claude.png" = 30
+"codex.png" = 215
+"ollama.svg" = 205
+"opencode.png" = 253

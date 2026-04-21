@@ -61,7 +61,13 @@ font_name = "Petiglyph"
 glyph_size = 64
 threshold = 64
 codepoint_start = "U+100000"
+
+[threshold_overrides]
+"codex.png" = 72
+"factory.svg" = 51
 ```
+
+`threshold` is the base value for every glyph. `threshold_overrides` is optional and lets you override specific icons by their path relative to `input_dir`. These per-icon overrides are used by `build-font`, `demo`, and `interactive`.
 
 ## Output files
 
@@ -83,8 +89,9 @@ By default in `dist/`:
 
 - `q` / `Esc`: quit.
 - `j` / `k` or arrow keys: select glyph.
-- `+` / `-`: threshold +/- 1.
-- `PgUp` / `PgDn`: threshold +/- 10.
+- `+` / `-`: adjust the selected glyph threshold by 1 and save it immediately to `petiglyph.toml`.
+- `PgUp` / `PgDn`: adjust the selected glyph threshold by 10 and save it immediately to `petiglyph.toml`.
+- `r`: remove the selected glyph override and fall back to the base `threshold`.
 
 ## Terminal demo
 
