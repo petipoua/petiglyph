@@ -1,0 +1,6 @@
+input_dir = "icons"
+out_dir = "dist"
+font_name = "Petiglyph"
+glyph_size = 64
+threshold = 64
+codepoint_start = "U+100000"

@@ -1,0 +1,148 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+script_path="${BASH_SOURCE[0]}"
+if command -v realpath >/dev/null 2>&1; then
+  script_path="$(realpath "$script_path")"
+elif command -v readlink >/dev/null 2>&1; then
+  resolved="$(readlink -f "$script_path" 2>/dev/null || true)"
+  if [[ -n "$resolved" ]]; then
+    script_path="$resolved"
+  fi
+fi
+
+repo_dir="$(cd "$(dirname "$script_path")" && pwd)"
+manifest_path="${PETIGLYPH_MANIFEST:-$repo_dir/petiglyph.toml}"
+input_dir="${PETIGLYPH_INPUT_DIR:-$repo_dir/icons}"
+out_dir="${PETIGLYPH_OUT_DIR:-$repo_dir/dist}"
+font_name="${PETIGLYPH_FONT_NAME:-Petiglyph}"
+font_size="${PETIGLYPH_FONT_SIZE:-24}"
+threshold="${PETIGLYPH_THRESHOLD:-}"
+glyph_size="${PETIGLYPH_GLYPH_SIZE:-}"
+codepoint_start="${PETIGLYPH_CODEPOINT_START:-U+100000}"
+ghostty_pua_map="${PETIGLYPH_GHOSTTY_PUA_MAP:-U+E000-U+F8FF}"
+terminal_choice="${PETIGLYPH_TERMINAL:-auto}"
+
+if [[ ! -f "$manifest_path" ]]; then
+  cargo run --manifest-path "$repo_dir/Cargo.toml" -- init --output "$manifest_path"
+fi
+
+build_args=(
+  build-font
+  --manifest "$manifest_path"
+  --input-dir "$input_dir"
+  --out-dir "$out_dir"
+)
+
+if [[ -n "$threshold" ]]; then
+  build_args+=(--threshold "$threshold")
+fi
+
+if [[ -n "$glyph_size" ]]; then
+  build_args+=(--glyph-size "$glyph_size")
+fi
+
+if [[ -n "$codepoint_start" ]]; then
+  build_args+=(--codepoint-start "$codepoint_start")
+fi
+
+cargo run --manifest-path "$repo_dir/Cargo.toml" -- "${build_args[@]}"
+
+sample_path="$out_dir/glyph-sample.txt"
+if [[ ! -f "$sample_path" ]]; then
+  echo "expected sample file not found: $sample_path" >&2
+  exit 1
+fi
+
+latest_ttf="$(find "$out_dir" -maxdepth 1 -type f -name '*.ttf' -printf '%T@ %p\n' | sort -nr | head -n1 | awk '{print $2}')"
+if [[ -z "$latest_ttf" ]]; then
+  echo "no .ttf file found in $out_dir" >&2
+  exit 1
+fi
+
+install_dir="${XDG_DATA_HOME:-$HOME/.local/share}/fonts"
+mkdir -p "$install_dir"
+cp "$latest_ttf" "$install_dir/"
+fc-cache -f "$install_dir" >/dev/null
+
+echo "installed font: $install_dir/$(basename "$latest_ttf")"
+echo "sample file: $sample_path"
+[[ -n "$threshold" ]] && echo "threshold override: $threshold"
+[[ -n "$glyph_size" ]] && echo "glyph-size override: $glyph_size"
+[[ -n "$codepoint_start" ]] && echo "codepoint-start override: $codepoint_start"
+
+launch_cmd='printf "Petiglyph demo\\n\\n"; cat "$PETIGLYPH_SAMPLE_PATH"; printf "\\n\\n"; read -n1 -rsp "press any key"'
+
+launch_ghostty() {
+  ghostty_args=(
+    "--font-family=$font_name"
+    "--font-size=$font_size"
+  )
+  # Force private-use codepoints to this font to avoid Nerd Font hijacking.
+  if [[ -n "$ghostty_pua_map" ]]; then
+    ghostty_args+=("--font-codepoint-map=${ghostty_pua_map}=$font_name")
+  fi
+
+  PETIGLYPH_SAMPLE_PATH="$sample_path" \
+    ghostty "${ghostty_args[@]}" -e bash -lc "$launch_cmd"
+}
+
+launch_alacritty() {
+  PETIGLYPH_SAMPLE_PATH="$sample_path" \
+    alacritty \
+    -o "font.normal.family=\"$font_name\"" \
+    -o "font.bold.family=\"$font_name\"" \
+    -o "font.italic.family=\"$font_name\"" \
+    -o "font.bold_italic.family=\"$font_name\"" \
+    -o "font.size=$font_size" \
+    --working-directory "$repo_dir" --hold -e bash -lc "$launch_cmd"
+}
+
+launch_xdg_terminal() {
+  PETIGLYPH_SAMPLE_PATH="$sample_path" \
+    xdg-terminal-exec --hold --dir="$repo_dir" -- bash -lc "$launch_cmd"
+}
+
+if [[ "$terminal_choice" == "ghostty" ]]; then
+  if command -v ghostty >/dev/null 2>&1; then
+    launch_ghostty
+    exit 0
+  fi
+  echo "PETIGLYPH_TERMINAL=ghostty requested but ghostty was not found" >&2
+  exit 1
+fi
+
+if [[ "$terminal_choice" == "alacritty" ]]; then
+  if command -v alacritty >/dev/null 2>&1; then
+    launch_alacritty
+    exit 0
+  fi
+  echo "PETIGLYPH_TERMINAL=alacritty requested but alacritty was not found" >&2
+  exit 1
+fi
+
+if [[ "$terminal_choice" == "xdg" ]]; then
+  if command -v xdg-terminal-exec >/dev/null 2>&1; then
+    launch_xdg_terminal
+    exit 0
+  fi
+  echo "PETIGLYPH_TERMINAL=xdg requested but xdg-terminal-exec was not found" >&2
+  exit 1
+fi
+
+if [[ "$terminal_choice" != "auto" ]]; then
+  echo "invalid PETIGLYPH_TERMINAL value: $terminal_choice (use auto|ghostty|alacritty|xdg)" >&2
+  exit 1
+fi
+
+if command -v ghostty >/dev/null 2>&1; then
+  launch_ghostty
+elif command -v alacritty >/dev/null 2>&1; then
+  launch_alacritty
+elif command -v xdg-terminal-exec >/dev/null 2>&1; then
+  launch_xdg_terminal
+else
+  echo
+  echo "no supported terminal launcher found; printing sample in current terminal:"
+  cat "$sample_path"
+fi

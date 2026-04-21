@@ -1,50 +1,121 @@
 # petiglyph
 
-Rust CLI tool to convert image folders into monochrome font glyphs.
+Rust CLI tool to convert a folder of images into monochrome font glyph assets.
 
-## Current status
+## v0.0.1 status
 
-Initial Rust CLI scaffolding is in place. Core conversion and font generation logic is not implemented yet.
+Implemented:
+
+- Folder input (`one image file = one glyph`).
+- Supported inputs: `png`, `jpg/jpeg`, `webp`, `bmp`, `gif`, `svg`.
+- Monochrome conversion with transparency-aware behavior.
+- Output font artifacts as bitmap `BDF` and outline `TTF`.
+- Per-glyph preview PNG generation.
+- Glyph mapping export as JSON.
+- Glyph sample text export for terminal/editor testing.
+- Interactive terminal preview mode (TUI) using `ratatui`.
+
+Not in v0.0.1 yet:
+
+- OTF/WOFF output.
+- Interactive codepoint editing persistence.
 
 ## Quick start
 
 ```bash
 cargo run -- init
+# edit petiglyph.toml
 cargo run -- build-font
 ```
 
-## Interface strategy
+## Interface strategy (`clap` + `ratatui`)
 
-- `clap` remains the primary interface for command parsing and automation-friendly subcommands.
-- An optional interactive mode (TUI) will be added for visual editing and preview workflows.
-- Planned TUI stack: `ratatui` (UI rendering), while command-line entrypoints and flags stay in `clap`.
+- `clap` is the primary command parser and automation interface.
+- `ratatui` powers an optional interactive mode: `cargo run -- interactive`.
 
-## Intended input/output
+## Commands
 
-- Input: one folder containing source images, one file per glyph.
-- Accepted formats: common raster and vector formats (for example PNG, JPG/JPEG, WEBP, BMP, and SVG).
-- Output: a generated font where each source file maps to one glyph, plus optional mapping metadata.
+```bash
+# create starter config
+cargo run -- init --output petiglyph.toml
 
-## Intended monochrome behavior
+# build from manifest
+cargo run -- build-font --manifest petiglyph.toml
 
-- All sources are converted to a single-color (monochrome) glyph mask.
-- If an input image has alpha transparency, alpha is preserved and used to shape the glyph.
-- If an input does not include transparency (for example plain JPEG), white is treated as background.
-- Source filename and/or manifest rules determine glyph naming and codepoint assignment.
+# build with overrides
+cargo run -- build-font --manifest petiglyph.toml --input-dir ./icons --out-dir ./dist --threshold 72 --glyph-size 64 --codepoint-start U+100000
 
-## Planned pipeline
+# interactive preview mode
+cargo run -- interactive --manifest petiglyph.toml
 
-1. Load and validate all supported image files from an input folder.
-2. Normalize image bounds, sizing, and baseline alignment.
-3. Convert each source image to monochrome glyph data.
-4. Apply transparency rules (alpha-aware; white fallback when no alpha exists).
-5. Map files to Unicode codepoints (typically PUA).
-6. Generate font files (TTF/OTF/WOFF as configured).
-7. Emit mapping metadata (JSON/TOML) for downstream usage.
+# glyph demo using the generated TTF/sample
+cargo run -- demo --manifest petiglyph.toml --input-dir ./icons --out-dir ./dist
+```
 
-## Planned interactive mode (TUI)
+## Manifest (`petiglyph.toml`)
 
-- Browse input images and generated monochrome previews.
-- Assign/reassign glyph codepoints interactively.
-- Tune conversion parameters (threshold/invert/scale/offset) with immediate preview.
-- Save resulting manifest/settings and run the same build pipeline as non-interactive CLI mode.
+```toml
+input_dir = "icons"
+out_dir = "dist"
+font_name = "Petiglyph"
+glyph_size = 64
+threshold = 64
+codepoint_start = "U+100000"
+```
+
+## Output files
+
+By default in `dist/`:
+
+- `*.bdf`: bitmap font file (monochrome glyphs).
+- `*.ttf`: TrueType font file generated from the thresholded glyphs.
+- `glyph-map.json`: glyph-to-file and codepoint mapping.
+- `glyph-sample.txt`: copyable private-use sample string for testing the font.
+- `previews/*.png`: generated monochrome previews, one file per glyph.
+
+## Monochrome and transparency behavior
+
+- If source alpha exists, alpha defines glyph coverage. This preserves white-on-transparent logos and anti-aliased edges.
+- If source has no alpha, border color is treated as the background and pixel contrast against that background becomes glyph coverage.
+- Monochrome threshold then turns coverage into on/off glyph pixels.
+
+## Interactive mode keys
+
+- `q` / `Esc`: quit.
+- `j` / `k` or arrow keys: select glyph.
+- `+` / `-`: threshold +/- 1.
+- `PgUp` / `PgDn`: threshold +/- 10.
+
+## Terminal demo
+
+Use the demo when you want the real private-use glyph string for the generated font. The default starter manifest uses `U+100000` to avoid common Nerd Font collisions in the BMP private-use area:
+
+```bash
+cargo run -- demo --manifest ./petiglyph.toml --input-dir ./icons --out-dir ./dist
+```
+
+It prints:
+
+- the generated `.ttf` path
+- the generated `glyph-sample.txt` path
+- the copyable Unicode private-use glyph string itself
+
+To verify the TTF outside the terminal UI, build the font and point a renderer at it with a temporary fontconfig setup. For example:
+
+```bash
+cargo run -- build-font --manifest ./petiglyph.toml --input-dir ./icons --out-dir ./dist
+tmpfc="$(mktemp -d)"
+mkdir -p "$tmpfc/fonts" "$tmpfc/cache"
+cp ./dist/petiglyph.ttf "$tmpfc/fonts/"
+cat > "$tmpfc/fonts.conf" <<EOF
+<?xml version="1.0"?>
+<!DOCTYPE fontconfig SYSTEM "fonts.dtd">
+<fontconfig>
+  <dir>/usr/share/fonts</dir>
+  <dir>$tmpfc/fonts</dir>
+  <cachedir>$tmpfc/cache</cachedir>
+</fontconfig>
+EOF
+FONTCONFIG_FILE="$tmpfc/fonts.conf" fc-cache -f "$tmpfc/fonts"
+FONTCONFIG_FILE="$tmpfc/fonts.conf" pango-view --no-display --font="Petiglyph 48" --text="$(cat ./dist/glyph-sample.txt)" --output ./dist/specimen.png
+```
