@@ -12,6 +12,11 @@ elif command -v readlink >/dev/null 2>&1; then
 fi
 
 repo_dir="$(cd "$(dirname "$script_path")" && pwd)"
+command="${1:-run}"
+if [[ $# -gt 0 ]]; then
+  shift
+fi
+
 manifest_path="${PETIGLYPH_MANIFEST:-$repo_dir/petiglyph.toml}"
 input_dir="${PETIGLYPH_INPUT_DIR:-$repo_dir/icons}"
 out_dir="${PETIGLYPH_OUT_DIR:-$repo_dir/dist}"
@@ -22,6 +27,58 @@ glyph_size="${PETIGLYPH_GLYPH_SIZE:-}"
 codepoint_start="${PETIGLYPH_CODEPOINT_START:-U+100000}"
 ghostty_pua_map="${PETIGLYPH_GHOSTTY_PUA_MAP:-U+E000-U+F8FF}"
 terminal_choice="${PETIGLYPH_TERMINAL:-auto}"
+fonts_root="${XDG_DATA_HOME:-$HOME/.local/share}/fonts"
+install_dir="${PETIGLYPH_INSTALL_DIR:-$fonts_root/petiglyph-demo}"
+legacy_install_path="$fonts_root/petiglyph.ttf"
+
+print_usage() {
+  cat <<EOF
+usage: glyphdemo [run|clean]
+
+run   build, install, and open the glyph demo (default)
+clean remove demo-installed fonts and refresh font cache
+EOF
+}
+
+clean_installed_fonts() {
+  local removed=0
+
+  if [[ -d "$install_dir" ]]; then
+    rm -rf "$install_dir"
+    echo "removed demo font directory: $install_dir"
+    removed=1
+  fi
+
+  if [[ -f "$legacy_install_path" ]]; then
+    rm -f "$legacy_install_path"
+    echo "removed legacy demo font: $legacy_install_path"
+    removed=1
+  fi
+
+  fc-cache -f "$fonts_root" >/dev/null
+
+  if [[ "$removed" -eq 0 ]]; then
+    echo "no installed demo fonts found"
+  fi
+}
+
+case "$command" in
+  run)
+    ;;
+  clean)
+    clean_installed_fonts
+    exit 0
+    ;;
+  help|-h|--help)
+    print_usage
+    exit 0
+    ;;
+  *)
+    echo "invalid glyphdemo command: $command" >&2
+    print_usage >&2
+    exit 1
+    ;;
+esac
 
 if [[ ! -f "$manifest_path" ]]; then
   cargo run --manifest-path "$repo_dir/Cargo.toml" -- init --output "$manifest_path"
@@ -60,10 +117,10 @@ if [[ -z "$latest_ttf" ]]; then
   exit 1
 fi
 
-install_dir="${XDG_DATA_HOME:-$HOME/.local/share}/fonts"
 mkdir -p "$install_dir"
+find "$install_dir" -maxdepth 1 -type f -name '*.ttf' -delete
 cp "$latest_ttf" "$install_dir/"
-fc-cache -f "$install_dir" >/dev/null
+fc-cache -f "$fonts_root" >/dev/null
 
 echo "installed font: $install_dir/$(basename "$latest_ttf")"
 echo "sample file: $sample_path"
