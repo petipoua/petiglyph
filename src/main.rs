@@ -17,9 +17,11 @@ use resvg::tiny_skia::{Pixmap, Transform};
 use resvg::usvg;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, HashSet};
+use std::env;
 use std::fs;
-use std::io;
+use std::io::{self, IsTerminal, Write};
 use std::path::{Path, PathBuf};
+use std::process::Command as ProcessCommand;
 use std::time::Duration;
 use walkdir::WalkDir;
 
@@ -27,29 +29,46 @@ use walkdir::WalkDir;
 #[command(
     name = "petiglyph",
     version,
-    about = "Convert folders of images into monochrome font glyph assets."
+    about = "TUI-first CLI for building self-contained monochrome glyph font projects."
 )]
 struct Cli {
     #[command(subcommand)]
-    command: Command,
+    command: Option<CliCommand>,
 }
 
 #[derive(Debug, Subcommand)]
-enum Command {
-    /// Create a starter manifest.
-    Init {
-        /// Output manifest path.
-        #[arg(short, long, default_value = "petiglyph.toml")]
-        output: PathBuf,
-        /// Overwrite an existing file.
+enum CliCommand {
+    /// Create a new self-contained petiglyph project in the current directory.
+    Create {
+        /// Project directory name to create inside the current working directory.
+        name: String,
+        /// Skip the post-create prompt and do not launch the TUI.
         #[arg(long)]
-        force: bool,
+        no_launch: bool,
     },
-    /// Build monochrome glyph previews, mapping metadata, and a BDF bitmap font.
-    BuildFont {
-        /// Path to the manifest file.
-        #[arg(short, long, default_value = "petiglyph.toml")]
-        manifest: PathBuf,
+    /// Launch the petiglyph TUI for a project.
+    Tui {
+        /// Path to the manifest file. Defaults to ./petiglyph.toml.
+        #[arg(short, long)]
+        manifest: Option<PathBuf>,
+        /// Override source image folder from manifest.
+        #[arg(long)]
+        input_dir: Option<PathBuf>,
+        /// Override preview threshold (0-255).
+        #[arg(long)]
+        threshold: Option<u8>,
+        /// Override glyph pixel size.
+        #[arg(long)]
+        glyph_size: Option<u32>,
+        /// Override starting Unicode codepoint (for example U+100000).
+        #[arg(long)]
+        codepoint_start: Option<String>,
+    },
+    /// Build monochrome glyph previews, mapping metadata, and a BDF/TTF font.
+    Build {
+        /// Path to the manifest file. Defaults to ./petiglyph.toml.
+        #[arg(short, long)]
+        manifest: Option<PathBuf>,
         /// Override source image folder from manifest.
         #[arg(long)]
         input_dir: Option<PathBuf>,
@@ -66,14 +85,17 @@ enum Command {
         #[arg(long)]
         codepoint_start: Option<String>,
     },
-    /// Interactive terminal preview mode for thresholding and glyph browsing.
-    Interactive {
-        /// Path to the manifest file.
-        #[arg(short, long, default_value = "petiglyph.toml")]
-        manifest: PathBuf,
+    /// Build the font and print the sample private-use string.
+    Sample {
+        /// Path to the manifest file. Defaults to ./petiglyph.toml.
+        #[arg(short, long)]
+        manifest: Option<PathBuf>,
         /// Override source image folder from manifest.
         #[arg(long)]
         input_dir: Option<PathBuf>,
+        /// Override output directory from manifest.
+        #[arg(short, long)]
+        out_dir: Option<PathBuf>,
         /// Override preview threshold (0-255).
         #[arg(long)]
         threshold: Option<u8>,
@@ -84,11 +106,11 @@ enum Command {
         #[arg(long)]
         codepoint_start: Option<String>,
     },
-    /// Print a real glyph specimen for the generated TTF font.
-    Demo {
-        /// Path to the manifest file.
-        #[arg(short, long, default_value = "petiglyph.toml")]
-        manifest: PathBuf,
+    /// Build the font and install it into the user font directory.
+    InstallFont {
+        /// Path to the manifest file. Defaults to ./petiglyph.toml.
+        #[arg(short, long)]
+        manifest: Option<PathBuf>,
         /// Override source image folder from manifest.
         #[arg(long)]
         input_dir: Option<PathBuf>,
@@ -123,7 +145,7 @@ impl Default for Manifest {
     fn default() -> Self {
         Self {
             input_dir: "icons".to_string(),
-            out_dir: "dist".to_string(),
+            out_dir: "build".to_string(),
             font_name: "Petiglyph".to_string(),
             glyph_size: 64,
             threshold: 64,
@@ -166,7 +188,7 @@ struct MappingEntry {
     codepoint: String,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 struct BuildSummary {
     glyph_count: usize,
     bdf_path: PathBuf,
@@ -179,38 +201,63 @@ struct BuildSummary {
 fn main() -> Result<()> {
     let cli = Cli::parse();
     match cli.command {
-        Command::Init { output, force } => init_manifest(&output, force),
-        Command::BuildFont {
+        None => {
+            let manifest = manifest_path_from_option(None)?;
+            tui(manifest, None, None, None, None)
+        }
+        Some(CliCommand::Create { name, no_launch }) => create_project(&name, no_launch),
+        Some(CliCommand::Tui {
+            manifest,
+            input_dir,
+            threshold,
+            glyph_size,
+            codepoint_start,
+        }) => tui(
+            manifest_path_from_option(manifest)?,
+            input_dir,
+            threshold,
+            glyph_size,
+            codepoint_start,
+        ),
+        Some(CliCommand::Build {
             manifest,
             input_dir,
             out_dir,
             threshold,
             glyph_size,
             codepoint_start,
-        } => build_font(
-            manifest,
+        }) => build_font(
+            manifest_path_from_option(manifest)?,
             input_dir,
             out_dir,
             threshold,
             glyph_size,
             codepoint_start,
         ),
-        Command::Interactive {
-            manifest,
-            input_dir,
-            threshold,
-            glyph_size,
-            codepoint_start,
-        } => interactive(manifest, input_dir, threshold, glyph_size, codepoint_start),
-        Command::Demo {
+        Some(CliCommand::Sample {
             manifest,
             input_dir,
             out_dir,
             threshold,
             glyph_size,
             codepoint_start,
-        } => demo_terminal(
+        }) => sample_command(
+            manifest_path_from_option(manifest)?,
+            input_dir,
+            out_dir,
+            threshold,
+            glyph_size,
+            codepoint_start,
+        ),
+        Some(CliCommand::InstallFont {
             manifest,
+            input_dir,
+            out_dir,
+            threshold,
+            glyph_size,
+            codepoint_start,
+        }) => install_font_command(
+            manifest_path_from_option(manifest)?,
             input_dir,
             out_dir,
             threshold,
@@ -220,25 +267,92 @@ fn main() -> Result<()> {
     }
 }
 
-fn init_manifest(output: &Path, force: bool) -> Result<()> {
-    if output.exists() && !force {
+fn manifest_path_from_option(manifest: Option<PathBuf>) -> Result<PathBuf> {
+    match manifest {
+        Some(path) => Ok(path),
+        None => {
+            let current_dir = env::current_dir().context("failed to read current directory")?;
+            let manifest_path = current_dir.join("petiglyph.toml");
+            if manifest_path.exists() {
+                Ok(manifest_path)
+            } else {
+                bail!(
+                    "no petiglyph project found in {} (run `petiglyph create <name>` or pass --manifest)",
+                    current_dir.display()
+                );
+            }
+        }
+    }
+}
+
+fn create_project(project_name: &str, no_launch: bool) -> Result<()> {
+    if project_name.trim().is_empty() {
+        bail!("project name cannot be empty");
+    }
+
+    let current_dir = env::current_dir().context("failed to read current directory")?;
+    let project_dir = current_dir.join(project_name);
+    if project_dir.exists() {
         bail!(
-            "manifest already exists at {} (use --force to overwrite)",
-            output.display()
+            "project directory already exists: {}",
+            project_dir.display()
         );
     }
 
-    if let Some(parent) = output.parent() {
-        fs::create_dir_all(parent)
-            .with_context(|| format!("failed to create {}", parent.display()))?;
+    let icons_dir = project_dir.join("icons");
+    let out_dir = project_dir.join("build");
+    fs::create_dir_all(&icons_dir)
+        .with_context(|| format!("failed to create {}", icons_dir.display()))?;
+    fs::create_dir_all(&out_dir)
+        .with_context(|| format!("failed to create {}", out_dir.display()))?;
+
+    let manifest_path = project_dir.join("petiglyph.toml");
+    let display_name = project_dir
+        .file_name()
+        .and_then(|name| name.to_str())
+        .map(humanize_project_name)
+        .filter(|name| !name.trim().is_empty())
+        .unwrap_or_else(|| "Petiglyph".to_string());
+    let manifest = Manifest {
+        font_name: display_name,
+        ..Manifest::default()
+    };
+    write_manifest(&manifest_path, &manifest)?;
+
+    println!("created petiglyph project: {}", project_dir.display());
+    println!("  project: {}", project_dir.display());
+    println!("  manifest: {}", manifest_path.display());
+    println!("  images: {}", icons_dir.display());
+    println!("  build output: {}", out_dir.display());
+    println!();
+    println!("next steps:");
+    println!("  1. add your source images to {}", icons_dir.display());
+    println!("  2. run `cd {}`", project_dir.display());
+    println!("  3. launch the TUI with `petiglyph` or `petiglyph tui`");
+
+    if no_launch {
+        return Ok(());
     }
 
-    let template = toml::to_string_pretty(&Manifest::default())
-        .context("failed to serialize manifest template")?;
-    fs::write(output, template).with_context(|| format!("failed to write {}", output.display()))?;
-
-    println!("wrote manifest template: {}", output.display());
-    Ok(())
+    if io::stdin().is_terminal() && io::stdout().is_terminal() {
+        println!();
+        print!(
+            "add your images to {}. press Enter to launch the TUI, or type `skip` to exit: ",
+            icons_dir.display()
+        );
+        io::stdout().flush().context("failed to flush prompt")?;
+        let mut answer = String::new();
+        io::stdin()
+            .read_line(&mut answer)
+            .context("failed to read launch confirmation")?;
+        if answer.trim().eq_ignore_ascii_case("skip") {
+            return Ok(());
+        }
+        tui(manifest_path, None, None, None, None)
+    } else {
+        println!("non-interactive shell detected; skipping automatic TUI launch");
+        Ok(())
+    }
 }
 
 fn read_manifest(manifest_path: &Path) -> Result<Manifest> {
@@ -337,14 +451,7 @@ fn build_outputs(config: &RuntimeConfig) -> Result<BuildSummary> {
     fs::write(&mapping_path, mapping_json)
         .with_context(|| format!("failed to write {}", mapping_path.display()))?;
 
-    let font_file_stem = {
-        let slug = slugify(&config.font_name);
-        if slug.is_empty() {
-            "petiglyph".to_string()
-        } else {
-            slug
-        }
-    };
+    let font_file_stem = expected_font_file_stem(&config.font_name);
     let bdf_path = config.out_dir.join(format!("{font_file_stem}.bdf"));
     write_bdf(&bdf_path, &config.font_name, config.glyph_size, &bdf_glyphs)?;
 
@@ -366,7 +473,30 @@ fn build_outputs(config: &RuntimeConfig) -> Result<BuildSummary> {
     })
 }
 
-fn interactive(
+fn expected_font_file_stem(font_name: &str) -> String {
+    let slug = slugify(font_name);
+    if slug.is_empty() {
+        "petiglyph".to_string()
+    } else {
+        slug
+    }
+}
+
+fn expected_ttf_path(config: &RuntimeConfig) -> PathBuf {
+    config.out_dir.join(format!(
+        "{}.ttf",
+        expected_font_file_stem(&config.font_name)
+    ))
+}
+
+fn expected_bdf_path(config: &RuntimeConfig) -> PathBuf {
+    config.out_dir.join(format!(
+        "{}.bdf",
+        expected_font_file_stem(&config.font_name)
+    ))
+}
+
+fn tui(
     manifest_path: PathBuf,
     input_override: Option<PathBuf>,
     threshold_override: Option<u8>,
@@ -382,31 +512,8 @@ fn interactive(
         codepoint_start_override,
     )?;
 
-    let sources = collect_source_files(&config.input_dir)?;
-    let glyphs = preprocess_sources(&sources, &config.input_dir, config.glyph_size)?;
-    let glyphs = glyphs
-        .into_iter()
-        .map(|glyph| {
-            let saved_threshold = config.threshold_overrides.get(&glyph.source_key).copied();
-            let working_threshold = saved_threshold.unwrap_or(config.base_threshold);
-            InteractiveGlyph {
-                glyph,
-                saved_threshold,
-                working_threshold,
-            }
-        })
-        .collect();
-
-    let mut app = App {
-        manifest_path,
-        font_name: config.font_name,
-        base_threshold: config.base_threshold,
-        codepoint_start: config.codepoint_start,
-        selected: 0,
-        glyphs,
-        quit: false,
-        status: None,
-    };
+    let mut app = App::new(manifest_path, config);
+    app.reload_glyphs()?;
 
     let mut session = TerminalSession::start()?;
     while !app.quit {
@@ -416,22 +523,17 @@ fn interactive(
             && let Event::Key(key) = event::read()?
             && key.kind == KeyEventKind::Press
         {
-            handle_key(&mut app, key.code);
+            if let Err(err) = handle_key(&mut app, key.code) {
+                app.status = Some(err.to_string());
+            }
         }
     }
 
-    println!(
-        "interactive session closed (base threshold={}, overrides={})",
-        app.base_threshold,
-        app.glyphs
-            .iter()
-            .filter(|glyph| glyph.saved_threshold.is_some())
-            .count()
-    );
+    println!("tui session closed for {}", app.project_dir.display());
     Ok(())
 }
 
-fn demo_terminal(
+fn sample_command(
     manifest_path: PathBuf,
     input_override: Option<PathBuf>,
     out_override: Option<PathBuf>,
@@ -452,7 +554,7 @@ fn demo_terminal(
     let sample = fs::read_to_string(&summary.sample_path)
         .with_context(|| format!("failed to read {}", summary.sample_path.display()))?;
 
-    println!("petiglyph glyph demo");
+    println!("petiglyph sample");
     println!("font: {}", config.font_name);
     println!("glyphs: {}", summary.glyph_count);
     println!("threshold: {}", config.base_threshold);
@@ -463,6 +565,37 @@ fn demo_terminal(
     println!();
     print!("{sample}");
 
+    Ok(())
+}
+
+fn install_font_command(
+    manifest_path: PathBuf,
+    input_override: Option<PathBuf>,
+    out_override: Option<PathBuf>,
+    threshold_override: Option<u8>,
+    glyph_size_override: Option<u32>,
+    codepoint_start_override: Option<String>,
+) -> Result<()> {
+    let config = load_runtime_config(
+        &manifest_path,
+        input_override,
+        out_override,
+        threshold_override,
+        glyph_size_override,
+        codepoint_start_override,
+    )?;
+
+    let summary = build_outputs(&config)?;
+    let install_path = install_built_font(
+        &manifest_path,
+        &config.font_name,
+        &summary.ttf_path,
+        summary.glyph_count,
+    )?;
+
+    println!("font installed");
+    println!("  source: {}", summary.ttf_path.display());
+    println!("  installed: {}", install_path.display());
     Ok(())
 }
 
@@ -499,6 +632,115 @@ fn load_runtime_config(
         threshold_overrides: manifest.threshold_overrides,
         codepoint_start,
     })
+}
+
+fn humanize_project_name(project_name: &str) -> String {
+    let mut out = String::new();
+    let mut capitalize = true;
+    for ch in project_name.chars() {
+        if matches!(ch, '-' | '_' | ' ') {
+            if !out.ends_with(' ') && !out.is_empty() {
+                out.push(' ');
+            }
+            capitalize = true;
+            continue;
+        }
+
+        if capitalize {
+            for upper in ch.to_uppercase() {
+                out.push(upper);
+            }
+            capitalize = false;
+        } else {
+            out.push(ch);
+        }
+    }
+
+    let trimmed = out.trim();
+    if trimmed.is_empty() {
+        "Petiglyph".to_string()
+    } else {
+        trimmed.to_string()
+    }
+}
+
+fn user_font_root() -> Result<PathBuf> {
+    let home = env::var_os("HOME").context("HOME is not set")?;
+    Ok(PathBuf::from(home).join(".local/share/fonts"))
+}
+
+fn install_dir_for_project(manifest_path: &Path) -> Result<PathBuf> {
+    let project_dir = manifest_path
+        .parent()
+        .unwrap_or_else(|| Path::new("."))
+        .canonicalize()
+        .with_context(|| format!("failed to resolve {}", manifest_path.display()))?;
+    let project_name = project_dir
+        .file_name()
+        .and_then(|name| name.to_str())
+        .filter(|name| !name.trim().is_empty())
+        .unwrap_or("project");
+    Ok(user_font_root()?
+        .join("petiglyph")
+        .join(slugify(project_name)))
+}
+
+fn refresh_font_cache(font_root: &Path) -> Result<()> {
+    let status = ProcessCommand::new("fc-cache")
+        .arg("-f")
+        .arg(font_root)
+        .status()
+        .context("failed to run fc-cache")?;
+    if !status.success() {
+        bail!("fc-cache failed with status {status}");
+    }
+    Ok(())
+}
+
+fn install_built_font(
+    manifest_path: &Path,
+    font_name: &str,
+    built_ttf: &Path,
+    glyph_count: usize,
+) -> Result<PathBuf> {
+    if glyph_count == 0 {
+        bail!("cannot install a font with zero glyphs");
+    }
+
+    let install_dir = install_dir_for_project(manifest_path)?;
+    fs::create_dir_all(&install_dir)
+        .with_context(|| format!("failed to create {}", install_dir.display()))?;
+
+    for entry in fs::read_dir(&install_dir)
+        .with_context(|| format!("failed to read {}", install_dir.display()))?
+    {
+        let entry =
+            entry.with_context(|| format!("failed to inspect {}", install_dir.display()))?;
+        let path = entry.path();
+        if path.extension().and_then(|ext| ext.to_str()) == Some("ttf") {
+            fs::remove_file(&path)
+                .with_context(|| format!("failed to remove {}", path.display()))?;
+        }
+    }
+
+    let file_name = {
+        let slug = slugify(font_name);
+        if slug.is_empty() {
+            "petiglyph.ttf".to_string()
+        } else {
+            format!("{slug}.ttf")
+        }
+    };
+    let install_path = install_dir.join(file_name);
+    fs::copy(built_ttf, &install_path).with_context(|| {
+        format!(
+            "failed to copy built font {} to {}",
+            built_ttf.display(),
+            install_path.display()
+        )
+    })?;
+    refresh_font_cache(&user_font_root()?)?;
+    Ok(install_path)
 }
 
 fn parse_codepoint(value: &str) -> Result<u32> {
@@ -1648,15 +1890,25 @@ fn bdf_font_name(font_name: &str, glyph_size: u32) -> String {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AppView {
+    Home,
+    Glyphs,
+    Font,
+}
+
 struct App {
     manifest_path: PathBuf,
-    font_name: String,
-    base_threshold: u8,
-    codepoint_start: u32,
+    project_dir: PathBuf,
+    config: RuntimeConfig,
     selected: usize,
     glyphs: Vec<InteractiveGlyph>,
     quit: bool,
     status: Option<String>,
+    view: AppView,
+    last_build: Option<BuildSummary>,
+    last_sample: Option<String>,
+    installed_font_path: Option<PathBuf>,
 }
 
 #[derive(Debug, Clone)]
@@ -1688,6 +1940,148 @@ impl Drop for TerminalSession {
         let _ = disable_raw_mode();
         let _ = self.terminal.backend_mut().execute(LeaveAlternateScreen);
         let _ = self.terminal.show_cursor();
+    }
+}
+
+impl App {
+    fn new(manifest_path: PathBuf, config: RuntimeConfig) -> Self {
+        let project_dir = manifest_path
+            .parent()
+            .unwrap_or_else(|| Path::new("."))
+            .to_path_buf();
+        Self {
+            manifest_path,
+            project_dir,
+            config,
+            selected: 0,
+            glyphs: Vec::new(),
+            quit: false,
+            status: None,
+            view: AppView::Home,
+            last_build: None,
+            last_sample: None,
+            installed_font_path: None,
+        }
+    }
+
+    fn reload_config(&mut self) -> Result<()> {
+        self.config = load_runtime_config(&self.manifest_path, None, None, None, None, None)?;
+        Ok(())
+    }
+
+    fn reload_glyphs(&mut self) -> Result<()> {
+        self.reload_config()?;
+
+        if !self.config.input_dir.exists() {
+            self.glyphs.clear();
+            self.selected = 0;
+            self.status = Some(format!(
+                "icons directory not found yet: {}",
+                self.config.input_dir.display()
+            ));
+            return Ok(());
+        }
+
+        let mut sources = Vec::new();
+        for entry in WalkDir::new(&self.config.input_dir).follow_links(true) {
+            let entry = entry.with_context(|| {
+                format!("failed while scanning {}", self.config.input_dir.display())
+            })?;
+            if entry.file_type().is_file() && is_supported_source(entry.path()) {
+                sources.push(entry.path().to_path_buf());
+            }
+        }
+        sources.sort();
+
+        if sources.is_empty() {
+            self.glyphs.clear();
+            self.selected = 0;
+            self.status = Some(format!(
+                "add image files to {} and press R to rescan",
+                self.config.input_dir.display()
+            ));
+            return Ok(());
+        }
+
+        let glyphs = preprocess_sources(&sources, &self.config.input_dir, self.config.glyph_size)?
+            .into_iter()
+            .map(|glyph| {
+                let saved_threshold = self
+                    .config
+                    .threshold_overrides
+                    .get(&glyph.source_key)
+                    .copied();
+                let working_threshold = saved_threshold.unwrap_or(self.config.base_threshold);
+                InteractiveGlyph {
+                    glyph,
+                    saved_threshold,
+                    working_threshold,
+                }
+            })
+            .collect::<Vec<_>>();
+
+        self.glyphs = glyphs;
+        self.selected = self.selected.min(self.glyphs.len().saturating_sub(1));
+        self.status = Some(format!(
+            "loaded {} glyph{} from {}",
+            self.glyphs.len(),
+            if self.glyphs.len() == 1 { "" } else { "s" },
+            self.config.input_dir.display()
+        ));
+        Ok(())
+    }
+
+    fn build_project(&mut self) -> Result<()> {
+        self.reload_config()?;
+        if self.config.glyph_size == 0 {
+            bail!("glyph_size must be > 0");
+        }
+
+        let summary = build_outputs(&self.config)?;
+        let sample = fs::read_to_string(&summary.sample_path)
+            .with_context(|| format!("failed to read {}", summary.sample_path.display()))?;
+
+        self.last_sample = Some(sample.trim_end().to_string());
+        self.last_build = Some(summary.clone());
+        self.status = Some(format!(
+            "build complete: {} glyph{} into {}",
+            summary.glyph_count,
+            if summary.glyph_count == 1 { "" } else { "s" },
+            summary.out_dir().display()
+        ));
+        self.view = AppView::Font;
+        Ok(())
+    }
+
+    fn install_font(&mut self) -> Result<()> {
+        self.build_project()?;
+        let summary = self
+            .last_build
+            .as_ref()
+            .context("build summary missing after build")?;
+        let installed = install_built_font(
+            &self.manifest_path,
+            &self.config.font_name,
+            &summary.ttf_path,
+            summary.glyph_count,
+        )?;
+        self.installed_font_path = Some(installed.clone());
+        self.status = Some(format!("installed font to {}", installed.display()));
+        Ok(())
+    }
+
+    fn sample_string(&self) -> String {
+        if let Some(sample) = &self.last_sample {
+            sample.clone()
+        } else {
+            glyph_sample_string(self.config.codepoint_start, self.glyphs.len())
+        }
+    }
+}
+
+impl BuildSummary {
+    fn out_dir(&self) -> &Path {
+        self.ttf_path.parent().unwrap_or_else(|| Path::new("."))
     }
 }
 
@@ -1726,7 +2120,7 @@ fn set_selected_threshold(app: &mut App, threshold: u8) {
 
     let source_key = glyph.glyph.source_key.clone();
     let glyph_name = glyph.glyph.glyph_name.clone();
-    let threshold_override = if threshold == app.base_threshold {
+    let threshold_override = if threshold == app.config.base_threshold {
         None
     } else {
         Some(threshold)
@@ -1742,7 +2136,7 @@ fn set_selected_threshold(app: &mut App, threshold: u8) {
                 Some(value) => format!("saved override for {glyph_name}: {source_key} -> {value}"),
                 None => format!(
                     "cleared override for {glyph_name}: now using base threshold {}",
-                    app.base_threshold
+                    app.config.base_threshold
                 ),
             });
         }
@@ -1763,7 +2157,7 @@ fn remove_selected_threshold_override(app: &mut App) {
 
     match persist_threshold_override(&app.manifest_path, &source_key, None) {
         Ok(()) => {
-            let base_threshold = app.base_threshold;
+            let base_threshold = app.config.base_threshold;
             if let Some(glyph) = selected_glyph_mut(app) {
                 glyph.saved_threshold = None;
                 glyph.working_threshold = base_threshold;
@@ -1779,111 +2173,115 @@ fn remove_selected_threshold_override(app: &mut App) {
     }
 }
 
-fn handle_key(app: &mut App, code: KeyCode) {
+fn handle_key(app: &mut App, code: KeyCode) -> Result<()> {
     match code {
         KeyCode::Esc | KeyCode::Char('q') => app.quit = true,
+        KeyCode::Char('1') => app.view = AppView::Home,
+        KeyCode::Char('2') => app.view = AppView::Glyphs,
+        KeyCode::Char('3') => app.view = AppView::Font,
+        KeyCode::Tab => {
+            app.view = match app.view {
+                AppView::Home => AppView::Glyphs,
+                AppView::Glyphs => AppView::Font,
+                AppView::Font => AppView::Home,
+            }
+        }
+        KeyCode::Char('R') => {
+            app.reload_glyphs()?;
+            app.view = if app.glyphs.is_empty() {
+                AppView::Home
+            } else {
+                AppView::Glyphs
+            };
+        }
+        KeyCode::Char('b') => {
+            app.build_project()?;
+        }
+        KeyCode::Char('i') => {
+            app.install_font()?;
+        }
         KeyCode::Down | KeyCode::Char('j') => {
             app.selected = (app.selected + 1).min(app.glyphs.len().saturating_sub(1));
+            app.view = AppView::Glyphs;
         }
         KeyCode::Up | KeyCode::Char('k') => {
             app.selected = app.selected.saturating_sub(1);
+            app.view = AppView::Glyphs;
         }
         KeyCode::Right | KeyCode::Char('l') | KeyCode::Char('+') | KeyCode::Char('=') => {
             if let Some(glyph) = selected_glyph(app) {
                 let next = glyph.working_threshold.saturating_add(1);
                 set_selected_threshold(app, next);
+                app.view = AppView::Glyphs;
             }
         }
         KeyCode::Left | KeyCode::Char('h') | KeyCode::Char('-') => {
             if let Some(glyph) = selected_glyph(app) {
                 let next = glyph.working_threshold.saturating_sub(1);
                 set_selected_threshold(app, next);
+                app.view = AppView::Glyphs;
             }
         }
         KeyCode::PageUp => {
             if let Some(glyph) = selected_glyph(app) {
                 let next = glyph.working_threshold.saturating_add(10);
                 set_selected_threshold(app, next);
+                app.view = AppView::Glyphs;
             }
         }
         KeyCode::PageDown => {
             if let Some(glyph) = selected_glyph(app) {
                 let next = glyph.working_threshold.saturating_sub(10);
                 set_selected_threshold(app, next);
+                app.view = AppView::Glyphs;
             }
         }
-        KeyCode::Char('r') => remove_selected_threshold_override(app),
+        KeyCode::Char('r') => {
+            remove_selected_threshold_override(app);
+            app.view = AppView::Glyphs;
+        }
         _ => {}
     }
+    Ok(())
 }
 
 fn draw_ui(frame: &mut Frame, app: &App) {
-    let (threshold, source_key, has_override, dirty, status_text) = match selected_glyph(app) {
-        Some(glyph) => (
-            glyph.working_threshold,
-            glyph.glyph.source_key.as_str(),
-            glyph.saved_threshold.is_some(),
-            glyph.saved_threshold.unwrap_or(app.base_threshold) != glyph.working_threshold,
-            match glyph.saved_threshold {
-                Some(saved) => format!("override saved={saved}"),
-                None => "using base threshold".to_string(),
-            },
-        ),
-        None => (
-            app.base_threshold,
-            "",
-            false,
-            false,
-            "no glyphs loaded".to_string(),
-        ),
-    };
-
     let root = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(5),
-            Constraint::Min(8),
+            Constraint::Length(6),
+            Constraint::Min(10),
             Constraint::Length(4),
         ])
         .split(frame.area());
 
     let mut header_lines = vec![Line::from(vec![
         Span::styled(
-            "petiglyph interactive",
+            "petiglyph",
             Style::default()
                 .fg(Color::Cyan)
                 .add_modifier(Modifier::BOLD),
         ),
         Span::raw("  |  "),
-        Span::raw(format!("font={}", app.font_name)),
+        Span::raw(format!("project={}", app.project_dir.display())),
         Span::raw("  |  "),
-        Span::raw(format!("glyphs={}", app.glyphs.len())),
+        Span::raw(format!("font={}", app.config.font_name)),
         Span::raw("  |  "),
-        Span::raw(format!("base={}", app.base_threshold)),
+        Span::raw(format!("icons={}", app.glyphs.len())),
         Span::raw("  |  "),
-        Span::raw(format!("current={threshold}")),
+        Span::raw(format!("base={}", app.config.base_threshold)),
     ])];
     header_lines.push(Line::from(vec![
-        Span::raw(format!("source={source_key}  |  ")),
-        Span::raw(status_text),
-        Span::raw("  |  "),
-        Span::styled(
-            if dirty { "unsaved changes" } else { "synced" },
-            Style::default().fg(if dirty { Color::Yellow } else { Color::Green }),
-        ),
-        Span::raw("  |  "),
-        Span::styled(
-            if has_override {
-                "override present"
-            } else {
-                "no override"
-            },
-            Style::default().fg(if has_override {
-                Color::LightBlue
-            } else {
-                Color::DarkGray
-            }),
-        ),
+        Span::raw(format!("manifest={}  |  ", app.manifest_path.display())),
+        Span::raw(format!("icons-dir={}  |  ", app.config.input_dir.display())),
+        Span::raw(format!("build-dir={}", app.config.out_dir.display())),
+    ]));
+    header_lines.push(Line::from(vec![
+        tab_span("1 Home", app.view == AppView::Home),
+        Span::raw("  "),
+        tab_span("2 Glyphs", app.view == AppView::Glyphs),
+        Span::raw("  "),
+        tab_span("3 Font", app.view == AppView::Font),
     ]));
     if let Some(status) = &app.status {
         header_lines.push(Line::from(Span::styled(
@@ -1896,31 +2294,119 @@ fn draw_ui(frame: &mut Frame, app: &App) {
         Paragraph::new(header_lines).block(Block::default().borders(Borders::ALL).title("Status"));
     frame.render_widget(header, root[0]);
 
+    match app.view {
+        AppView::Home => draw_home_view(frame, app, root[1]),
+        AppView::Glyphs => draw_glyphs_view(frame, app, root[1]),
+        AppView::Font => draw_font_view(frame, app, root[1]),
+    }
+
+    let footer = Paragraph::new(vec![
+        Line::from(vec![
+            Span::styled("q/esc", Style::default().fg(Color::Yellow)),
+            Span::raw(" quit  |  "),
+            Span::styled("1/2/3", Style::default().fg(Color::Yellow)),
+            Span::raw(" switch views  |  "),
+            Span::styled("R", Style::default().fg(Color::Yellow)),
+            Span::raw(" rescan icons  |  "),
+            Span::styled("b", Style::default().fg(Color::Yellow)),
+            Span::raw(" build  |  "),
+            Span::styled("i", Style::default().fg(Color::Yellow)),
+            Span::raw(" install font"),
+        ]),
+        Line::from(vec![
+            Span::styled("j/k or ↑/↓", Style::default().fg(Color::Yellow)),
+            Span::raw(" select glyph  |  "),
+            Span::styled("+/-", Style::default().fg(Color::Yellow)),
+            Span::raw(" threshold ±1  |  "),
+            Span::styled("PgUp/PgDn", Style::default().fg(Color::Yellow)),
+            Span::raw(" threshold ±10  |  "),
+            Span::styled("r", Style::default().fg(Color::Yellow)),
+            Span::raw(" clear override"),
+        ]),
+    ])
+    .block(Block::default().borders(Borders::ALL).title("Keys"));
+    frame.render_widget(footer, root[2]);
+}
+
+fn tab_span<'a>(label: &'a str, active: bool) -> Span<'a> {
+    if active {
+        Span::styled(
+            label,
+            Style::default()
+                .fg(Color::Black)
+                .bg(Color::LightCyan)
+                .add_modifier(Modifier::BOLD),
+        )
+    } else {
+        Span::styled(label, Style::default().fg(Color::DarkGray))
+    }
+}
+
+fn draw_home_view(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) {
+    let content = Paragraph::new(vec![
+        Line::from("Create a self-contained petiglyph project, place image files in icons/, and keep all generated output in build/."),
+        Line::from(""),
+        Line::from(format!("Project directory: {}", app.project_dir.display())),
+        Line::from(format!("Manifest: {}", app.manifest_path.display())),
+        Line::from(format!("Icons directory: {}", app.config.input_dir.display())),
+        Line::from(format!("Build directory: {}", app.config.out_dir.display())),
+        Line::from(""),
+        Line::from(format!(
+            "Detected images: {}",
+            app.glyphs.len()
+        )),
+        Line::from(format!("Font family: {}", app.config.font_name)),
+        Line::from(format!("Glyph size: {}", app.config.glyph_size)),
+        Line::from(format!("Base threshold: {}", app.config.base_threshold)),
+        Line::from(format!(
+            "Codepoint start: U+{:04X}",
+            app.config.codepoint_start
+        )),
+        Line::from(""),
+        Line::from("Workflow:"),
+        Line::from("1. Add or update icons in icons/."),
+        Line::from("2. Press R to rescan, then tune glyph thresholds in the Glyphs view."),
+        Line::from("3. Press b to build previews, TTF, BDF, glyph map, and sample text."),
+        Line::from("4. Press i to install the built TTF into ~/.local/share/fonts/petiglyph/<project>/"),
+    ])
+    .block(Block::default().borders(Borders::ALL).title("Project"))
+    .wrap(Wrap { trim: false });
+    frame.render_widget(content, area);
+}
+
+fn draw_glyphs_view(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) {
     let body = Layout::default()
         .direction(Direction::Horizontal)
         .constraints([Constraint::Percentage(34), Constraint::Percentage(66)])
-        .split(root[1]);
+        .split(area);
 
     let mut list_state = ListState::default();
-    list_state.select(Some(app.selected));
+    if !app.glyphs.is_empty() {
+        list_state.select(Some(app.selected));
+    }
 
-    let items: Vec<ListItem> = app
-        .glyphs
-        .iter()
-        .enumerate()
-        .map(|(idx, glyph)| {
-            let codepoint = app.codepoint_start + idx as u32;
-            let marker = if glyph.saved_threshold.is_some() {
-                "*"
-            } else {
-                " "
-            };
-            ListItem::new(format!(
-                "{marker} {}  U+{:04X}",
-                glyph.glyph.glyph_name, codepoint
-            ))
-        })
-        .collect();
+    let items: Vec<ListItem> = if app.glyphs.is_empty() {
+        vec![ListItem::new(
+            "No glyphs yet. Add files to icons/ and press R.",
+        )]
+    } else {
+        app.glyphs
+            .iter()
+            .enumerate()
+            .map(|(idx, glyph)| {
+                let codepoint = app.config.codepoint_start + idx as u32;
+                let marker = if glyph.saved_threshold.is_some() {
+                    "*"
+                } else {
+                    " "
+                };
+                ListItem::new(format!(
+                    "{marker} {}  U+{:04X}",
+                    glyph.glyph.glyph_name, codepoint
+                ))
+            })
+            .collect()
+    };
 
     let list = List::new(items)
         .block(Block::default().borders(Borders::ALL).title("Glyphs"))
@@ -1934,7 +2420,14 @@ fn draw_ui(frame: &mut Frame, app: &App) {
     frame.render_stateful_widget(list, body[0], &mut list_state);
 
     let preview = if app.glyphs.is_empty() {
-        vec![Line::from("No glyphs")]
+        vec![
+            Line::from("No glyphs loaded"),
+            Line::from(""),
+            Line::from(format!(
+                "Add image files into {} and press R to rescan.",
+                app.config.input_dir.display()
+            )),
+        ]
     } else {
         preview_lines(
             &app.glyphs[app.selected].glyph,
@@ -1945,29 +2438,72 @@ fn draw_ui(frame: &mut Frame, app: &App) {
     };
 
     let preview_widget = Paragraph::new(preview)
-        .block(Block::default().borders(Borders::ALL).title("Preview"))
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .title("ASCII Preview"),
+        )
         .wrap(Wrap { trim: false });
     frame.render_widget(preview_widget, body[1]);
+}
 
-    let footer = Paragraph::new(vec![
-        Line::from(vec![
-            Span::styled("q/esc", Style::default().fg(Color::Yellow)),
-            Span::raw(" quit  |  "),
-            Span::styled("j/k or ↑/↓", Style::default().fg(Color::Yellow)),
-            Span::raw(" select glyph  |  "),
-            Span::styled("+/-", Style::default().fg(Color::Yellow)),
-            Span::raw(" threshold ±1  |  "),
-            Span::styled("PgUp/PgDn", Style::default().fg(Color::Yellow)),
-            Span::raw(" threshold ±10"),
-        ]),
-        Line::from(vec![
-            Span::styled("r", Style::default().fg(Color::Yellow)),
-            Span::raw(" remove override  |  "),
-            Span::raw("* list marker = saved override"),
-        ]),
-    ])
-    .block(Block::default().borders(Borders::ALL).title("Keys"));
-    frame.render_widget(footer, root[2]);
+fn draw_font_view(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) {
+    let sample = app.sample_string();
+    let build_summary = app.last_build.as_ref();
+    let lines = vec![
+        Line::from(format!("Font family: {}", app.config.font_name)),
+        Line::from(format!("Glyph count: {}", app.glyphs.len())),
+        Line::from(""),
+        Line::from("Sample string:"),
+        Line::from(sample),
+        Line::from(""),
+        Line::from(match build_summary {
+            Some(summary) => format!("Built TTF: {}", summary.ttf_path.display()),
+            None => format!(
+                "Built TTF: not built yet (target: {})",
+                expected_ttf_path(&app.config).display()
+            ),
+        }),
+        Line::from(match build_summary {
+            Some(summary) => format!("Built BDF: {}", summary.bdf_path.display()),
+            None => format!(
+                "Built BDF: not built yet (target: {})",
+                expected_bdf_path(&app.config).display()
+            ),
+        }),
+        Line::from(match build_summary {
+            Some(summary) => format!("Glyph map: {}", summary.mapping_path.display()),
+            None => format!(
+                "Glyph map: not built yet (target: {})",
+                app.config.out_dir.join("glyph-map.json").display()
+            ),
+        }),
+        Line::from(match build_summary {
+            Some(summary) => format!("Sample file: {}", summary.sample_path.display()),
+            None => format!(
+                "Sample file: not built yet (target: {})",
+                app.config.out_dir.join("glyph-sample.txt").display()
+            ),
+        }),
+        Line::from(match &app.installed_font_path {
+            Some(path) => format!("Installed font: {}", path.display()),
+            None => format!(
+                "Installed font: not installed in this session (target dir: {})",
+                install_dir_for_project(&app.manifest_path)
+                    .map(|path| path.display().to_string())
+                    .unwrap_or_else(|_| "~/.local/share/fonts/petiglyph/<project>".to_string())
+            ),
+        }),
+        Line::from(""),
+        Line::from(
+            "Use b to rebuild after changing icons or thresholds. Use i to copy the built TTF into your user font directory and refresh fontconfig.",
+        ),
+    ];
+
+    let widget = Paragraph::new(lines)
+        .block(Block::default().borders(Borders::ALL).title("Font Preview"))
+        .wrap(Wrap { trim: false });
+    frame.render_widget(widget, area);
 }
 
 fn preview_lines(

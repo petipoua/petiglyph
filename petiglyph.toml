@@ -1,5 +1,5 @@
 input_dir = "icons"
-out_dir = "dist"
+out_dir = "build"
 font_name = "Petiglyph"
 glyph_size = 64
 threshold = 64

@@ -2,9 +2,12 @@
 name = "petiglyph"
 version = "0.0.1"
 edition = "2024"
-description = "Convert folders of images (PNG/JPG/SVG/etc.) into monochrome font glyphs."
+description = "TUI-first Rust CLI for turning image folders into monochrome glyph fonts."
 license = "MIT"
 repository = "https://github.com/petipoua/petiglyph"
+readme = "README.md"
+keywords = ["font", "glyph", "icons", "tui", "cli"]
+categories = ["command-line-utilities", "graphics"]
 
 [dependencies]
 anyhow = "1.0"
