@@ -1,0 +1,42 @@
+[
+  {
+    "glyph_name": "claude",
+    "source_file": "claude.png",
+    "codepoint": "U+100000"
+  },
+  {
+    "glyph_name": "codex",
+    "source_file": "codex.png",
+    "codepoint": "U+100001"
+  },
+  {
+    "glyph_name": "copilot",
+    "source_file": "copilot.svg",
+    "codepoint": "U+100002"
+  },
+  {
+    "glyph_name": "cursor",
+    "source_file": "cursor.svg",
+    "codepoint": "U+100003"
+  },
+  {
+    "glyph_name": "factory",
+    "source_file": "factory.svg",
+    "codepoint": "U+100004"
+  },
+  {
+    "glyph_name": "gemini",
+    "source_file": "gemini.png",
+    "codepoint": "U+100005"
+  },
+  {
+    "glyph_name": "ollama",
+    "source_file": "ollama.svg",
+    "codepoint": "U+100006"
+  },
+  {
+    "glyph_name": "opencode",
+    "source_file": "opencode.png",
+    "codepoint": "U+100007"
+  }
+]
