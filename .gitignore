@@ -6,6 +6,9 @@
 /petiglyph-*.pkg.tar.zst
 /petiglyph-debug-*.pkg.tar.zst
 
+# Isolated makepkg workspace used by scripts/aur.sh
+/.makepkg/
+
 # Generated makepkg extraction/output under src/
 /src/petiglyph/
 /src/petiglyph-*.tar.gz
