@@ -63,6 +63,8 @@ petiglyph uninstall-font --json
 
 All non-`create` commands accept `--manifest` to target another project.
 
+When `--manifest` is omitted, `petiglyph` first checks `./petiglyph.toml`. If not found, it auto-selects a single `petiglyph.toml` found one directory below the current working directory.
+
 ## Automation API Contract
 
 `--json` is supported on:
@@ -208,13 +210,14 @@ Use this script from repo root to simulate the AUR flow locally on Arch:
 
 ```bash
 ./scripts/aur.sh
-./scripts/aur.sh all-install
+./scripts/aur.sh uninstall
+./scripts/aur.sh build
+./scripts/aur.sh install
 ./scripts/aur.sh pkgbuild
 ./scripts/aur.sh tarball
-./scripts/aur.sh build -- --cleanbuild
-./scripts/aur.sh install
-./scripts/aur.sh clean-install
 ```
+
+`scripts/aur.sh` builds in an isolated `.makepkg/` workspace so it does not touch your repo `src/` tree.
 
 ## Manifest
 

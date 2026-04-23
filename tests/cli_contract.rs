@@ -123,10 +123,33 @@ fn cli_no_subcommand_errors_without_manifest() {
     );
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
-        stderr.contains("no petiglyph project found"),
+        stderr.contains("no petiglyph project detected"),
         "stderr should mention missing project manifest: {stderr}"
     );
 
+    fs::remove_dir_all(workspace).expect("temp dir is removed");
+}
+
+#[test]
+fn cli_nested_manifest_autodetection_works_for_single_project() {
+    let workspace = make_temp_dir("nested-autodetect");
+    let (project_dir, manifest_path) = create_project_with_icon(&workspace, "demo-font");
+
+    let output = run_petiglyph(&workspace, &["uninstall-font", "--json"], None, None);
+    assert!(
+        output.status.success(),
+        "uninstall-font --json should succeed when one nested manifest exists"
+    );
+
+    let payload = parse_json_stdout(&output);
+    assert_api_envelope(&payload, "uninstall-font", true);
+    assert_eq!(
+        payload["data"]["manifest"].as_str(),
+        Some(manifest_path.to_string_lossy().as_ref()),
+        "autodetected manifest should point to nested project"
+    );
+
+    fs::remove_dir_all(project_dir).expect("project dir is removed");
     fs::remove_dir_all(workspace).expect("temp dir is removed");
 }
 
