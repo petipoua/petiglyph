@@ -15,7 +15,7 @@ Steps:
   build         Regenerate PKGBUILD + source tarball, then rebuild package artifacts
   install       Install latest built package with pacman
   pkgbuild      Generate PKGBUILD from Cargo.toml metadata
-  tarball       Create source tarball using git archive
+  tarball       Create source tarball from current working tree snapshot
 
 Defaults:
   step defaults to "reinstall"
@@ -79,8 +79,29 @@ create_tarball() {
     exit 1
   fi
   out="$repo_root/petiglyph-$pkgver.tar.gz"
-  git -C "$repo_root" archive --format=tar.gz --prefix=petiglyph/ -o "$out" HEAD
-  echo "Created $out"
+
+  # Build from the current working tree (tracked + untracked, excluding ignored),
+  # so local uncommitted changes are included in AUR-style test builds.
+  local -a source_files=()
+  while IFS= read -r -d '' rel_path; do
+    if [[ -e "$repo_root/$rel_path" || -L "$repo_root/$rel_path" ]]; then
+      source_files+=("$rel_path")
+    fi
+  done < <(git -C "$repo_root" ls-files --cached --others --exclude-standard -z)
+
+  if [[ "${#source_files[@]}" -eq 0 ]]; then
+    echo "No source files found for tarball packaging" >&2
+    exit 1
+  fi
+
+  tar \
+    --create \
+    --gzip \
+    --file "$out" \
+    --directory "$repo_root" \
+    --transform 's|^|petiglyph/|' \
+    "${source_files[@]}"
+  echo "Created $out from working tree snapshot (${#source_files[@]} files)"
 }
 
 build_package() {
@@ -116,6 +137,18 @@ install_package() {
   if [[ -z "${pkgver}" ]]; then
     echo "Could not read package version from Cargo.toml" >&2
     exit 1
+  fi
+
+  if pacman -Q "$pkgname" >/dev/null 2>&1; then
+    local installed_version choice
+    installed_version="$(pacman -Q "$pkgname" | awk '{print $2}')"
+    read -r -p "Package $pkgname is already installed (${installed_version}). Switch to 'reinstall' now? [Y/n] " choice
+    case "${choice:-Y}" in
+      y|Y|yes|YES)
+        uninstall_and_reinstall_package
+        return
+        ;;
+    esac
   fi
 
   pkg_file="$(ls -1t "$repo_root"/petiglyph-"$pkgver"-*.pkg.tar.zst 2>/dev/null | grep -v 'petiglyph-debug' | head -n1 || true)"

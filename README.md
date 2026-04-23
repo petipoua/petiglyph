@@ -220,6 +220,7 @@ Use this script from repo root to simulate the AUR flow locally on Arch:
 
 `scripts/aur.sh` builds in an isolated `.makepkg/` workspace so it does not touch your repo `src/` tree.
 By default (`./scripts/aur.sh`), it performs a full reinstall cycle (remove, rebuild, install). Use `./scripts/aur.sh uninstall` for uninstall-only.
+Source tarballs are created from your current working tree snapshot (tracked + untracked, excluding ignored files), so uncommitted local changes are included in package test builds.
 
 ## Manifest
 
@@ -240,12 +241,13 @@ codepoint_start = "U+100000"
 
 ## TUI Keys
 
+- `Tab`: cycle Home -> Glyphs -> Font
 - `1` / `2` / `3`: switch between Home, Glyphs, and Font views
 - `R`: rescan `icons/`
-- `j` / `k` or arrow keys: select glyph
-- `+` / `-`: adjust threshold by 1 for selected glyph
-- `PgUp` / `PgDn`: adjust threshold by 10 for selected glyph
-- `r`: clear selected glyph override
+- `j` / `k` or `↑` / `↓`: select glyph (Glyphs view)
+- `←` / `→` or `+` / `-`: adjust threshold by 1 for selected glyph (Glyphs view)
+- `PgUp` / `PgDn`: adjust threshold by 10 for selected glyph (Glyphs view)
+- `r`: clear selected glyph override (Glyphs view)
 - `b`: build project outputs
 - `i`: build and install font
 - `q` / `Esc`: quit

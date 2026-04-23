@@ -19,8 +19,8 @@ use std::time::Duration;
 use walkdir::WalkDir;
 
 use crate::build::{
-    BuildSummary, PreprocessedGlyph, build_outputs, expected_bdf_path, expected_ttf_path,
-    glyph_sample_string, is_supported_source, preprocess_sources,
+    BuildSummary, MappingEntry, PreprocessedGlyph, build_outputs, expected_bdf_path,
+    expected_ttf_path, glyph_sample_string, is_supported_source, preprocess_sources,
 };
 use crate::install::{install_built_font, install_dir_for_manifest};
 use crate::project::{RuntimeConfig, load_runtime_config, read_manifest, write_manifest};
@@ -122,6 +122,7 @@ impl App {
             .parent()
             .unwrap_or_else(|| Path::new("."))
             .to_path_buf();
+        let (last_build, last_sample) = cached_build_state(&config);
         Self {
             manifest_path,
             project_dir,
@@ -131,14 +132,17 @@ impl App {
             quit: false,
             status: None,
             view: AppView::Home,
-            last_build: None,
-            last_sample: None,
+            last_build,
+            last_sample,
             installed_font_path: None,
         }
     }
 
     fn reload_config(&mut self) -> Result<()> {
         self.config = load_runtime_config(&self.manifest_path, None, None, None, None, None)?;
+        let (last_build, last_sample) = cached_build_state(&self.config);
+        self.last_build = last_build;
+        self.last_sample = last_sample;
         Ok(())
     }
 
@@ -261,6 +265,40 @@ impl BuildSummary {
     }
 }
 
+fn cached_build_state(config: &RuntimeConfig) -> (Option<BuildSummary>, Option<String>) {
+    let ttf_path = expected_ttf_path(config);
+    let bdf_path = expected_bdf_path(config);
+    if !ttf_path.is_file() || !bdf_path.is_file() {
+        return (None, None);
+    }
+
+    let mapping_path = config.out_dir.join("glyph-map.json");
+    let sample_path = config.out_dir.join("glyph-sample.txt");
+    let previews_dir = config.out_dir.join("previews");
+
+    let glyph_count = fs::read_to_string(&mapping_path)
+        .ok()
+        .and_then(|raw| serde_json::from_str::<Vec<MappingEntry>>(&raw).ok())
+        .map_or(0, |entries| entries.len());
+
+    let sample = fs::read_to_string(&sample_path)
+        .ok()
+        .map(|raw| raw.trim_end().to_string())
+        .filter(|value| !value.is_empty());
+
+    (
+        Some(BuildSummary {
+            glyph_count,
+            bdf_path,
+            ttf_path,
+            mapping_path,
+            sample_path,
+            previews_dir,
+        }),
+        sample,
+    )
+}
+
 pub(crate) fn persist_threshold_override(
     manifest_path: &Path,
     source_key: &str,
@@ -377,44 +415,51 @@ pub(crate) fn handle_key(app: &mut App, code: KeyCode) -> Result<()> {
             app.install_font()?;
         }
         KeyCode::Down | KeyCode::Char('j') => {
-            app.selected = (app.selected + 1).min(app.glyphs.len().saturating_sub(1));
-            app.view = AppView::Glyphs;
+            if app.view == AppView::Glyphs {
+                app.selected = (app.selected + 1).min(app.glyphs.len().saturating_sub(1));
+            }
         }
         KeyCode::Up | KeyCode::Char('k') => {
-            app.selected = app.selected.saturating_sub(1);
-            app.view = AppView::Glyphs;
+            if app.view == AppView::Glyphs {
+                app.selected = app.selected.saturating_sub(1);
+            }
         }
         KeyCode::Right | KeyCode::Char('l') | KeyCode::Char('+') | KeyCode::Char('=') => {
-            if let Some(glyph) = selected_glyph(app) {
+            if app.view == AppView::Glyphs
+                && let Some(glyph) = selected_glyph(app)
+            {
                 let next = glyph.working_threshold.saturating_add(1);
                 set_selected_threshold(app, next);
-                app.view = AppView::Glyphs;
             }
         }
         KeyCode::Left | KeyCode::Char('h') | KeyCode::Char('-') => {
-            if let Some(glyph) = selected_glyph(app) {
+            if app.view == AppView::Glyphs
+                && let Some(glyph) = selected_glyph(app)
+            {
                 let next = glyph.working_threshold.saturating_sub(1);
                 set_selected_threshold(app, next);
-                app.view = AppView::Glyphs;
             }
         }
         KeyCode::PageUp => {
-            if let Some(glyph) = selected_glyph(app) {
+            if app.view == AppView::Glyphs
+                && let Some(glyph) = selected_glyph(app)
+            {
                 let next = glyph.working_threshold.saturating_add(10);
                 set_selected_threshold(app, next);
-                app.view = AppView::Glyphs;
             }
         }
         KeyCode::PageDown => {
-            if let Some(glyph) = selected_glyph(app) {
+            if app.view == AppView::Glyphs
+                && let Some(glyph) = selected_glyph(app)
+            {
                 let next = glyph.working_threshold.saturating_sub(10);
                 set_selected_threshold(app, next);
-                app.view = AppView::Glyphs;
             }
         }
         KeyCode::Char('r') => {
-            remove_selected_threshold_override(app);
-            app.view = AppView::Glyphs;
+            if app.view == AppView::Glyphs {
+                remove_selected_threshold_override(app);
+            }
         }
         _ => {}
     }
@@ -479,8 +524,10 @@ fn draw_ui(frame: &mut Frame, app: &App) {
     let mut footer_spans = vec![
         Span::styled(" q/esc ", Style::default().fg(accent)),
         Span::raw("quit  "),
+        Span::styled(" tab ", Style::default().fg(accent)),
+        Span::raw("next panel  "),
         Span::styled(" 1-3 ", Style::default().fg(accent)),
-        Span::raw("views  "),
+        Span::raw("jump panel  "),
         Span::styled(" R ", Style::default().fg(accent)),
         Span::raw("rescan  "),
         Span::styled(" b ", Style::default().fg(accent)),
@@ -492,9 +539,11 @@ fn draw_ui(frame: &mut Frame, app: &App) {
     if app.view == AppView::Glyphs {
         footer_spans.extend(vec![
             Span::styled(" \u{2191}/\u{2193} ", Style::default().fg(accent)),
-            Span::raw("nav  "),
-            Span::styled(" +/- ", Style::default().fg(accent)),
-            Span::raw("thresh  "),
+            Span::raw("select  "),
+            Span::styled(" \u{2190}/\u{2192} ", Style::default().fg(accent)),
+            Span::raw("thresh +/-1  "),
+            Span::styled(" PgUp/PgDn ", Style::default().fg(accent)),
+            Span::raw("thresh +/-10  "),
             Span::styled(" r ", Style::default().fg(accent)),
             Span::raw("reset  "),
         ]);

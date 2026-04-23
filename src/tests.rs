@@ -225,6 +225,50 @@ fn persist_threshold_override_roundtrip() {
 }
 
 #[test]
+fn app_new_hydrates_previous_build_outputs_from_disk() {
+    let project_dir = make_temp_dir("hydrate-build-state");
+    let manifest_path = project_dir.join("petiglyph.toml");
+    let build_dir = project_dir.join("build");
+    fs::create_dir_all(&build_dir).expect("build dir is created");
+
+    fs::write(build_dir.join("petiglyph.ttf"), b"not-a-real-ttf").expect("ttf is written");
+    fs::write(build_dir.join("petiglyph.bdf"), b"not-a-real-bdf").expect("bdf is written");
+    fs::write(
+        build_dir.join("glyph-map.json"),
+        serde_json::to_string(&vec![MappingEntry {
+            glyph_name: "icon".to_string(),
+            source_file: "icon.png".to_string(),
+            codepoint: "U+100000".to_string(),
+        }])
+        .expect("mapping serializes"),
+    )
+    .expect("mapping is written");
+    fs::write(build_dir.join("glyph-sample.txt"), "sample\n").expect("sample is written");
+
+    let config = RuntimeConfig {
+        input_dir: project_dir.join("icons"),
+        out_dir: build_dir.clone(),
+        font_name: "Petiglyph".to_string(),
+        glyph_size: 8,
+        base_threshold: 64,
+        threshold_overrides: BTreeMap::new(),
+        codepoint_start: 0x10_0000,
+    };
+
+    let app = App::new(manifest_path, config);
+    let summary = app
+        .last_build
+        .as_ref()
+        .expect("existing build should hydrate");
+    assert_eq!(summary.glyph_count, 1);
+    assert_eq!(summary.ttf_path, build_dir.join("petiglyph.ttf"));
+    assert_eq!(summary.bdf_path, build_dir.join("petiglyph.bdf"));
+    assert_eq!(app.last_sample.as_deref(), Some("sample"));
+
+    fs::remove_dir_all(project_dir).expect("temp project dir is removed");
+}
+
+#[test]
 fn handle_key_updates_and_clears_selected_threshold_override() {
     let project_dir = make_temp_dir("handle-key-threshold");
     let manifest_path = project_dir.join("petiglyph.toml");
@@ -253,6 +297,7 @@ fn handle_key_updates_and_clears_selected_threshold_override() {
         working_threshold: 64,
     });
     app.selected = 0;
+    app.view = AppView::Glyphs;
 
     handle_key(&mut app, KeyCode::Char('+')).expect("key handling should succeed");
     assert_eq!(app.glyphs[0].working_threshold, 65);
@@ -267,6 +312,59 @@ fn handle_key_updates_and_clears_selected_threshold_override() {
     assert_eq!(app.view, AppView::Glyphs);
     let manifest = read_manifest(&manifest_path).expect("manifest reads");
     assert!(!manifest.threshold_overrides.contains_key("icon.png"));
+
+    fs::remove_dir_all(project_dir).expect("temp project dir is removed");
+}
+
+#[test]
+fn tab_cycles_panels_and_glyph_controls_stay_in_glyph_view() {
+    let project_dir = make_temp_dir("handle-key-tab-cycle");
+    let manifest_path = project_dir.join("petiglyph.toml");
+    write_manifest(&manifest_path, &Manifest::default()).expect("manifest is written");
+
+    let config = RuntimeConfig {
+        input_dir: project_dir.join("icons"),
+        out_dir: project_dir.join("build"),
+        font_name: "Petiglyph".to_string(),
+        glyph_size: 8,
+        base_threshold: 64,
+        threshold_overrides: BTreeMap::new(),
+        codepoint_start: 0x10_0000,
+    };
+
+    let mut app = App::new(manifest_path.clone(), config);
+    app.glyphs.push(InteractiveGlyph {
+        glyph: PreprocessedGlyph {
+            source_path: project_dir.join("icons/icon.png"),
+            source_key: "icon.png".to_string(),
+            glyph_name: "icon".to_string(),
+            size: 8,
+            coverage: vec![0; 64],
+        },
+        saved_threshold: None,
+        working_threshold: 64,
+    });
+
+    // Glyph-specific keys do nothing outside Glyphs view.
+    assert_eq!(app.view, AppView::Home);
+    handle_key(&mut app, KeyCode::Right).expect("key handling should succeed");
+    assert_eq!(app.view, AppView::Home);
+    assert_eq!(app.glyphs[0].working_threshold, 64);
+
+    // Tab is now the primary panel navigation key.
+    handle_key(&mut app, KeyCode::Tab).expect("key handling should succeed");
+    assert_eq!(app.view, AppView::Glyphs);
+    handle_key(&mut app, KeyCode::Tab).expect("key handling should succeed");
+    assert_eq!(app.view, AppView::Font);
+    handle_key(&mut app, KeyCode::Tab).expect("key handling should succeed");
+    assert_eq!(app.view, AppView::Home);
+
+    // Threshold arrows still provide granular (+/-1) changes in Glyphs.
+    app.view = AppView::Glyphs;
+    handle_key(&mut app, KeyCode::Right).expect("key handling should succeed");
+    assert_eq!(app.glyphs[0].working_threshold, 65);
+    handle_key(&mut app, KeyCode::Left).expect("key handling should succeed");
+    assert_eq!(app.glyphs[0].working_threshold, 64);
 
     fs::remove_dir_all(project_dir).expect("temp project dir is removed");
 }
