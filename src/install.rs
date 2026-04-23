@@ -1,13 +1,15 @@
 use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeSet;
 use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command as ProcessCommand;
 
-use crate::project::slugify;
+use crate::project::{read_manifest, slugify};
 
-const INSTALL_METADATA_FILE: &str = ".petiglyph-install.json";
+const INSTALL_METADATA_PREFIX: &str = ".petiglyph-install-";
+const INSTALL_METADATA_SUFFIX: &str = ".json";
 const CLI_VERSION: &str = env!("CARGO_PKG_VERSION");
 
 #[derive(Debug, Clone, Copy, Serialize)]
@@ -23,6 +25,12 @@ pub(crate) enum FontPlatform {
 pub(crate) enum UninstallOutcome {
     Removed,
     AlreadyAbsent,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum FontInstallNameMode {
+    Plain,
+    ProjectPrefixed,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -86,7 +94,7 @@ fn user_font_root() -> Result<PathBuf> {
     Ok(root)
 }
 
-fn install_dir_for_project(manifest_path: &Path, font_root: &Path) -> Result<PathBuf> {
+fn project_slug_for_manifest(manifest_path: &Path) -> Result<String> {
     let project_dir = manifest_path
         .parent()
         .unwrap_or_else(|| Path::new("."))
@@ -97,17 +105,49 @@ fn install_dir_for_project(manifest_path: &Path, font_root: &Path) -> Result<Pat
         .and_then(|name| name.to_str())
         .filter(|name| !name.trim().is_empty())
         .unwrap_or("project");
-    Ok(font_root.join("petiglyph").join(slugify(project_name)))
+    Ok(slugify(project_name))
 }
 
-pub(crate) fn install_dir_for_manifest(manifest_path: &Path) -> Result<PathBuf> {
+fn install_dir_for_project(font_root: &Path) -> PathBuf {
+    font_root.join("petiglyph")
+}
+
+pub(crate) fn install_dir_for_manifest(_manifest_path: &Path) -> Result<PathBuf> {
     let font_root = user_font_root()?;
-    install_dir_for_project(manifest_path, &font_root)
+    Ok(install_dir_for_project(&font_root))
+}
+
+pub(crate) fn effective_font_name(
+    manifest_path: &Path,
+    font_name: &str,
+    mode: FontInstallNameMode,
+) -> Result<String> {
+    match mode {
+        FontInstallNameMode::Plain => Ok(font_name.to_string()),
+        FontInstallNameMode::ProjectPrefixed => {
+            let project_slug = project_slug_for_manifest(manifest_path)?;
+            let trimmed = font_name.trim();
+            if trimmed.is_empty() {
+                Ok(project_slug)
+            } else {
+                Ok(format!("{project_slug}-{trimmed}"))
+            }
+        }
+    }
 }
 
 pub(crate) fn expected_install_ttf_path(manifest_path: &Path, font_name: &str) -> Result<PathBuf> {
+    expected_install_ttf_path_for_mode(manifest_path, font_name, FontInstallNameMode::Plain)
+}
+
+pub(crate) fn expected_install_ttf_path_for_mode(
+    manifest_path: &Path,
+    font_name: &str,
+    mode: FontInstallNameMode,
+) -> Result<PathBuf> {
     let install_dir = install_dir_for_manifest(manifest_path)?;
-    Ok(install_dir.join(font_file_name(font_name)))
+    let install_font_name = effective_font_name(manifest_path, font_name, mode)?;
+    Ok(install_dir.join(font_file_name(&install_font_name)))
 }
 
 fn run_refresh_command(mut command: ProcessCommand, description: &str) -> Result<()> {
@@ -160,6 +200,20 @@ fn font_file_name(font_name: &str) -> String {
     }
 }
 
+fn metadata_file_name(font_name: &str) -> String {
+    let key = slugify(font_name);
+    let key = if key.is_empty() {
+        "petiglyph".to_string()
+    } else {
+        key
+    };
+    format!("{INSTALL_METADATA_PREFIX}{key}{INSTALL_METADATA_SUFFIX}")
+}
+
+fn metadata_path_for_font(install_dir: &Path, font_name: &str) -> PathBuf {
+    install_dir.join(metadata_file_name(font_name))
+}
+
 pub(crate) fn install_built_font(
     manifest_path: &Path,
     font_name: &str,
@@ -172,26 +226,23 @@ pub(crate) fn install_built_font(
 
     let platform = current_platform()?;
     let font_root = user_font_root()?;
-    let install_dir = install_dir_for_project(manifest_path, &font_root)?;
+    let install_dir = install_dir_for_project(&font_root);
     fs::create_dir_all(&install_dir)
         .with_context(|| format!("failed to create {}", install_dir.display()))?;
 
-    let mut replaced_previous_ttf_count = 0usize;
-    for entry in fs::read_dir(&install_dir)
-        .with_context(|| format!("failed to read {}", install_dir.display()))?
-    {
-        let entry =
-            entry.with_context(|| format!("failed to inspect {}", install_dir.display()))?;
-        let path = entry.path();
-        if path.extension().and_then(|ext| ext.to_str()) == Some("ttf") {
-            fs::remove_file(&path)
-                .with_context(|| format!("failed to remove {}", path.display()))?;
-            replaced_previous_ttf_count += 1;
-        }
-    }
-
     let file_name = font_file_name(font_name);
     let install_path = install_dir.join(file_name);
+    let replaced_previous_ttf_count = if install_path.exists() {
+        if !install_path.is_file() {
+            bail!(
+                "blocked install for {}: expected file path but found non-file",
+                install_path.display()
+            );
+        }
+        1
+    } else {
+        0
+    };
     fs::copy(built_ttf, &install_path).with_context(|| {
         format!(
             "failed to copy built font {} to {}",
@@ -209,7 +260,7 @@ pub(crate) fn install_built_font(
         installed_ttf: install_path.display().to_string(),
         version: CLI_VERSION.to_string(),
     };
-    let metadata_path = install_dir.join(INSTALL_METADATA_FILE);
+    let metadata_path = metadata_path_for_font(&install_dir, font_name);
     let metadata_json =
         serde_json::to_string_pretty(&metadata).context("failed to serialize install metadata")?;
     fs::write(&metadata_path, metadata_json)
@@ -227,10 +278,8 @@ pub(crate) fn install_built_font(
 pub(crate) fn uninstall_project_font(manifest_path: &Path) -> Result<FontUninstallResult> {
     let platform = current_platform()?;
     let font_root = user_font_root()?;
-    let install_dir = install_dir_for_project(manifest_path, &font_root)?;
-    let manifest_canonical = manifest_path
-        .canonicalize()
-        .with_context(|| format!("failed to resolve {}", manifest_path.display()))?;
+    let install_dir = install_dir_for_project(&font_root);
+    let manifest = read_manifest(manifest_path)?;
 
     if !install_dir.exists() {
         return Ok(FontUninstallResult {
@@ -241,90 +290,68 @@ pub(crate) fn uninstall_project_font(manifest_path: &Path) -> Result<FontUninsta
         });
     }
 
-    let mut ttf_files = Vec::new();
-    let mut metadata_path: Option<PathBuf> = None;
-    for entry in fs::read_dir(&install_dir)
+    let plain = effective_font_name(
+        manifest_path,
+        &manifest.font_name,
+        FontInstallNameMode::Plain,
+    )?;
+    let prefixed = effective_font_name(
+        manifest_path,
+        &manifest.font_name,
+        FontInstallNameMode::ProjectPrefixed,
+    )?;
+    let mut names = BTreeSet::new();
+    names.insert(plain);
+    names.insert(prefixed);
+
+    let mut removed_ttf_count = 0usize;
+    for name in &names {
+        let ttf_path = install_dir.join(font_file_name(name));
+        if ttf_path.is_file() {
+            fs::remove_file(&ttf_path)
+                .with_context(|| format!("failed to remove {}", ttf_path.display()))?;
+            removed_ttf_count += 1;
+        } else if ttf_path.exists() {
+            bail!(
+                "blocked uninstall for {}: expected file but found non-file at {}",
+                install_dir.display(),
+                ttf_path.display()
+            );
+        }
+
+        let metadata_path = metadata_path_for_font(&install_dir, name);
+        if metadata_path.is_file() {
+            fs::remove_file(&metadata_path)
+                .with_context(|| format!("failed to remove {}", metadata_path.display()))?;
+        } else if metadata_path.exists() {
+            bail!(
+                "blocked uninstall for {}: expected file but found non-file at {}",
+                install_dir.display(),
+                metadata_path.display()
+            );
+        }
+    }
+
+    let outcome = if removed_ttf_count == 0 {
+        UninstallOutcome::AlreadyAbsent
+    } else {
+        refresh_font_cache(&font_root, platform)?;
+        UninstallOutcome::Removed
+    };
+
+    if fs::read_dir(&install_dir)
         .with_context(|| format!("failed to read {}", install_dir.display()))?
+        .next()
+        .is_none()
     {
-        let entry =
-            entry.with_context(|| format!("failed to inspect {}", install_dir.display()))?;
-        let path = entry.path();
-
-        if path.is_dir() {
-            bail!(
-                "blocked uninstall for {}: nested directory found: {}",
-                install_dir.display(),
-                path.display()
-            );
-        }
-
-        let file_name = path
-            .file_name()
-            .and_then(|name| name.to_str())
-            .unwrap_or_default();
-        if file_name == INSTALL_METADATA_FILE {
-            metadata_path = Some(path);
-            continue;
-        }
-
-        if path.extension().and_then(|ext| ext.to_str()) == Some("ttf") {
-            ttf_files.push(path);
-            continue;
-        }
-
-        bail!(
-            "blocked uninstall for {}: refusing to remove unexpected file {}",
-            install_dir.display(),
-            path.display()
-        );
-    }
-
-    if ttf_files.is_empty() && metadata_path.is_none() {
-        if fs::read_dir(&install_dir)?.next().is_none() {
-            fs::remove_dir(&install_dir)
-                .with_context(|| format!("failed to remove {}", install_dir.display()))?;
-        }
-        return Ok(FontUninstallResult {
-            platform,
-            install_dir,
-            outcome: UninstallOutcome::AlreadyAbsent,
-            removed_ttf_count: 0,
-        });
-    }
-
-    if let Some(metadata_path) = &metadata_path {
-        let metadata_raw = fs::read_to_string(metadata_path)
-            .with_context(|| format!("failed to read {}", metadata_path.display()))?;
-        let metadata: InstalledFontMetadata = serde_json::from_str(&metadata_raw)
-            .with_context(|| format!("failed to parse {}", metadata_path.display()))?;
-        if metadata.manifest_path != manifest_canonical.display().to_string() {
-            bail!(
-                "blocked uninstall for {}: install metadata belongs to {}",
-                install_dir.display(),
-                metadata.manifest_path
-            );
-        }
-    }
-
-    for path in &ttf_files {
-        fs::remove_file(path).with_context(|| format!("failed to remove {}", path.display()))?;
-    }
-
-    if let Some(metadata_path) = metadata_path {
-        fs::remove_file(&metadata_path)
-            .with_context(|| format!("failed to remove {}", metadata_path.display()))?;
-    }
-
-    if fs::read_dir(&install_dir)?.next().is_none() {
         fs::remove_dir(&install_dir)
             .with_context(|| format!("failed to remove {}", install_dir.display()))?;
     }
 
-    refresh_font_cache(&font_root, platform)?;
     Ok(FontUninstallResult {
         platform,
         install_dir,
-        outcome: UninstallOutcome::Removed,
-        removed_ttf_count: ttf_files.len(),
+        outcome,
+        removed_ttf_count,
     })
 }

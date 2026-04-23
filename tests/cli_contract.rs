@@ -263,6 +263,13 @@ fn cli_install_and_uninstall_json_lifecycle_is_idempotent() {
         install_1_payload["data"]["platform"].as_str(),
         Some("linux")
     );
+    assert!(
+        install_1_payload["data"]["installed_ttf"]
+            .as_str()
+            .expect("installed ttf")
+            .ends_with("/.local/share/fonts/petiglyph/demo_font_demo_font.ttf"),
+        "CLI install should use project-prefixed effective font name"
+    );
     assert_eq!(
         install_1_payload["data"]["replaced_previous_ttf_count"].as_u64(),
         Some(0)
@@ -325,11 +332,16 @@ fn cli_install_and_uninstall_json_lifecycle_is_idempotent() {
         .join(".local")
         .join("share")
         .join("fonts")
-        .join("petiglyph")
-        .join("demo_font");
+        .join("petiglyph");
+    let plain_path = installed_dir.join("demo_font.ttf");
+    let prefixed_path = installed_dir.join("demo_font_demo_font.ttf");
     assert!(
-        !installed_dir.exists(),
-        "project font install directory should be removed after uninstall"
+        !plain_path.exists(),
+        "plain install candidate should be absent after uninstall"
+    );
+    assert!(
+        !prefixed_path.exists(),
+        "project-prefixed install candidate should be absent after uninstall"
     );
 
     fs::remove_dir_all(workspace).expect("temp dir is removed");

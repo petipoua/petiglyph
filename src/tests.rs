@@ -9,6 +9,7 @@ use crate::build::{
     GlyphBitmap, MappingEntry, PreprocessedGlyph, bitmap_to_bdf_rows, build_outputs,
     collect_source_files, coverage_map, glyph_sample_string, is_supported_source,
 };
+use crate::install::{FontInstallNameMode, effective_font_name};
 use crate::project::{Manifest, RuntimeConfig, parse_codepoint, read_manifest, write_manifest};
 use crate::tui::{App, AppView, InteractiveGlyph, handle_key, persist_threshold_override};
 
@@ -49,6 +50,30 @@ fn parse_codepoint_rejects_empty_and_out_of_range_values() {
     assert!(parse_codepoint("").is_err());
     assert!(parse_codepoint(" ").is_err());
     assert!(parse_codepoint("110000").is_err());
+}
+
+#[test]
+fn effective_font_name_uses_project_prefix_in_project_mode() {
+    let project_dir = make_temp_dir("effective-font-name");
+    let manifest_path = project_dir.join("petiglyph.toml");
+
+    let plain = effective_font_name(&manifest_path, "My Font", FontInstallNameMode::Plain)
+        .expect("plain naming resolves");
+    let prefixed = effective_font_name(
+        &manifest_path,
+        "My Font",
+        FontInstallNameMode::ProjectPrefixed,
+    )
+    .expect("prefixed naming resolves");
+
+    assert_eq!(plain, "My Font");
+    assert!(
+        prefixed.ends_with("-My Font"),
+        "project prefix should be prepended to user font name"
+    );
+    assert_ne!(prefixed, plain);
+
+    fs::remove_dir_all(project_dir).expect("temp project dir is removed");
 }
 
 #[test]

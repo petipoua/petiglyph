@@ -941,9 +941,7 @@ fn draw_font_view(
         None => {
             let target = expected_install_ttf_path(&app.manifest_path, &app.config.font_name)
                 .map(|p| p.display().to_string())
-                .unwrap_or_else(|_| {
-                    "~/.local/share/fonts/petiglyph/<project>/<font>.ttf".to_string()
-                });
+                .unwrap_or_else(|_| "~/.local/share/fonts/petiglyph/<font>.ttf".to_string());
             Span::styled(format!("Not installed (target: {})", target), missing_style)
         }
     };

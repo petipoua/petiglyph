@@ -4,7 +4,10 @@ use serde::Serialize;
 use std::path::{Path, PathBuf};
 
 use crate::build::{BuildSummary, build_outputs};
-use crate::install::{FontPlatform, UninstallOutcome, install_built_font, uninstall_project_font};
+use crate::install::{
+    FontInstallNameMode, FontPlatform, UninstallOutcome, effective_font_name, install_built_font,
+    uninstall_project_font,
+};
 use crate::project::{
     RuntimeConfig, create_project, format_codepoint, load_runtime_config, manifest_path_from_option,
 };
@@ -99,7 +102,7 @@ enum CliCommand {
         #[arg(long)]
         json: bool,
     },
-    /// Build the font and install it into the user font directory.
+    /// Build the font and install it into the user font directory using a project-prefixed name.
     InstallFont {
         /// Path to the manifest file. Defaults to ./petiglyph.toml.
         #[arg(short, long)]
@@ -123,7 +126,7 @@ enum CliCommand {
         #[arg(long)]
         json: bool,
     },
-    /// Uninstall the previously installed font for this project scope.
+    /// Uninstall this project's managed installed font variants.
     UninstallFont {
         /// Path to the manifest file. Defaults to ./petiglyph.toml.
         #[arg(short, long)]
@@ -529,13 +532,18 @@ fn install_font_command(
     glyph_size_override: Option<u32>,
     codepoint_start_override: Option<String>,
 ) -> Result<InstallFontCommandData> {
-    let config = load_runtime_config(
+    let mut config = load_runtime_config(
         &manifest_path,
         input_override,
         out_override,
         threshold_override,
         glyph_size_override,
         codepoint_start_override,
+    )?;
+    config.font_name = effective_font_name(
+        &manifest_path,
+        &config.font_name,
+        FontInstallNameMode::ProjectPrefixed,
     )?;
 
     let summary = build_outputs(&config)?;

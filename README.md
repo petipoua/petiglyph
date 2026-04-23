@@ -56,7 +56,7 @@ petiglyph sample --json
 petiglyph install-font
 petiglyph install-font --json
 
-# uninstall the installed font for this project scope
+# uninstall managed installed variants for the current project/font
 petiglyph uninstall-font
 petiglyph uninstall-font --json
 ```
@@ -154,24 +154,33 @@ install = run_petiglyph("install-font", "--manifest", "./petiglyph.toml", "--jso
 
 ## Font Lifecycle Behavior
 
-`install-font` is idempotent for a project scope:
+Install naming modes:
 
-- installs into a project-scoped managed folder
-- replacing existing managed `.ttf` files in that scope is safe
+- TUI (`petiglyph` / `petiglyph tui` then `i`): installs `<font>.ttf`
+- CLI (`petiglyph install-font`): installs `<project>-<font>.ttf`
 
-`uninstall-font` removes only managed files for that scope.
+Both are installed into a flat `petiglyph` directory under the user font root.
+
+`install-font` is idempotent for a given effective font name.
+
+`uninstall-font` removes both managed candidates for the current manifest font:
+
+- `<font>.ttf`
+- `<project>-<font>.ttf`
+
+If the project directory name changes, the `<project>-<font>.ttf` candidate changes too; run `install-font` again to publish the new name.
 
 Outcomes:
 
 - `removed`
 - `already_absent`
-- blocked/error with actionable message when unexpected files are present
+- blocked/error with actionable message when an expected managed path is invalid
 
 Current install root by OS:
 
-- Linux: `~/.local/share/fonts/petiglyph/<project>/`
-- macOS: `~/Library/Fonts/petiglyph/<project>/`
-- Windows: `%LOCALAPPDATA%/Microsoft/Windows/Fonts/petiglyph/<project>/`
+- Linux: `~/.local/share/fonts/petiglyph/`
+- macOS: `~/Library/Fonts/petiglyph/`
+- Windows: `%LOCALAPPDATA%/Microsoft/Windows/Fonts/petiglyph/`
 
 ## Command Stability Policy
 
