@@ -252,13 +252,15 @@ codepoint_start = "U+100000"
 
 - `Tab`: cycle Home -> Glyphs -> Font
 - `1` / `2` / `3`: switch between Home, Glyphs, and Font views
+- Home view includes a copy-ready glyph sample string for the current detected font sample
 - `R`: rescan `icons/`
 - `j` / `k` or `↑` / `↓`: select glyph (Glyphs view)
 - `←` / `→` or `+` / `-`: adjust threshold by 1 for selected glyph (Glyphs view)
 - `PgUp` / `PgDn`: adjust threshold by 10 for selected glyph (Glyphs view)
 - `r`: clear selected glyph override (Glyphs view)
-- `b`: build project outputs
-- `i`: build and install font
+- Font Actions (Font view): use `←` / `→` to select `Build` or `Install`, then `Enter` to run
+- `b`: build font outputs directly
+- `i`: install font directly
 - `q` / `Esc`: quit
 
 ## Build Outputs

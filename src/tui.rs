@@ -74,6 +74,28 @@ pub(crate) enum AppView {
     Font,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum FontAction {
+    Build,
+    Install,
+}
+
+impl FontAction {
+    fn next(self) -> Self {
+        match self {
+            Self::Build => Self::Install,
+            Self::Install => Self::Build,
+        }
+    }
+
+    fn prev(self) -> Self {
+        match self {
+            Self::Build => Self::Install,
+            Self::Install => Self::Build,
+        }
+    }
+}
+
 pub(crate) struct App {
     pub(crate) manifest_path: PathBuf,
     pub(crate) project_dir: PathBuf,
@@ -86,6 +108,7 @@ pub(crate) struct App {
     pub(crate) last_build: Option<BuildSummary>,
     pub(crate) last_sample: Option<String>,
     pub(crate) installed_font_path: Option<PathBuf>,
+    pub(crate) selected_font_action: FontAction,
     install_task: Option<InstallTask>,
 }
 
@@ -152,6 +175,7 @@ impl App {
             last_build,
             last_sample,
             installed_font_path,
+            selected_font_action: FontAction::Build,
             install_task: None,
         }
     }
@@ -515,26 +539,46 @@ pub(crate) fn handle_key(app: &mut App, code: KeyCode) -> Result<()> {
             };
         }
         KeyCode::Char('b') => {
-            if app.install_in_progress() {
-                app.status = Some("install is in progress; wait for it to finish".to_string());
-            } else {
-                app.build_project()?;
-            }
+            trigger_build_action(app)?;
         }
         KeyCode::Char('i') => {
-            app.start_install_font();
+            trigger_install_action(app);
         }
-        KeyCode::Down | KeyCode::Char('j') => {
+        KeyCode::Down => {
+            if app.view == AppView::Font {
+                app.selected_font_action = app.selected_font_action.next();
+            } else if app.view == AppView::Glyphs {
+                app.selected = (app.selected + 1).min(app.glyphs.len().saturating_sub(1));
+            }
+        }
+        KeyCode::Char('j') => {
             if app.view == AppView::Glyphs {
                 app.selected = (app.selected + 1).min(app.glyphs.len().saturating_sub(1));
             }
         }
-        KeyCode::Up | KeyCode::Char('k') => {
+        KeyCode::Up => {
+            if app.view == AppView::Font {
+                app.selected_font_action = app.selected_font_action.prev();
+            } else if app.view == AppView::Glyphs {
+                app.selected = app.selected.saturating_sub(1);
+            }
+        }
+        KeyCode::Char('k') => {
             if app.view == AppView::Glyphs {
                 app.selected = app.selected.saturating_sub(1);
             }
         }
-        KeyCode::Right | KeyCode::Char('l') | KeyCode::Char('+') | KeyCode::Char('=') => {
+        KeyCode::Right => {
+            if app.view == AppView::Font {
+                app.selected_font_action = app.selected_font_action.next();
+            } else if app.view == AppView::Glyphs
+                && let Some(glyph) = selected_glyph(app)
+            {
+                let next = glyph.working_threshold.saturating_add(1);
+                set_selected_threshold(app, next);
+            }
+        }
+        KeyCode::Char('l') | KeyCode::Char('+') | KeyCode::Char('=') => {
             if app.view == AppView::Glyphs
                 && let Some(glyph) = selected_glyph(app)
             {
@@ -542,12 +586,30 @@ pub(crate) fn handle_key(app: &mut App, code: KeyCode) -> Result<()> {
                 set_selected_threshold(app, next);
             }
         }
-        KeyCode::Left | KeyCode::Char('h') | KeyCode::Char('-') => {
+        KeyCode::Left => {
+            if app.view == AppView::Font {
+                app.selected_font_action = app.selected_font_action.prev();
+            } else if app.view == AppView::Glyphs
+                && let Some(glyph) = selected_glyph(app)
+            {
+                let next = glyph.working_threshold.saturating_sub(1);
+                set_selected_threshold(app, next);
+            }
+        }
+        KeyCode::Char('h') | KeyCode::Char('-') => {
             if app.view == AppView::Glyphs
                 && let Some(glyph) = selected_glyph(app)
             {
                 let next = glyph.working_threshold.saturating_sub(1);
                 set_selected_threshold(app, next);
+            }
+        }
+        KeyCode::Enter => {
+            if app.view == AppView::Font {
+                match app.selected_font_action {
+                    FontAction::Build => trigger_build_action(app)?,
+                    FontAction::Install => trigger_install_action(app),
+                }
             }
         }
         KeyCode::PageUp => {
@@ -574,6 +636,18 @@ pub(crate) fn handle_key(app: &mut App, code: KeyCode) -> Result<()> {
         _ => {}
     }
     Ok(())
+}
+
+fn trigger_build_action(app: &mut App) -> Result<()> {
+    if app.install_in_progress() {
+        app.status = Some("install is in progress; wait for it to finish".to_string());
+        return Ok(());
+    }
+    app.build_project()
+}
+
+fn trigger_install_action(app: &mut App) {
+    app.start_install_font();
 }
 
 fn draw_ui(frame: &mut Frame, app: &App) {
@@ -658,6 +732,14 @@ fn draw_ui(frame: &mut Frame, app: &App) {
             Span::raw("reset  "),
         ]);
     }
+    if app.view == AppView::Font {
+        footer_spans.extend(vec![
+            Span::styled(" \u{2190}/\u{2192} ", Style::default().fg(accent)),
+            Span::raw("select action  "),
+            Span::styled(" Enter ", Style::default().fg(accent)),
+            Span::raw("run selected  "),
+        ]);
+    }
 
     if let Some(status) = &app.status {
         footer_spans.push(Span::styled(" | ", Style::default().fg(muted)));
@@ -688,7 +770,12 @@ fn draw_home_view(
     accent: Color,
     muted: Color,
 ) {
-    let block = Block::default()
+    let sections = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Percentage(58), Constraint::Percentage(42)])
+        .split(area);
+
+    let overview_block = Block::default()
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
         .border_style(Style::default().fg(muted))
@@ -697,7 +784,7 @@ fn draw_home_view(
             Style::default().fg(accent),
         ));
 
-    let text = vec![
+    let overview = vec![
         Line::from(""),
         Line::from(vec![
             Span::raw("  "),
@@ -775,8 +862,87 @@ fn draw_home_view(
         ]),
     ];
 
-    let p = Paragraph::new(text).block(block).wrap(Wrap { trim: false });
-    frame.render_widget(p, area);
+    let p = Paragraph::new(overview)
+        .block(overview_block)
+        .wrap(Wrap { trim: false });
+    frame.render_widget(p, sections[0]);
+
+    let sample_block = Block::default()
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(Style::default().fg(muted))
+        .title(Span::styled(
+            " Glyph Clipboard Sample ",
+            Style::default().fg(accent),
+        ));
+
+    let sample_area = sample_block.inner(sections[1]);
+    let max_chars = sample_area.width.saturating_sub(4) as usize;
+    let sample = app.sample_string();
+    let source_note = if app.last_sample.is_some() {
+        "Detected from build/glyph-sample.txt"
+    } else {
+        "Generated from codepoint start + current glyph count"
+    };
+
+    let mut sample_text = vec![
+        Line::from(""),
+        Line::from(vec![
+            Span::raw("  "),
+            Span::styled("Source: ", Style::default().fg(muted)),
+            Span::raw(source_note),
+        ]),
+        Line::from(vec![
+            Span::raw("  "),
+            Span::styled("Copy line: ", Style::default().fg(muted)),
+            Span::raw("select this exact sequence"),
+        ]),
+        Line::from(""),
+    ];
+
+    if sample.is_empty() {
+        sample_text.push(Line::from(vec![
+            Span::raw("  "),
+            Span::styled(
+                "No glyph sample available yet. Add icons and build first.",
+                Style::default().fg(Color::Yellow),
+            ),
+        ]));
+    } else {
+        for line in wrap_sample_for_display(&sample, max_chars) {
+            sample_text.push(Line::from(vec![
+                Span::raw("  "),
+                Span::styled(
+                    line,
+                    Style::default()
+                        .fg(Color::White)
+                        .add_modifier(Modifier::BOLD),
+                ),
+            ]));
+        }
+
+        sample_text.push(Line::from(""));
+        sample_text.push(Line::from(vec![
+            Span::raw("  "),
+            Span::styled("Readable (spaced):", Style::default().fg(muted)),
+        ]));
+
+        let spaced = spaced_sample(&sample);
+        for line in wrap_sample_for_display(&spaced, max_chars) {
+            sample_text.push(Line::from(vec![
+                Span::raw("  "),
+                Span::styled(
+                    line,
+                    Style::default().fg(accent).add_modifier(Modifier::BOLD),
+                ),
+            ]));
+        }
+    }
+
+    let sample_paragraph = Paragraph::new(sample_text)
+        .block(sample_block)
+        .wrap(Wrap { trim: false });
+    frame.render_widget(sample_paragraph, sections[1]);
 }
 
 fn draw_glyphs_view(
@@ -904,7 +1070,12 @@ fn draw_font_view(
     accent: Color,
     muted: Color,
 ) {
-    let block = Block::default()
+    let sections = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Length(10), Constraint::Min(0)])
+        .split(area);
+
+    let status_block = Block::default()
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
         .border_style(Style::default().fg(muted))
@@ -969,29 +1140,95 @@ fn draw_font_view(
             Span::styled("System:     ", Style::default().fg(muted)),
             installed_status,
         ]),
+    ];
+
+    let actions_block = Block::default()
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(Style::default().fg(muted))
+        .title(Span::styled(" Actions ", Style::default().fg(accent)));
+
+    let selected_button_style = Style::default()
+        .fg(Color::Black)
+        .bg(accent)
+        .add_modifier(Modifier::BOLD);
+    let idle_button_style = Style::default()
+        .fg(Color::White)
+        .bg(Color::DarkGray)
+        .add_modifier(Modifier::BOLD);
+
+    let build_button_style = if app.selected_font_action == FontAction::Build {
+        selected_button_style
+    } else {
+        idle_button_style
+    };
+
+    let install_label = if let Some(spinner) = app.install_spinner_frame() {
+        format!(" {spinner} Installing... ")
+    } else {
+        " Install (i) ".to_string()
+    };
+
+    let install_button_style = if app.install_in_progress() {
+        Style::default()
+            .fg(Color::Black)
+            .bg(Color::Yellow)
+            .add_modifier(Modifier::BOLD)
+    } else if app.selected_font_action == FontAction::Install {
+        selected_button_style
+    } else {
+        idle_button_style
+    };
+
+    let build_desc_style = if app.selected_font_action == FontAction::Build {
+        Style::default().fg(accent).add_modifier(Modifier::BOLD)
+    } else {
+        Style::default().fg(muted)
+    };
+    let install_desc_style = if app.selected_font_action == FontAction::Install {
+        Style::default().fg(accent).add_modifier(Modifier::BOLD)
+    } else {
+        Style::default().fg(muted)
+    };
+
+    let action_lines = vec![
         Line::from(""),
         Line::from(vec![
             Span::raw("  "),
-            Span::styled("Actions:", Style::default().fg(accent)),
+            Span::styled(
+                "Use \u{2190}/\u{2192} to select, Enter to run. Shortcuts: b / i",
+                Style::default().fg(muted),
+            ),
+        ]),
+        Line::from(""),
+        Line::from(vec![
+            Span::raw("  "),
+            Span::styled(" Build (b) ", build_button_style),
+            Span::raw("   "),
+            Span::styled(install_label, install_button_style),
+        ]),
+        Line::from(""),
+        Line::from(vec![
+            Span::raw("  "),
+            Span::styled("Build:", build_desc_style),
+            Span::raw(" generate TTF/BDF, glyph map, and sample in build/"),
         ]),
         Line::from(vec![
             Span::raw("  "),
-            Span::styled(
-                "Press 'b' to build the font files.",
-                Style::default().fg(Color::White),
-            ),
-        ]),
-        Line::from(vec![
-            Span::raw("  "),
-            Span::styled(
-                "Press 'i' to install the built TTF to your OS.",
-                Style::default().fg(Color::White),
-            ),
+            Span::styled("Install:", install_desc_style),
+            Span::raw(" copy built TTF to your user font directory"),
         ]),
     ];
 
-    let p = Paragraph::new(text).block(block).wrap(Wrap { trim: false });
-    frame.render_widget(p, area);
+    let actions_panel = Paragraph::new(action_lines)
+        .block(actions_block)
+        .wrap(Wrap { trim: false });
+    frame.render_widget(actions_panel, sections[0]);
+
+    let status_panel = Paragraph::new(text)
+        .block(status_block)
+        .wrap(Wrap { trim: false });
+    frame.render_widget(status_panel, sections[1]);
 }
 
 fn preview_lines(
@@ -1024,4 +1261,42 @@ fn preview_lines(
     }
 
     lines
+}
+
+pub(crate) fn wrap_sample_for_display(sample: &str, max_chars: usize) -> Vec<String> {
+    if sample.is_empty() {
+        return Vec::new();
+    }
+
+    let target = max_chars.max(1);
+    let mut lines = Vec::new();
+    let mut current = String::new();
+    let mut count = 0usize;
+
+    for ch in sample.chars() {
+        current.push(ch);
+        count += 1;
+        if count >= target {
+            lines.push(current);
+            current = String::new();
+            count = 0;
+        }
+    }
+
+    if !current.is_empty() {
+        lines.push(current);
+    }
+
+    lines
+}
+
+pub(crate) fn spaced_sample(sample: &str) -> String {
+    let mut out = String::new();
+    for (index, ch) in sample.chars().enumerate() {
+        if index > 0 {
+            out.push_str("  ");
+        }
+        out.push(ch);
+    }
+    out
 }

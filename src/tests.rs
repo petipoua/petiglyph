@@ -11,7 +11,10 @@ use crate::build::{
 };
 use crate::install::{FontInstallNameMode, effective_font_name};
 use crate::project::{Manifest, RuntimeConfig, parse_codepoint, read_manifest, write_manifest};
-use crate::tui::{App, AppView, InteractiveGlyph, handle_key, persist_threshold_override};
+use crate::tui::{
+    App, AppView, FontAction, InteractiveGlyph, handle_key, persist_threshold_override,
+    spaced_sample, wrap_sample_for_display,
+};
 
 fn make_temp_dir(name: &str) -> PathBuf {
     let nonce = SystemTime::now()
@@ -81,6 +84,17 @@ fn glyph_sample_string_skips_non_scalar_values() {
     let sample = glyph_sample_string(0xDFFF, 2);
     let expected = char::from_u32(0xE000).expect("valid").to_string();
     assert_eq!(sample, expected);
+}
+
+#[test]
+fn wrap_sample_for_display_respects_chunk_size() {
+    let wrapped = wrap_sample_for_display("ABCDE", 2);
+    assert_eq!(wrapped, vec!["AB", "CD", "E"]);
+}
+
+#[test]
+fn spaced_sample_separates_glyphs_for_readability() {
+    assert_eq!(spaced_sample("ABC"), "A  B  C");
 }
 
 #[test]
@@ -390,6 +404,47 @@ fn tab_cycles_panels_and_glyph_controls_stay_in_glyph_view() {
     assert_eq!(app.glyphs[0].working_threshold, 65);
     handle_key(&mut app, KeyCode::Left).expect("key handling should succeed");
     assert_eq!(app.glyphs[0].working_threshold, 64);
+
+    fs::remove_dir_all(project_dir).expect("temp project dir is removed");
+}
+
+#[test]
+fn font_action_buttons_switch_with_arrows_and_enter_builds() {
+    let project_dir = make_temp_dir("font-action-buttons");
+    let manifest_path = project_dir.join("petiglyph.toml");
+    write_manifest(&manifest_path, &Manifest::default()).expect("manifest is written");
+
+    let icons_dir = project_dir.join("icons");
+    fs::create_dir_all(&icons_dir).expect("icons dir is created");
+    write_test_png(&icons_dir.join("icon.png"));
+
+    let config = RuntimeConfig {
+        input_dir: icons_dir,
+        out_dir: project_dir.join("build"),
+        font_name: "Petiglyph".to_string(),
+        glyph_size: 8,
+        base_threshold: 64,
+        threshold_overrides: BTreeMap::new(),
+        codepoint_start: 0x10_0000,
+    };
+
+    let mut app = App::new(manifest_path, config);
+    app.view = AppView::Font;
+
+    assert_eq!(app.selected_font_action, FontAction::Build);
+    handle_key(&mut app, KeyCode::Right).expect("key handling should succeed");
+    assert_eq!(app.selected_font_action, FontAction::Install);
+    handle_key(&mut app, KeyCode::Left).expect("key handling should succeed");
+    assert_eq!(app.selected_font_action, FontAction::Build);
+
+    handle_key(&mut app, KeyCode::Enter).expect("key handling should succeed");
+    let summary = app
+        .last_build
+        .as_ref()
+        .expect("enter on build action should build");
+    assert!(summary.ttf_path.is_file(), "ttf output should exist");
+    assert!(summary.bdf_path.is_file(), "bdf output should exist");
+    assert_eq!(app.view, AppView::Font);
 
     fs::remove_dir_all(project_dir).expect("temp project dir is removed");
 }
