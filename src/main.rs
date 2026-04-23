@@ -798,7 +798,7 @@ fn is_supported_source(path: &Path) -> bool {
             let ext = ext.to_ascii_lowercase();
             matches!(
                 ext.as_str(),
-                "png" | "jpg" | "jpeg" | "webp" | "bmp" | "gif" | "svg"
+                "png" | "jpg" | "jpeg" | "webp" | "avif" | "bmp" | "gif" | "svg"
             )
         }
         None => false,
@@ -2616,6 +2616,13 @@ mod tests {
             bitmap_to_bdf_rows(&bitmap),
             "A1\n50\n0C\n00\nFF\n00\n00\n80\n"
         );
+    }
+
+    #[test]
+    fn supported_source_extensions_include_avif() {
+        assert!(is_supported_source(Path::new("icon.avif")));
+        assert!(is_supported_source(Path::new("ICON.AVIF")));
+        assert!(!is_supported_source(Path::new("icon.tiff")));
     }
 
     #[test]

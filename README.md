@@ -60,6 +60,31 @@ petiglyph install-font
 
 All non-`create` commands also support `--manifest` to target another project.
 
+## Local Cargo Testing
+
+Run these from the repository root while developing:
+
+```bash
+# format check
+cargo fmt --all -- --check
+
+# compile check
+cargo check
+
+# lint
+cargo clippy --all-targets --all-features -- -D warnings
+
+# tests
+cargo test
+```
+
+Quick manual smoke test with the bundled sample manifest:
+
+```bash
+cargo run -- build --manifest test-font/petiglyph.toml
+cargo run -- sample --manifest test-font/petiglyph.toml
+```
+
 ## Local AUR-Style Test Scripts
 
 Use this script from the repo root to simulate the AUR flow locally on Arch:
@@ -120,7 +145,7 @@ The build step writes these files into `build/`:
 
 ## Notes
 
-- Supported inputs: `png`, `jpg`, `jpeg`, `webp`, `bmp`, `gif`, `svg`
+- Supported inputs: `png`, `jpg`, `jpeg`, `webp`, `avif`, `bmp`, `gif`, `svg`
 - If source alpha exists, alpha drives glyph coverage.
 - Otherwise, border color is treated as the background and contrast becomes coverage.
 - The default codepoint range starts at `U+100000` to avoid common BMP private-use collisions.
