@@ -7,20 +7,19 @@ pkgname="petiglyph"
 usage() {
   cat <<'EOF'
 Usage:
-  ./scripts/aur.sh [step] [-- makepkg args...]
+  ./scripts/aur.sh [step]
 
 Steps:
+  uninstall     Remove installed package, rebuild latest package, then install it (default)
+  build         Regenerate PKGBUILD + source tarball, then rebuild package artifacts
+  install       Install latest built package with pacman
   pkgbuild      Generate PKGBUILD from Cargo.toml metadata
   tarball       Create source tarball using git archive
-  build         Run makepkg -s (PKGBUILD + tarball are generated first)
-  install       Install latest built package with pacman
-  clean-install Remove existing installed package, then install latest build
-  all           Run pkgbuild -> tarball -> build
-  all-install   Run pkgbuild -> tarball -> build -> install
+  all           Alias for build
+  all-install   Alias for uninstall
 
 Defaults:
-  step defaults to "all"
-  arguments after "--" are forwarded to makepkg in build/all/all-install
+  step defaults to "uninstall"
 EOF
 }
 
@@ -86,13 +85,30 @@ create_tarball() {
 }
 
 build_package() {
-  local makepkg_args=("$@")
+  local build_root src_cache pkg_dest log_dest
+  build_root="$repo_root/.makepkg/build"
+  src_cache="$repo_root/.makepkg/src-cache"
+  pkg_dest="$repo_root"
+  log_dest="$repo_root/.makepkg/logs"
+
   cd "$repo_root"
   if [[ ! -f PKGBUILD ]]; then
     echo "PKGBUILD missing. Generating it first."
     write_pkgbuild
   fi
-  makepkg -s "${makepkg_args[@]}"
+
+  mkdir -p "$build_root" "$src_cache" "$log_dest"
+  BUILDDIR="$build_root" \
+  SRCDEST="$src_cache" \
+  PKGDEST="$pkg_dest" \
+  LOGDEST="$log_dest" \
+  makepkg --syncdeps --cleanbuild --force --noconfirm
+}
+
+build_latest_package() {
+  write_pkgbuild
+  create_tarball
+  build_package
 }
 
 install_package() {
@@ -110,29 +126,26 @@ install_package() {
   fi
 
   echo "Installing $pkg_file"
-  sudo pacman -U --needed "$pkg_file"
+  sudo pacman -U --needed --noconfirm "$pkg_file"
 }
 
-clean_install_package() {
+uninstall_and_reinstall_package() {
   if pacman -Q "$pkgname" >/dev/null 2>&1; then
     echo "Removing installed package: $pkgname"
     sudo pacman -Rns --noconfirm "$pkgname"
   else
     echo "Package not currently installed: $pkgname"
   fi
+  build_latest_package
   install_package
 }
 
-step="${1:-all}"
+step="${1:-uninstall}"
 if [[ $# -gt 0 ]]; then
   shift
 fi
 
-makepkg_args=()
-if [[ "${1:-}" == "--" ]]; then
-  shift
-  makepkg_args=("$@")
-elif [[ $# -gt 0 ]]; then
+if [[ $# -gt 0 ]]; then
   echo "Unexpected arguments: $*" >&2
   usage
   exit 1
@@ -146,26 +159,19 @@ case "$step" in
     create_tarball
     ;;
   build)
-    write_pkgbuild
-    create_tarball
-    build_package "${makepkg_args[@]}"
+    build_latest_package
     ;;
   install)
     install_package
     ;;
-  clean-install)
-    clean_install_package
+  uninstall)
+    uninstall_and_reinstall_package
     ;;
   all)
-    write_pkgbuild
-    create_tarball
-    build_package "${makepkg_args[@]}"
+    build_latest_package
     ;;
   all-install)
-    write_pkgbuild
-    create_tarball
-    build_package "${makepkg_args[@]}"
-    install_package
+    uninstall_and_reinstall_package
     ;;
   -h|--help|help)
     usage
