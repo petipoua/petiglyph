@@ -211,6 +211,7 @@ Use this script from repo root to simulate the AUR flow locally on Arch:
 ```bash
 ./scripts/aur.sh
 ./scripts/aur.sh uninstall
+./scripts/aur.sh reinstall
 ./scripts/aur.sh build
 ./scripts/aur.sh install
 ./scripts/aur.sh pkgbuild
@@ -218,6 +219,7 @@ Use this script from repo root to simulate the AUR flow locally on Arch:
 ```
 
 `scripts/aur.sh` builds in an isolated `.makepkg/` workspace so it does not touch your repo `src/` tree.
+By default (`./scripts/aur.sh`), it performs a full reinstall cycle (remove, rebuild, install). Use `./scripts/aur.sh uninstall` for uninstall-only.
 
 ## Manifest
 
