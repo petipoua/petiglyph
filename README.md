@@ -197,6 +197,7 @@ Quick manual smoke test with the bundled sample manifest:
 ```bash
 cargo run -- build --manifest test-font/petiglyph.toml
 cargo run -- sample --manifest test-font/petiglyph.toml
+cargo run -- tui --manifest test-font/petiglyph.toml
 cargo run -- install-font --manifest test-font/petiglyph.toml --json
 cargo run -- uninstall-font --manifest test-font/petiglyph.toml --json
 ```

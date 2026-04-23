@@ -8,10 +8,10 @@ use crossterm::terminal::{
 use image::imageops::FilterType;
 use image::{ImageBuffer, Rgba, RgbaImage};
 use ratatui::backend::CrosstermBackend;
-use ratatui::layout::{Constraint, Direction, Layout};
+use ratatui::layout::{Alignment, Constraint, Direction, Layout};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, List, ListItem, ListState, Paragraph, Wrap};
+use ratatui::widgets::{Block, Borders, BorderType, List, ListItem, ListState, Paragraph, Tabs, Wrap};
 use ratatui::{Frame, Terminal};
 use resvg::tiny_skia::{Pixmap, Transform};
 use resvg::usvg;
@@ -2760,133 +2760,111 @@ fn handle_key(app: &mut App, code: KeyCode) -> Result<()> {
 }
 
 fn draw_ui(frame: &mut Frame, app: &App) {
+    let area = frame.area();
+    let accent = Color::Cyan;
+    let muted = Color::DarkGray;
+
     let root = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(6),
-            Constraint::Min(10),
-            Constraint::Length(4),
+            Constraint::Length(3), // Header
+            Constraint::Min(0),    // Body
+            Constraint::Length(1), // Footer keys
         ])
-        .split(frame.area());
+        .split(area);
 
-    let mut header_lines = vec![Line::from(vec![
-        Span::styled(
-            "petiglyph",
-            Style::default()
-                .fg(Color::Cyan)
-                .add_modifier(Modifier::BOLD),
-        ),
-        Span::raw("  |  "),
-        Span::raw(format!("font={}", app.config.font_name)),
-        Span::raw("  |  "),
-        Span::raw(format!("icons={}", app.glyphs.len())),
-        Span::raw("  |  "),
-        Span::raw(format!("base={}", app.config.base_threshold)),
-        Span::raw("  |  "),
-        Span::raw(format!("size={}", app.config.glyph_size)),
-    ])];
-    header_lines.push(Line::from(vec![
-        tab_span("1 Home", app.view == AppView::Home),
-        Span::raw("  "),
-        tab_span("2 Glyphs", app.view == AppView::Glyphs),
-        Span::raw("  "),
-        tab_span("3 Font", app.view == AppView::Font),
-    ]));
-    if let Some(status) = &app.status {
-        header_lines.push(Line::from(Span::styled(
-            status.clone(),
-            Style::default().fg(Color::Magenta),
-        )));
-    }
+    // Header
+    let titles = vec![" 1 Home ", " 2 Glyphs ", " 3 Font "];
+    let tabs = Tabs::new(titles.iter().copied().map(Line::from).collect::<Vec<_>>())
+        .block(Block::default().borders(Borders::ALL).border_type(BorderType::Rounded).title(Line::from(vec![
+            Span::styled(" petiglyph ", Style::default().fg(accent).add_modifier(Modifier::BOLD)),
+            Span::styled(format!(" v{} ", CLI_VERSION), Style::default().fg(muted)),
+        ])))
+        .select(match app.view { AppView::Home => 0, AppView::Glyphs => 1, AppView::Font => 2 })
+        .style(Style::default().fg(Color::White))
+        .highlight_style(Style::default().fg(Color::Black).bg(accent).add_modifier(Modifier::BOLD))
+        .divider("");
+    
+    frame.render_widget(tabs, root[0]);
 
-    let header =
-        Paragraph::new(header_lines).block(Block::default().borders(Borders::ALL).title("Status"));
-    frame.render_widget(header, root[0]);
+    // Body
+    let body_area = root[1];
 
     match app.view {
-        AppView::Home => draw_home_view(frame, app, root[1]),
-        AppView::Glyphs => draw_glyphs_view(frame, app, root[1]),
-        AppView::Font => draw_font_view(frame, app, root[1]),
+        AppView::Home => draw_home_view(frame, app, body_area, accent, muted),
+        AppView::Glyphs => draw_glyphs_view(frame, app, body_area, accent, muted),
+        AppView::Font => draw_font_view(frame, app, body_area, accent, muted),
     }
 
-    let footer = Paragraph::new(vec![
-        Line::from(vec![
-            Span::styled("q/esc", Style::default().fg(Color::Yellow)),
-            Span::raw(" quit  |  "),
-            Span::styled("1/2/3", Style::default().fg(Color::Yellow)),
-            Span::raw(" switch views  |  "),
-            Span::styled("R", Style::default().fg(Color::Yellow)),
-            Span::raw(" rescan icons  |  "),
-            Span::styled("b", Style::default().fg(Color::Yellow)),
-            Span::raw(" build  |  "),
-            Span::styled("i", Style::default().fg(Color::Yellow)),
-            Span::raw(" install font"),
-        ]),
-        Line::from(vec![
-            Span::styled("j/k or ↑/↓", Style::default().fg(Color::Yellow)),
-            Span::raw(" select glyph  |  "),
-            Span::styled("+/-", Style::default().fg(Color::Yellow)),
-            Span::raw(" threshold ±1  |  "),
-            Span::styled("PgUp/PgDn", Style::default().fg(Color::Yellow)),
-            Span::raw(" threshold ±10  |  "),
-            Span::styled("r", Style::default().fg(Color::Yellow)),
-            Span::raw(" clear override"),
-        ]),
-    ])
-    .block(Block::default().borders(Borders::ALL).title("Keys"));
+    // Footer
+    let mut footer_spans = vec![
+        Span::styled(" q/esc ", Style::default().fg(accent)), Span::raw("quit  "),
+        Span::styled(" 1-3 ", Style::default().fg(accent)), Span::raw("views  "),
+        Span::styled(" R ", Style::default().fg(accent)), Span::raw("rescan  "),
+        Span::styled(" b ", Style::default().fg(accent)), Span::raw("build  "),
+        Span::styled(" i ", Style::default().fg(accent)), Span::raw("install  "),
+    ];
+
+    if app.view == AppView::Glyphs {
+        footer_spans.extend(vec![
+            Span::styled(" \u{2191}/\u{2193} ", Style::default().fg(accent)), Span::raw("nav  "),
+            Span::styled(" +/- ", Style::default().fg(accent)), Span::raw("thresh  "),
+            Span::styled(" r ", Style::default().fg(accent)), Span::raw("reset  "),
+        ]);
+    }
+
+    if let Some(status) = &app.status {
+        footer_spans.push(Span::styled(" | ", Style::default().fg(muted)));
+        footer_spans.push(Span::styled(status.clone(), Style::default().fg(Color::LightRed)));
+    }
+
+    let footer = Paragraph::new(Line::from(footer_spans))
+        .alignment(Alignment::Center)
+        .style(Style::default().fg(muted));
     frame.render_widget(footer, root[2]);
 }
 
-fn tab_span<'a>(label: &'a str, active: bool) -> Span<'a> {
-    if active {
-        Span::styled(
-            label,
-            Style::default()
-                .fg(Color::Black)
-                .bg(Color::LightCyan)
-                .add_modifier(Modifier::BOLD),
-        )
-    } else {
-        Span::styled(label, Style::default().fg(Color::DarkGray))
-    }
+fn draw_home_view(frame: &mut Frame, app: &App, area: ratatui::layout::Rect, accent: Color, muted: Color) {
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(Style::default().fg(muted))
+        .title(Span::styled(" Project Overview ", Style::default().fg(accent)));
+
+    let text = vec![
+        Line::from(""),
+        Line::from(vec![Span::raw("  "), Span::styled("Font Name: ", Style::default().fg(muted)), Span::styled(&app.config.font_name, Style::default().fg(Color::White).add_modifier(Modifier::BOLD))]),
+        Line::from(vec![Span::raw("  "), Span::styled("Manifest:  ", Style::default().fg(muted)), Span::raw(app.manifest_path.display().to_string())]),
+        Line::from(vec![Span::raw("  "), Span::styled("Icons Dir: ", Style::default().fg(muted)), Span::raw(app.config.input_dir.display().to_string())]),
+        Line::from(vec![Span::raw("  "), Span::styled("Build Dir: ", Style::default().fg(muted)), Span::raw(app.config.out_dir.display().to_string())]),
+        Line::from(""),
+        Line::from(vec![Span::raw("  "), Span::styled("Glyphs:    ", Style::default().fg(muted)), Span::styled(app.glyphs.len().to_string(), Style::default().fg(accent))]),
+        Line::from(vec![Span::raw("  "), Span::styled("Size:      ", Style::default().fg(muted)), Span::raw(format!("{}px", app.config.glyph_size))]),
+        Line::from(vec![Span::raw("  "), Span::styled("Threshold: ", Style::default().fg(muted)), Span::raw(app.config.base_threshold.to_string())]),
+        Line::from(vec![Span::raw("  "), Span::styled("Codepoint: ", Style::default().fg(muted)), Span::raw(format!("U+{:04X}", app.config.codepoint_start))]),
+        Line::from(""),
+        Line::from(vec![Span::raw("  "), Span::styled("Workflow:", Style::default().fg(accent).add_modifier(Modifier::BOLD))]),
+        Line::from(vec![Span::raw("  "), Span::styled("1. ", Style::default().fg(muted)), Span::raw("Add/update images in icons/")]),
+        Line::from(vec![Span::raw("  "), Span::styled("2. ", Style::default().fg(muted)), Span::raw("Press R to rescan, tune thresholds in Glyphs view")]),
+        Line::from(vec![Span::raw("  "), Span::styled("3. ", Style::default().fg(muted)), Span::raw("Press b to build TTF/BDF and mappings")]),
+        Line::from(vec![Span::raw("  "), Span::styled("4. ", Style::default().fg(muted)), Span::raw("Press i to install the font to your system")]),
+    ];
+
+    let p = Paragraph::new(text).block(block).wrap(Wrap { trim: false });
+    frame.render_widget(p, area);
 }
 
-fn draw_home_view(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) {
-    let content = Paragraph::new(vec![
-        Line::from("Create a self-contained petiglyph project, place image files in icons/, and keep all generated output in build/."),
-        Line::from(""),
-        Line::from("Paths:"),
-        Line::from(format!("manifest: {}", app.manifest_path.display())),
-        Line::from(format!("icons: {}", app.config.input_dir.display())),
-        Line::from(format!("build: {}", app.config.out_dir.display())),
-        Line::from(format!(
-            "Detected images: {}",
-            app.glyphs.len()
-        )),
-        Line::from(format!("Font family: {}", app.config.font_name)),
-        Line::from(format!("Glyph size: {}", app.config.glyph_size)),
-        Line::from(format!("Base threshold: {}", app.config.base_threshold)),
-        Line::from(format!(
-            "Codepoint start: U+{:04X}",
-            app.config.codepoint_start
-        )),
-        Line::from(""),
-        Line::from("Workflow:"),
-        Line::from("1. Add or update icons in icons/."),
-        Line::from("2. Press R to rescan, then tune glyph thresholds in the Glyphs view."),
-        Line::from("3. Press b to build previews, TTF, BDF, glyph map, and sample text."),
-        Line::from("4. Press i to install the built TTF into ~/.local/share/fonts/petiglyph/<project>/"),
-    ])
-    .block(Block::default().borders(Borders::ALL).title("Project"))
-    .wrap(Wrap { trim: false });
-    frame.render_widget(content, area);
-}
-
-fn draw_glyphs_view(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) {
-    let body = Layout::default()
+fn draw_glyphs_view(frame: &mut Frame, app: &App, area: ratatui::layout::Rect, accent: Color, muted: Color) {
+    let chunks = Layout::default()
         .direction(Direction::Horizontal)
-        .constraints([Constraint::Percentage(34), Constraint::Percentage(66)])
+        .constraints([Constraint::Percentage(40), Constraint::Percentage(60)])
         .split(area);
+
+    let list_block = Block::default()
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(Style::default().fg(muted))
+        .title(Span::styled(" Glyphs ", Style::default().fg(accent)));
 
     let mut list_state = ListState::default();
     if !app.glyphs.is_empty() {
@@ -2894,124 +2872,120 @@ fn draw_glyphs_view(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) {
     }
 
     let items: Vec<ListItem> = if app.glyphs.is_empty() {
-        vec![ListItem::new(
-            "No glyphs yet. Add files to icons/ and press R.",
-        )]
+        vec![ListItem::new(" No glyphs found. ")]
     } else {
         app.glyphs
             .iter()
             .enumerate()
-            .map(|(idx, glyph)| {
+            .map(|(idx, g)| {
                 let codepoint = app.config.codepoint_start + idx as u32;
-                let marker = if glyph.saved_threshold.is_some() {
-                    "*"
-                } else {
-                    " "
-                };
-                ListItem::new(format!(
-                    "{marker} {}  U+{:04X}",
-                    glyph.glyph.glyph_name, codepoint
-                ))
+                let marker = if g.saved_threshold.is_some() { " *" } else { "  " };
+                let name = &g.glyph.glyph_name;
+                ListItem::new(Line::from(vec![
+                    Span::styled(marker, Style::default().fg(Color::Yellow)),
+                    Span::styled(format!(" U+{:04X} ", codepoint), Style::default().fg(muted)),
+                    Span::raw(name.clone()),
+                ]))
             })
             .collect()
     };
 
     let list = List::new(items)
-        .block(Block::default().borders(Borders::ALL).title("Glyphs"))
-        .highlight_style(
-            Style::default()
-                .fg(Color::Black)
-                .bg(Color::LightCyan)
-                .add_modifier(Modifier::BOLD),
-        )
-        .highlight_symbol("-> ");
-    frame.render_stateful_widget(list, body[0], &mut list_state);
+        .block(list_block)
+        .highlight_style(Style::default().fg(Color::Black).bg(accent).add_modifier(Modifier::BOLD))
+        .highlight_symbol(" \u{2023} ");
 
-    let preview = if app.glyphs.is_empty() {
-        vec![
-            Line::from("No glyphs loaded"),
-            Line::from(""),
-            Line::from(format!(
-                "Add image files into {} and press R to rescan.",
-                app.config.input_dir.display()
-            )),
-        ]
+    frame.render_stateful_widget(list, chunks[0], &mut list_state);
+
+    let preview_block = Block::default()
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(Style::default().fg(muted))
+        .title(Span::styled(" Preview ", Style::default().fg(accent)));
+
+    let preview_area = preview_block.inner(chunks[1]);
+    
+    let mut preview_content = if app.glyphs.is_empty() {
+        vec![Line::from(""), Line::from("  Add images and press R to rescan.")]
     } else {
-        preview_lines(
-            &app.glyphs[app.selected].glyph,
-            app.glyphs[app.selected].working_threshold,
-            body[1].width.saturating_sub(2),
-            body[1].height.saturating_sub(2),
-        )
+        let active = &app.glyphs[app.selected];
+        vec![
+            Line::from(""),
+            Line::from(vec![
+                Span::raw("  File: "), 
+                Span::styled(active.glyph.source_path.to_string_lossy().to_string(), Style::default().fg(Color::White))
+            ]),
+            Line::from(vec![
+                Span::raw("  Threshold: "), 
+                Span::styled(format!("{:3}", active.working_threshold), Style::default().fg(accent).add_modifier(Modifier::BOLD)),
+                Span::styled(if active.saved_threshold.is_some() { " (overridden)" } else { " (default)" }, Style::default().fg(muted)),
+            ]),
+            Line::from(""),
+        ]
     };
 
-    let preview_widget = Paragraph::new(preview)
-        .block(
-            Block::default()
-                .borders(Borders::ALL)
-                .title("ASCII Preview"),
-        )
-        .wrap(Wrap { trim: false });
-    frame.render_widget(preview_widget, body[1]);
+    if !app.glyphs.is_empty() {
+        let active = &app.glyphs[app.selected];
+        let mut ascii = preview_lines(
+            &active.glyph,
+            active.working_threshold,
+            preview_area.width.saturating_sub(4) / 2,
+            preview_area.height.saturating_sub(5),
+        );
+        preview_content.append(&mut ascii);
+    }
+
+    let p = Paragraph::new(preview_content).block(preview_block).wrap(Wrap { trim: false });
+    frame.render_widget(p, chunks[1]);
 }
 
-fn draw_font_view(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) {
+fn draw_font_view(frame: &mut Frame, app: &App, area: ratatui::layout::Rect, accent: Color, muted: Color) {
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(Style::default().fg(muted))
+        .title(Span::styled(" Font Status ", Style::default().fg(accent)));
+
     let sample = app.sample_string();
     let build_summary = app.last_build.as_ref();
-    let lines = vec![
-        Line::from(format!("Font family: {}", app.config.font_name)),
-        Line::from(format!("Glyph count: {}", app.glyphs.len())),
+    
+    let ok_style = Style::default().fg(Color::Green);
+    let missing_style = Style::default().fg(Color::Red);
+
+    let ttf_status = match build_summary {
+        Some(s) => Span::styled(s.ttf_path.display().to_string(), ok_style),
+        None => Span::styled(format!("Not built yet (target: {})", expected_ttf_path(&app.config).display()), missing_style),
+    };
+    let bdf_status = match build_summary {
+        Some(s) => Span::styled(s.bdf_path.display().to_string(), ok_style),
+        None => Span::styled(format!("Not built yet (target: {})", expected_bdf_path(&app.config).display()), missing_style),
+    };
+    let installed_status = match &app.installed_font_path {
+        Some(p) => Span::styled(p.display().to_string(), ok_style),
+        None => {
+            let target = install_dir_for_manifest(&app.manifest_path)
+                .map(|p| p.display().to_string())
+                .unwrap_or_else(|_| "~/.local/share/fonts/petiglyph/<project>".to_string());
+            Span::styled(format!("Not installed in this session (target: {})", target), missing_style)
+        }
+    };
+
+    let text = vec![
         Line::from(""),
-        Line::from("Sample string:"),
-        Line::from(sample),
+        Line::from(vec![Span::raw("  "), Span::styled("Sample string:", Style::default().fg(accent))]),
+        Line::from(vec![Span::raw("  "), Span::raw(sample)]),
         Line::from(""),
-        Line::from(match build_summary {
-            Some(summary) => format!("Built TTF: {}", summary.ttf_path.display()),
-            None => format!(
-                "Built TTF: not built yet (target: {})",
-                expected_ttf_path(&app.config).display()
-            ),
-        }),
-        Line::from(match build_summary {
-            Some(summary) => format!("Built BDF: {}", summary.bdf_path.display()),
-            None => format!(
-                "Built BDF: not built yet (target: {})",
-                expected_bdf_path(&app.config).display()
-            ),
-        }),
-        Line::from(match build_summary {
-            Some(summary) => format!("Glyph map: {}", summary.mapping_path.display()),
-            None => format!(
-                "Glyph map: not built yet (target: {})",
-                app.config.out_dir.join("glyph-map.json").display()
-            ),
-        }),
-        Line::from(match build_summary {
-            Some(summary) => format!("Sample file: {}", summary.sample_path.display()),
-            None => format!(
-                "Sample file: not built yet (target: {})",
-                app.config.out_dir.join("glyph-sample.txt").display()
-            ),
-        }),
-        Line::from(match &app.installed_font_path {
-            Some(path) => format!("Installed font: {}", path.display()),
-            None => format!(
-                "Installed font: not installed in this session (target dir: {})",
-                install_dir_for_manifest(&app.manifest_path)
-                    .map(|path| path.display().to_string())
-                    .unwrap_or_else(|_| "~/.local/share/fonts/petiglyph/<project>".to_string())
-            ),
-        }),
+        Line::from(vec![Span::raw("  "), Span::styled("TTF Output: ", Style::default().fg(muted)), ttf_status]),
+        Line::from(vec![Span::raw("  "), Span::styled("BDF Output: ", Style::default().fg(muted)), bdf_status]),
+        Line::from(vec![Span::raw("  "), Span::styled("System:     ", Style::default().fg(muted)), installed_status]),
         Line::from(""),
-        Line::from(
-            "Use b to rebuild after changing icons or thresholds. Use i to copy the built TTF into your user font directory and refresh the OS font cache.",
-        ),
+        Line::from(vec![Span::raw("  "), Span::styled("Actions:", Style::default().fg(accent))]),
+        Line::from(vec![Span::raw("  "), Span::styled("Press 'b' to build the font files.", Style::default().fg(Color::White))]),
+        Line::from(vec![Span::raw("  "), Span::styled("Press 'i' to install the built TTF to your OS.", Style::default().fg(Color::White))]),
     ];
 
-    let widget = Paragraph::new(lines)
-        .block(Block::default().borders(Borders::ALL).title("Font Preview"))
-        .wrap(Wrap { trim: false });
-    frame.render_widget(widget, area);
+    let p = Paragraph::new(text).block(block).wrap(Wrap { trim: false });
+    frame.render_widget(p, area);
 }
 
 fn preview_lines(
@@ -3022,24 +2996,23 @@ fn preview_lines(
 ) -> Vec<Line<'static>> {
     let src = glyph.size as usize;
     if src == 0 || max_w == 0 || max_h == 0 {
-        return vec![Line::from("Preview too small")];
+        return vec![Line::from("  [Preview too small]")];
     }
 
     let out_w = usize::max(1, usize::min(src, max_w as usize));
     let out_h = usize::max(1, usize::min(src, max_h as usize));
 
-    let mut lines = Vec::with_capacity(out_h + 2);
-    lines.push(Line::from(glyph.source_path.to_string_lossy().to_string()));
-    lines.push(Line::from(""));
+    let mut lines = Vec::with_capacity(out_h);
 
     for oy in 0..out_h {
         let sy = oy * src / out_h;
-        let mut row = String::with_capacity(out_w);
+        let mut row = String::with_capacity(out_w * 2 + 4);
+        row.push_str("    ");
         for ox in 0..out_w {
             let sx = ox * src / out_w;
             let idx = sy * src + sx;
             let on = glyph.coverage[idx] >= threshold;
-            row.push(if on { '#' } else { ' ' });
+            row.push_str(if on { "██" } else { "  " });
         }
         lines.push(Line::from(row));
     }
