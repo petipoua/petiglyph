@@ -105,6 +105,11 @@ pub(crate) fn install_dir_for_manifest(manifest_path: &Path) -> Result<PathBuf> 
     install_dir_for_project(manifest_path, &font_root)
 }
 
+pub(crate) fn expected_install_ttf_path(manifest_path: &Path, font_name: &str) -> Result<PathBuf> {
+    let install_dir = install_dir_for_manifest(manifest_path)?;
+    Ok(install_dir.join(font_file_name(font_name)))
+}
+
 fn run_refresh_command(mut command: ProcessCommand, description: &str) -> Result<()> {
     let status = command
         .status()

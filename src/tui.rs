@@ -15,6 +15,8 @@ use ratatui::{Frame, Terminal};
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
+use std::sync::mpsc::{self, Receiver, TryRecvError};
+use std::thread;
 use std::time::Duration;
 use walkdir::WalkDir;
 
@@ -22,10 +24,11 @@ use crate::build::{
     BuildSummary, MappingEntry, PreprocessedGlyph, build_outputs, expected_bdf_path,
     expected_ttf_path, glyph_sample_string, is_supported_source, preprocess_sources,
 };
-use crate::install::{install_built_font, install_dir_for_manifest};
+use crate::install::{expected_install_ttf_path, install_built_font};
 use crate::project::{RuntimeConfig, load_runtime_config, read_manifest, write_manifest};
 
 const CLI_VERSION: &str = env!("CARGO_PKG_VERSION");
+const INSTALL_SPINNER_FRAMES: [&str; 4] = ["-", "\\", "|", "/"];
 
 pub(crate) fn tui(
     manifest_path: PathBuf,
@@ -48,6 +51,7 @@ pub(crate) fn tui(
 
     let mut session = TerminalSession::start()?;
     while !app.quit {
+        app.poll_install_task();
         session.terminal.draw(|frame| draw_ui(frame, &app))?;
 
         if event::poll(Duration::from_millis(120))?
@@ -82,6 +86,7 @@ pub(crate) struct App {
     pub(crate) last_build: Option<BuildSummary>,
     pub(crate) last_sample: Option<String>,
     pub(crate) installed_font_path: Option<PathBuf>,
+    install_task: Option<InstallTask>,
 }
 
 #[derive(Debug, Clone)]
@@ -93,6 +98,17 @@ pub(crate) struct InteractiveGlyph {
 
 struct TerminalSession {
     terminal: Terminal<CrosstermBackend<io::Stdout>>,
+}
+
+struct InstallTask {
+    receiver: Receiver<Result<InstallTaskOutput, String>>,
+    spinner_index: usize,
+}
+
+struct InstallTaskOutput {
+    summary: BuildSummary,
+    sample: Option<String>,
+    installed_path: PathBuf,
 }
 
 impl TerminalSession {
@@ -123,6 +139,7 @@ impl App {
             .unwrap_or_else(|| Path::new("."))
             .to_path_buf();
         let (last_build, last_sample) = cached_build_state(&config);
+        let installed_font_path = cached_installed_font_path(&manifest_path, &config.font_name);
         Self {
             manifest_path,
             project_dir,
@@ -134,7 +151,8 @@ impl App {
             view: AppView::Home,
             last_build,
             last_sample,
-            installed_font_path: None,
+            installed_font_path,
+            install_task: None,
         }
     }
 
@@ -143,6 +161,8 @@ impl App {
         let (last_build, last_sample) = cached_build_state(&self.config);
         self.last_build = last_build;
         self.last_sample = last_sample;
+        self.installed_font_path =
+            cached_installed_font_path(&self.manifest_path, &self.config.font_name);
         Ok(())
     }
 
@@ -230,24 +250,76 @@ impl App {
         Ok(())
     }
 
-    fn install_font(&mut self) -> Result<()> {
-        self.build_project()?;
-        let summary = self
-            .last_build
+    fn start_install_font(&mut self) {
+        if self.install_task.is_some() {
+            self.status = Some("install already in progress".to_string());
+            return;
+        }
+
+        let manifest_path = self.manifest_path.clone();
+        let (sender, receiver) = mpsc::channel();
+        thread::spawn(move || {
+            let result = build_and_install(manifest_path).map_err(|err| err.to_string());
+            let _ = sender.send(result);
+        });
+
+        self.install_task = Some(InstallTask {
+            receiver,
+            spinner_index: 0,
+        });
+        self.view = AppView::Font;
+        self.status = None;
+    }
+
+    fn poll_install_task(&mut self) {
+        let mut task_result = None;
+        let mut disconnected = false;
+
+        if let Some(task) = self.install_task.as_mut() {
+            task.spinner_index = (task.spinner_index + 1) % INSTALL_SPINNER_FRAMES.len();
+            match task.receiver.try_recv() {
+                Ok(result) => task_result = Some(result),
+                Err(TryRecvError::Empty) => {}
+                Err(TryRecvError::Disconnected) => disconnected = true,
+            }
+        }
+
+        if disconnected {
+            self.install_task = None;
+            self.status = Some("install task terminated unexpectedly".to_string());
+            return;
+        }
+
+        let Some(result) = task_result else {
+            return;
+        };
+
+        self.install_task = None;
+        match result {
+            Ok(output) => {
+                self.last_build = Some(output.summary);
+                self.last_sample = output.sample;
+                self.installed_font_path = Some(output.installed_path.clone());
+                self.status = Some(format!(
+                    "installed font to {}",
+                    output.installed_path.display()
+                ));
+                self.view = AppView::Font;
+            }
+            Err(err) => {
+                self.status = Some(err);
+            }
+        }
+    }
+
+    fn install_spinner_frame(&self) -> Option<&'static str> {
+        self.install_task
             .as_ref()
-            .context("build summary missing after build")?;
-        let installed = install_built_font(
-            &self.manifest_path,
-            &self.config.font_name,
-            &summary.ttf_path,
-            summary.glyph_count,
-        )?;
-        self.installed_font_path = Some(installed.install_path.clone());
-        self.status = Some(format!(
-            "installed font to {}",
-            installed.install_path.display()
-        ));
-        Ok(())
+            .map(|task| INSTALL_SPINNER_FRAMES[task.spinner_index % INSTALL_SPINNER_FRAMES.len()])
+    }
+
+    fn install_in_progress(&self) -> bool {
+        self.install_task.is_some()
     }
 
     fn sample_string(&self) -> String {
@@ -263,6 +335,35 @@ impl BuildSummary {
     fn out_dir(&self) -> &Path {
         self.ttf_path.parent().unwrap_or_else(|| Path::new("."))
     }
+}
+
+fn build_and_install(manifest_path: PathBuf) -> Result<InstallTaskOutput> {
+    let config = load_runtime_config(&manifest_path, None, None, None, None, None)?;
+    if config.glyph_size == 0 {
+        bail!("glyph_size must be > 0");
+    }
+
+    let summary = build_outputs(&config)?;
+    let sample = fs::read_to_string(&summary.sample_path)
+        .with_context(|| format!("failed to read {}", summary.sample_path.display()))?;
+    let installed = install_built_font(
+        &manifest_path,
+        &config.font_name,
+        &summary.ttf_path,
+        summary.glyph_count,
+    )?;
+    let sample = sample.trim_end().to_string();
+    let sample = if sample.is_empty() {
+        None
+    } else {
+        Some(sample)
+    };
+
+    Ok(InstallTaskOutput {
+        summary,
+        sample,
+        installed_path: installed.install_path,
+    })
 }
 
 fn cached_build_state(config: &RuntimeConfig) -> (Option<BuildSummary>, Option<String>) {
@@ -297,6 +398,11 @@ fn cached_build_state(config: &RuntimeConfig) -> (Option<BuildSummary>, Option<S
         }),
         sample,
     )
+}
+
+fn cached_installed_font_path(manifest_path: &Path, font_name: &str) -> Option<PathBuf> {
+    let path = expected_install_ttf_path(manifest_path, font_name).ok()?;
+    if path.is_file() { Some(path) } else { None }
 }
 
 pub(crate) fn persist_threshold_override(
@@ -409,10 +515,14 @@ pub(crate) fn handle_key(app: &mut App, code: KeyCode) -> Result<()> {
             };
         }
         KeyCode::Char('b') => {
-            app.build_project()?;
+            if app.install_in_progress() {
+                app.status = Some("install is in progress; wait for it to finish".to_string());
+            } else {
+                app.build_project()?;
+            }
         }
         KeyCode::Char('i') => {
-            app.install_font()?;
+            app.start_install_font();
         }
         KeyCode::Down | KeyCode::Char('j') => {
             if app.view == AppView::Glyphs {
@@ -554,6 +664,14 @@ fn draw_ui(frame: &mut Frame, app: &App) {
         footer_spans.push(Span::styled(
             status.clone(),
             Style::default().fg(Color::LightRed),
+        ));
+    }
+
+    if let Some(spinner) = app.install_spinner_frame() {
+        footer_spans.push(Span::styled(" | ", Style::default().fg(muted)));
+        footer_spans.push(Span::styled(
+            format!("{spinner} installing font..."),
+            Style::default().fg(Color::Yellow),
         ));
     }
 
@@ -821,13 +939,12 @@ fn draw_font_view(
     let installed_status = match &app.installed_font_path {
         Some(p) => Span::styled(p.display().to_string(), ok_style),
         None => {
-            let target = install_dir_for_manifest(&app.manifest_path)
+            let target = expected_install_ttf_path(&app.manifest_path, &app.config.font_name)
                 .map(|p| p.display().to_string())
-                .unwrap_or_else(|_| "~/.local/share/fonts/petiglyph/<project>".to_string());
-            Span::styled(
-                format!("Not installed in this session (target: {})", target),
-                missing_style,
-            )
+                .unwrap_or_else(|_| {
+                    "~/.local/share/fonts/petiglyph/<project>/<font>.ttf".to_string()
+                });
+            Span::styled(format!("Not installed (target: {})", target), missing_style)
         }
     };
 
