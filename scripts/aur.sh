@@ -10,16 +10,15 @@ Usage:
   ./scripts/aur.sh [step]
 
 Steps:
-  uninstall     Remove installed package, rebuild latest package, then install it (default)
+  uninstall     Remove installed package only
+  reinstall     Remove installed package, rebuild latest package, then install it (default)
   build         Regenerate PKGBUILD + source tarball, then rebuild package artifacts
   install       Install latest built package with pacman
   pkgbuild      Generate PKGBUILD from Cargo.toml metadata
   tarball       Create source tarball using git archive
-  all           Alias for build
-  all-install   Alias for uninstall
 
 Defaults:
-  step defaults to "uninstall"
+  step defaults to "reinstall"
 EOF
 }
 
@@ -129,18 +128,22 @@ install_package() {
   sudo pacman -U --needed --noconfirm "$pkg_file"
 }
 
-uninstall_and_reinstall_package() {
+uninstall_package() {
   if pacman -Q "$pkgname" >/dev/null 2>&1; then
     echo "Removing installed package: $pkgname"
     sudo pacman -Rns --noconfirm "$pkgname"
   else
     echo "Package not currently installed: $pkgname"
   fi
+}
+
+uninstall_and_reinstall_package() {
+  uninstall_package
   build_latest_package
   install_package
 }
 
-step="${1:-uninstall}"
+step="${1:-reinstall}"
 if [[ $# -gt 0 ]]; then
   shift
 fi
@@ -165,12 +168,9 @@ case "$step" in
     install_package
     ;;
   uninstall)
-    uninstall_and_reinstall_package
+    uninstall_package
     ;;
-  all)
-    build_latest_package
-    ;;
-  all-install)
+  reinstall)
     uninstall_and_reinstall_package
     ;;
   -h|--help|help)
