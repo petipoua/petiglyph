@@ -84,6 +84,9 @@ enum CliCommand {
         /// Override starting Unicode codepoint (for example U+100000).
         #[arg(long)]
         codepoint_start: Option<String>,
+        /// Emit machine-readable JSON to stdout.
+        #[arg(long)]
+        json: bool,
     },
     /// Build the font and print the sample private-use string.
     Sample {
@@ -105,6 +108,9 @@ enum CliCommand {
         /// Override starting Unicode codepoint (for example U+100000).
         #[arg(long)]
         codepoint_start: Option<String>,
+        /// Emit machine-readable JSON to stdout.
+        #[arg(long)]
+        json: bool,
     },
     /// Build the font and install it into the user font directory.
     InstallFont {
@@ -126,6 +132,18 @@ enum CliCommand {
         /// Override starting Unicode codepoint (for example U+100000).
         #[arg(long)]
         codepoint_start: Option<String>,
+        /// Emit machine-readable JSON to stdout.
+        #[arg(long)]
+        json: bool,
+    },
+    /// Uninstall the previously installed font for this project scope.
+    UninstallFont {
+        /// Path to the manifest file. Defaults to ./petiglyph.toml.
+        #[arg(short, long)]
+        manifest: Option<PathBuf>,
+        /// Emit machine-readable JSON to stdout.
+        #[arg(long)]
+        json: bool,
     },
 }
 
@@ -198,14 +216,123 @@ struct BuildSummary {
     previews_dir: PathBuf,
 }
 
-fn main() -> Result<()> {
+const CLI_VERSION: &str = env!("CARGO_PKG_VERSION");
+const INSTALL_METADATA_FILE: &str = ".petiglyph-install.json";
+
+#[derive(Debug, Serialize)]
+struct ApiResponse<T: Serialize> {
+    ok: bool,
+    command: &'static str,
+    version: &'static str,
+    data: T,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    error: Option<ApiErrorPayload>,
+}
+
+#[derive(Debug, Serialize)]
+struct ApiErrorPayload {
+    message: String,
+    causes: Vec<String>,
+}
+
+#[derive(Debug, Clone, Copy, Serialize)]
+#[serde(rename_all = "snake_case")]
+enum FontPlatform {
+    Linux,
+    Macos,
+    Windows,
+}
+
+#[derive(Debug, Serialize)]
+struct BuildCommandData {
+    manifest: String,
+    input_dir: String,
+    out_dir: String,
+    font_name: String,
+    glyph_count: usize,
+    threshold: u8,
+    threshold_overrides: usize,
+    glyph_size: u32,
+    codepoint_start: String,
+    bdf: String,
+    ttf: String,
+    map: String,
+    sample: String,
+    previews: String,
+}
+
+#[derive(Debug, Serialize)]
+struct SampleCommandData {
+    build: BuildCommandData,
+    sample_string: String,
+}
+
+#[derive(Debug, Serialize)]
+struct InstallFontCommandData {
+    build: BuildCommandData,
+    platform: FontPlatform,
+    install_dir: String,
+    installed_ttf: String,
+    replaced_previous_ttf_count: usize,
+}
+
+#[derive(Debug, Clone, Copy, Serialize)]
+#[serde(rename_all = "snake_case")]
+enum UninstallOutcome {
+    Removed,
+    AlreadyAbsent,
+}
+
+#[derive(Debug, Serialize)]
+struct UninstallFontCommandData {
+    manifest: String,
+    platform: FontPlatform,
+    install_dir: String,
+    outcome: UninstallOutcome,
+    removed_ttf_count: usize,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct InstalledFontMetadata {
+    manifest_path: String,
+    font_name: String,
+    installed_ttf: String,
+    version: String,
+}
+
+enum CliRunError {
+    Plain(anyhow::Error),
+    Json {
+        command: &'static str,
+        error: anyhow::Error,
+    },
+}
+
+fn main() {
     let cli = Cli::parse();
+    let exit_code = match run_cli(cli) {
+        Ok(()) => 0,
+        Err(CliRunError::Plain(error)) => {
+            eprintln!("{error:#}");
+            1
+        }
+        Err(CliRunError::Json { command, error }) => {
+            emit_json_error(command, &error);
+            1
+        }
+    };
+    std::process::exit(exit_code);
+}
+
+fn run_cli(cli: Cli) -> std::result::Result<(), CliRunError> {
     match cli.command {
         None => {
-            let manifest = manifest_path_from_option(None)?;
-            tui(manifest, None, None, None, None)
+            let manifest = manifest_path_from_option(None).map_err(CliRunError::Plain)?;
+            tui(manifest, None, None, None, None).map_err(CliRunError::Plain)
         }
-        Some(CliCommand::Create { name, no_launch }) => create_project(&name, no_launch),
+        Some(CliCommand::Create { name, no_launch }) => {
+            create_project(&name, no_launch).map_err(CliRunError::Plain)
+        }
         Some(CliCommand::Tui {
             manifest,
             input_dir,
@@ -213,12 +340,13 @@ fn main() -> Result<()> {
             glyph_size,
             codepoint_start,
         }) => tui(
-            manifest_path_from_option(manifest)?,
+            manifest_path_from_option(manifest).map_err(CliRunError::Plain)?,
             input_dir,
             threshold,
             glyph_size,
             codepoint_start,
-        ),
+        )
+        .map_err(CliRunError::Plain),
         Some(CliCommand::Build {
             manifest,
             input_dir,
@@ -226,13 +354,21 @@ fn main() -> Result<()> {
             threshold,
             glyph_size,
             codepoint_start,
-        }) => build_font(
-            manifest_path_from_option(manifest)?,
-            input_dir,
-            out_dir,
-            threshold,
-            glyph_size,
-            codepoint_start,
+            json,
+        }) => run_automation_command(
+            "build",
+            json,
+            || {
+                build_font(
+                    manifest_path_from_option(manifest)?,
+                    input_dir,
+                    out_dir,
+                    threshold,
+                    glyph_size,
+                    codepoint_start,
+                )
+            },
+            print_build_result,
         ),
         Some(CliCommand::Sample {
             manifest,
@@ -241,13 +377,21 @@ fn main() -> Result<()> {
             threshold,
             glyph_size,
             codepoint_start,
-        }) => sample_command(
-            manifest_path_from_option(manifest)?,
-            input_dir,
-            out_dir,
-            threshold,
-            glyph_size,
-            codepoint_start,
+            json,
+        }) => run_automation_command(
+            "sample",
+            json,
+            || {
+                sample_command(
+                    manifest_path_from_option(manifest)?,
+                    input_dir,
+                    out_dir,
+                    threshold,
+                    glyph_size,
+                    codepoint_start,
+                )
+            },
+            print_sample_result,
         ),
         Some(CliCommand::InstallFont {
             manifest,
@@ -256,14 +400,185 @@ fn main() -> Result<()> {
             threshold,
             glyph_size,
             codepoint_start,
-        }) => install_font_command(
-            manifest_path_from_option(manifest)?,
-            input_dir,
-            out_dir,
-            threshold,
-            glyph_size,
-            codepoint_start,
+            json,
+        }) => run_automation_command(
+            "install-font",
+            json,
+            || {
+                install_font_command(
+                    manifest_path_from_option(manifest)?,
+                    input_dir,
+                    out_dir,
+                    threshold,
+                    glyph_size,
+                    codepoint_start,
+                )
+            },
+            print_install_result,
         ),
+        Some(CliCommand::UninstallFont { manifest, json }) => run_automation_command(
+            "uninstall-font",
+            json,
+            || uninstall_font_command(manifest_path_from_option(manifest)?),
+            print_uninstall_result,
+        ),
+    }
+}
+
+fn run_automation_command<T, F, H>(
+    command: &'static str,
+    json: bool,
+    operation: F,
+    human_printer: H,
+) -> std::result::Result<(), CliRunError>
+where
+    T: Serialize,
+    F: FnOnce() -> Result<T>,
+    H: FnOnce(&T),
+{
+    match operation() {
+        Ok(data) => {
+            if json {
+                emit_json_success(command, &data);
+            } else {
+                human_printer(&data);
+            }
+            Ok(())
+        }
+        Err(error) => {
+            if json {
+                Err(CliRunError::Json { command, error })
+            } else {
+                Err(CliRunError::Plain(error))
+            }
+        }
+    }
+}
+
+fn emit_json_success<T: Serialize>(command: &'static str, data: &T) {
+    let payload = ApiResponse {
+        ok: true,
+        command,
+        version: CLI_VERSION,
+        data,
+        error: None,
+    };
+    if let Ok(line) = serde_json::to_string(&payload) {
+        println!("{line}");
+    } else {
+        println!(
+            "{{\"ok\":true,\"command\":\"{command}\",\"version\":\"{CLI_VERSION}\",\"data\":{{}},\"error\":null}}"
+        );
+    }
+}
+
+fn emit_json_error(command: &'static str, error: &anyhow::Error) {
+    let causes = error
+        .chain()
+        .skip(1)
+        .map(|cause| cause.to_string())
+        .collect::<Vec<_>>();
+    let payload = ApiResponse {
+        ok: false,
+        command,
+        version: CLI_VERSION,
+        data: serde_json::json!({}),
+        error: Some(ApiErrorPayload {
+            message: error.to_string(),
+            causes,
+        }),
+    };
+    if let Ok(line) = serde_json::to_string(&payload) {
+        println!("{line}");
+    } else {
+        println!(
+            "{{\"ok\":false,\"command\":\"{command}\",\"version\":\"{CLI_VERSION}\",\"data\":{{}},\"error\":{{\"message\":\"failed to serialize error payload\",\"causes\":[]}}}}"
+        );
+    }
+}
+
+fn format_codepoint(codepoint: u32) -> String {
+    format!("U+{:04X}", codepoint)
+}
+
+fn build_command_data(
+    manifest_path: &Path,
+    config: &RuntimeConfig,
+    summary: &BuildSummary,
+) -> BuildCommandData {
+    BuildCommandData {
+        manifest: manifest_path.display().to_string(),
+        input_dir: config.input_dir.display().to_string(),
+        out_dir: config.out_dir.display().to_string(),
+        font_name: config.font_name.clone(),
+        glyph_count: summary.glyph_count,
+        threshold: config.base_threshold,
+        threshold_overrides: config.threshold_overrides.len(),
+        glyph_size: config.glyph_size,
+        codepoint_start: format_codepoint(config.codepoint_start),
+        bdf: summary.bdf_path.display().to_string(),
+        ttf: summary.ttf_path.display().to_string(),
+        map: summary.mapping_path.display().to_string(),
+        sample: summary.sample_path.display().to_string(),
+        previews: summary.previews_dir.display().to_string(),
+    }
+}
+
+fn print_build_result(data: &BuildCommandData) {
+    println!("build complete");
+    println!("  manifest: {}", data.manifest);
+    println!("  input-dir: {}", data.input_dir);
+    println!("  out-dir: {}", data.out_dir);
+    println!("  font: {}", data.font_name);
+    println!("  glyphs: {}", data.glyph_count);
+    println!("  threshold: {}", data.threshold);
+    println!("  threshold-overrides: {}", data.threshold_overrides);
+    println!("  glyph-size: {}", data.glyph_size);
+    println!("  codepoint-start: {}", data.codepoint_start);
+    println!("  bdf: {}", data.bdf);
+    println!("  ttf: {}", data.ttf);
+    println!("  map: {}", data.map);
+    println!("  sample: {}", data.sample);
+    println!("  previews: {}", data.previews);
+}
+
+fn print_sample_result(data: &SampleCommandData) {
+    println!("petiglyph sample");
+    println!("font: {}", data.build.font_name);
+    println!("glyphs: {}", data.build.glyph_count);
+    println!("threshold: {}", data.build.threshold);
+    println!("threshold-overrides: {}", data.build.threshold_overrides);
+    println!("glyph-size: {}", data.build.glyph_size);
+    println!("ttf: {}", data.build.ttf);
+    println!("sample: {}", data.build.sample);
+    println!();
+    println!("{}", data.sample_string);
+}
+
+fn print_install_result(data: &InstallFontCommandData) {
+    println!("font installed");
+    println!("  source: {}", data.build.ttf);
+    println!("  installed: {}", data.installed_ttf);
+    println!("  install-dir: {}", data.install_dir);
+    println!(
+        "  replaced-previous-ttfs: {}",
+        data.replaced_previous_ttf_count
+    );
+}
+
+fn print_uninstall_result(data: &UninstallFontCommandData) {
+    match data.outcome {
+        UninstallOutcome::Removed => {
+            println!("font uninstalled");
+            println!("  manifest: {}", data.manifest);
+            println!("  install-dir: {}", data.install_dir);
+            println!("  removed-ttfs: {}", data.removed_ttf_count);
+        }
+        UninstallOutcome::AlreadyAbsent => {
+            println!("font already absent");
+            println!("  manifest: {}", data.manifest);
+            println!("  install-dir: {}", data.install_dir);
+        }
     }
 }
 
@@ -374,7 +689,7 @@ fn build_font(
     threshold_override: Option<u8>,
     glyph_size_override: Option<u32>,
     codepoint_start_override: Option<String>,
-) -> Result<()> {
+) -> Result<BuildCommandData> {
     let config = load_runtime_config(
         &manifest_path,
         input_override,
@@ -389,24 +704,7 @@ fn build_font(
     }
 
     let summary = build_outputs(&config)?;
-
-    println!("build complete");
-    println!("  input-dir: {}", config.input_dir.display());
-    println!("  out-dir: {}", config.out_dir.display());
-    println!("  glyphs: {}", summary.glyph_count);
-    println!("  threshold: {}", config.base_threshold);
-    println!(
-        "  threshold-overrides: {}",
-        config.threshold_overrides.len()
-    );
-    println!("  glyph-size: {}", config.glyph_size);
-    println!("  bdf: {}", summary.bdf_path.display());
-    println!("  ttf: {}", summary.ttf_path.display());
-    println!("  map: {}", summary.mapping_path.display());
-    println!("  sample: {}", summary.sample_path.display());
-    println!("  previews: {}", summary.previews_dir.display());
-
-    Ok(())
+    Ok(build_command_data(&manifest_path, &config, &summary))
 }
 
 fn build_outputs(config: &RuntimeConfig) -> Result<BuildSummary> {
@@ -522,10 +820,9 @@ fn tui(
         if event::poll(Duration::from_millis(120))?
             && let Event::Key(key) = event::read()?
             && key.kind == KeyEventKind::Press
+            && let Err(err) = handle_key(&mut app, key.code)
         {
-            if let Err(err) = handle_key(&mut app, key.code) {
-                app.status = Some(err.to_string());
-            }
+            app.status = Some(err.to_string());
         }
     }
 
@@ -540,7 +837,7 @@ fn sample_command(
     threshold_override: Option<u8>,
     glyph_size_override: Option<u32>,
     codepoint_start_override: Option<String>,
-) -> Result<()> {
+) -> Result<SampleCommandData> {
     let config = load_runtime_config(
         &manifest_path,
         input_override,
@@ -553,19 +850,10 @@ fn sample_command(
     let summary = build_outputs(&config)?;
     let sample = fs::read_to_string(&summary.sample_path)
         .with_context(|| format!("failed to read {}", summary.sample_path.display()))?;
-
-    println!("petiglyph sample");
-    println!("font: {}", config.font_name);
-    println!("glyphs: {}", summary.glyph_count);
-    println!("threshold: {}", config.base_threshold);
-    println!("threshold-overrides: {}", config.threshold_overrides.len());
-    println!("glyph-size: {}", config.glyph_size);
-    println!("ttf: {}", summary.ttf_path.display());
-    println!("sample: {}", summary.sample_path.display());
-    println!();
-    print!("{sample}");
-
-    Ok(())
+    Ok(SampleCommandData {
+        build: build_command_data(&manifest_path, &config, &summary),
+        sample_string: sample.trim_end().to_string(),
+    })
 }
 
 fn install_font_command(
@@ -575,7 +863,7 @@ fn install_font_command(
     threshold_override: Option<u8>,
     glyph_size_override: Option<u32>,
     codepoint_start_override: Option<String>,
-) -> Result<()> {
+) -> Result<InstallFontCommandData> {
     let config = load_runtime_config(
         &manifest_path,
         input_override,
@@ -586,17 +874,30 @@ fn install_font_command(
     )?;
 
     let summary = build_outputs(&config)?;
-    let install_path = install_built_font(
+    let install_result = install_built_font(
         &manifest_path,
         &config.font_name,
         &summary.ttf_path,
         summary.glyph_count,
     )?;
+    Ok(InstallFontCommandData {
+        build: build_command_data(&manifest_path, &config, &summary),
+        platform: install_result.platform,
+        install_dir: install_result.install_dir.display().to_string(),
+        installed_ttf: install_result.install_path.display().to_string(),
+        replaced_previous_ttf_count: install_result.replaced_previous_ttf_count,
+    })
+}
 
-    println!("font installed");
-    println!("  source: {}", summary.ttf_path.display());
-    println!("  installed: {}", install_path.display());
-    Ok(())
+fn uninstall_font_command(manifest_path: PathBuf) -> Result<UninstallFontCommandData> {
+    let uninstall = uninstall_project_font(&manifest_path)?;
+    Ok(UninstallFontCommandData {
+        manifest: manifest_path.display().to_string(),
+        platform: uninstall.platform,
+        install_dir: uninstall.install_dir.display().to_string(),
+        outcome: uninstall.outcome,
+        removed_ttf_count: uninstall.removed_ttf_count,
+    })
 }
 
 fn load_runtime_config(
@@ -664,12 +965,60 @@ fn humanize_project_name(project_name: &str) -> String {
     }
 }
 
-fn user_font_root() -> Result<PathBuf> {
-    let home = env::var_os("HOME").context("HOME is not set")?;
-    Ok(PathBuf::from(home).join(".local/share/fonts"))
+#[derive(Debug, Clone)]
+struct FontInstallResult {
+    platform: FontPlatform,
+    install_dir: PathBuf,
+    install_path: PathBuf,
+    replaced_previous_ttf_count: usize,
 }
 
-fn install_dir_for_project(manifest_path: &Path) -> Result<PathBuf> {
+#[derive(Debug, Clone)]
+struct FontUninstallResult {
+    platform: FontPlatform,
+    install_dir: PathBuf,
+    outcome: UninstallOutcome,
+    removed_ttf_count: usize,
+}
+
+fn current_platform() -> Result<FontPlatform> {
+    match env::consts::OS {
+        "linux" => Ok(FontPlatform::Linux),
+        "macos" => Ok(FontPlatform::Macos),
+        "windows" => Ok(FontPlatform::Windows),
+        other => bail!("font install/uninstall is not supported on this OS: {other}"),
+    }
+}
+
+fn home_dir() -> Result<PathBuf> {
+    if let Some(home) = env::var_os("HOME") {
+        return Ok(PathBuf::from(home));
+    }
+
+    if let Some(profile) = env::var_os("USERPROFILE") {
+        return Ok(PathBuf::from(profile));
+    }
+
+    bail!("cannot resolve user home directory from HOME or USERPROFILE")
+}
+
+fn user_font_root() -> Result<PathBuf> {
+    let platform = current_platform()?;
+    let home = home_dir()?;
+    let root = match platform {
+        FontPlatform::Linux => home.join(".local/share/fonts"),
+        FontPlatform::Macos => home.join("Library/Fonts"),
+        FontPlatform::Windows => {
+            let local = env::var_os("LOCALAPPDATA")
+                .map(PathBuf::from)
+                .unwrap_or_else(|| home.join("AppData/Local"));
+            local.join("Microsoft/Windows/Fonts")
+        }
+    };
+    Ok(root)
+}
+
+fn install_dir_for_project(manifest_path: &Path, font_root: &Path) -> Result<PathBuf> {
     let project_dir = manifest_path
         .parent()
         .unwrap_or_else(|| Path::new("."))
@@ -680,21 +1029,62 @@ fn install_dir_for_project(manifest_path: &Path) -> Result<PathBuf> {
         .and_then(|name| name.to_str())
         .filter(|name| !name.trim().is_empty())
         .unwrap_or("project");
-    Ok(user_font_root()?
-        .join("petiglyph")
-        .join(slugify(project_name)))
+    Ok(font_root.join("petiglyph").join(slugify(project_name)))
 }
 
-fn refresh_font_cache(font_root: &Path) -> Result<()> {
-    let status = ProcessCommand::new("fc-cache")
-        .arg("-f")
-        .arg(font_root)
+fn install_dir_for_manifest(manifest_path: &Path) -> Result<PathBuf> {
+    let font_root = user_font_root()?;
+    install_dir_for_project(manifest_path, &font_root)
+}
+
+fn run_refresh_command(mut command: ProcessCommand, description: &str) -> Result<()> {
+    let status = command
         .status()
-        .context("failed to run fc-cache")?;
+        .with_context(|| format!("failed to run {description}"))?;
     if !status.success() {
-        bail!("fc-cache failed with status {status}");
+        bail!("{description} failed with status {status}");
     }
     Ok(())
+}
+
+fn refresh_font_cache(font_root: &Path, platform: FontPlatform) -> Result<()> {
+    match platform {
+        FontPlatform::Linux => run_refresh_command(
+            {
+                let mut command = ProcessCommand::new("fc-cache");
+                command.arg("-f").arg(font_root);
+                command
+            },
+            "Linux font cache refresh (`fc-cache -f`)",
+        ),
+        FontPlatform::Macos => run_refresh_command(
+            {
+                let mut command = ProcessCommand::new("atsutil");
+                command.arg("databases").arg("-removeUser");
+                command
+            },
+            "macOS font cache refresh (`atsutil databases -removeUser`)",
+        ),
+        FontPlatform::Windows => run_refresh_command(
+            {
+                let mut command = ProcessCommand::new("powershell");
+                command.arg("-NoProfile").arg("-Command").arg(
+                    "$sig='[DllImport(\"user32.dll\", SetLastError=true)] public static extern IntPtr SendMessageTimeout(IntPtr hWnd, uint Msg, UIntPtr wParam, string lParam, uint fuFlags, uint uTimeout, out UIntPtr lpdwResult);'; $type = Add-Type -MemberDefinition $sig -Name User32SendMessageTimeout -Namespace Petiglyph -PassThru; $result=[UIntPtr]::Zero; [void]$type::SendMessageTimeout([IntPtr]0xffff, 0x001D, [UIntPtr]::Zero, $null, 2, 3000, [ref]$result)",
+                );
+                command
+            },
+            "Windows font change broadcast via PowerShell",
+        ),
+    }
+}
+
+fn font_file_name(font_name: &str) -> String {
+    let slug = slugify(font_name);
+    if slug.is_empty() {
+        "petiglyph.ttf".to_string()
+    } else {
+        format!("{slug}.ttf")
+    }
 }
 
 fn install_built_font(
@@ -702,15 +1092,18 @@ fn install_built_font(
     font_name: &str,
     built_ttf: &Path,
     glyph_count: usize,
-) -> Result<PathBuf> {
+) -> Result<FontInstallResult> {
     if glyph_count == 0 {
         bail!("cannot install a font with zero glyphs");
     }
 
-    let install_dir = install_dir_for_project(manifest_path)?;
+    let platform = current_platform()?;
+    let font_root = user_font_root()?;
+    let install_dir = install_dir_for_project(manifest_path, &font_root)?;
     fs::create_dir_all(&install_dir)
         .with_context(|| format!("failed to create {}", install_dir.display()))?;
 
+    let mut replaced_previous_ttf_count = 0usize;
     for entry in fs::read_dir(&install_dir)
         .with_context(|| format!("failed to read {}", install_dir.display()))?
     {
@@ -720,17 +1113,11 @@ fn install_built_font(
         if path.extension().and_then(|ext| ext.to_str()) == Some("ttf") {
             fs::remove_file(&path)
                 .with_context(|| format!("failed to remove {}", path.display()))?;
+            replaced_previous_ttf_count += 1;
         }
     }
 
-    let file_name = {
-        let slug = slugify(font_name);
-        if slug.is_empty() {
-            "petiglyph.ttf".to_string()
-        } else {
-            format!("{slug}.ttf")
-        }
-    };
+    let file_name = font_file_name(font_name);
     let install_path = install_dir.join(file_name);
     fs::copy(built_ttf, &install_path).with_context(|| {
         format!(
@@ -739,8 +1126,134 @@ fn install_built_font(
             install_path.display()
         )
     })?;
-    refresh_font_cache(&user_font_root()?)?;
-    Ok(install_path)
+
+    let manifest_canonical = manifest_path
+        .canonicalize()
+        .with_context(|| format!("failed to resolve {}", manifest_path.display()))?;
+    let metadata = InstalledFontMetadata {
+        manifest_path: manifest_canonical.display().to_string(),
+        font_name: font_name.to_string(),
+        installed_ttf: install_path.display().to_string(),
+        version: CLI_VERSION.to_string(),
+    };
+    let metadata_path = install_dir.join(INSTALL_METADATA_FILE);
+    let metadata_json =
+        serde_json::to_string_pretty(&metadata).context("failed to serialize install metadata")?;
+    fs::write(&metadata_path, metadata_json)
+        .with_context(|| format!("failed to write {}", metadata_path.display()))?;
+
+    refresh_font_cache(&font_root, platform)?;
+    Ok(FontInstallResult {
+        platform,
+        install_dir,
+        install_path,
+        replaced_previous_ttf_count,
+    })
+}
+
+fn uninstall_project_font(manifest_path: &Path) -> Result<FontUninstallResult> {
+    let platform = current_platform()?;
+    let font_root = user_font_root()?;
+    let install_dir = install_dir_for_project(manifest_path, &font_root)?;
+    let manifest_canonical = manifest_path
+        .canonicalize()
+        .with_context(|| format!("failed to resolve {}", manifest_path.display()))?;
+
+    if !install_dir.exists() {
+        return Ok(FontUninstallResult {
+            platform,
+            install_dir,
+            outcome: UninstallOutcome::AlreadyAbsent,
+            removed_ttf_count: 0,
+        });
+    }
+
+    let mut ttf_files = Vec::new();
+    let mut metadata_path: Option<PathBuf> = None;
+    for entry in fs::read_dir(&install_dir)
+        .with_context(|| format!("failed to read {}", install_dir.display()))?
+    {
+        let entry =
+            entry.with_context(|| format!("failed to inspect {}", install_dir.display()))?;
+        let path = entry.path();
+
+        if path.is_dir() {
+            bail!(
+                "blocked uninstall for {}: nested directory found: {}",
+                install_dir.display(),
+                path.display()
+            );
+        }
+
+        let file_name = path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or_default();
+        if file_name == INSTALL_METADATA_FILE {
+            metadata_path = Some(path);
+            continue;
+        }
+
+        if path.extension().and_then(|ext| ext.to_str()) == Some("ttf") {
+            ttf_files.push(path);
+            continue;
+        }
+
+        bail!(
+            "blocked uninstall for {}: refusing to remove unexpected file {}",
+            install_dir.display(),
+            path.display()
+        );
+    }
+
+    if ttf_files.is_empty() && metadata_path.is_none() {
+        if fs::read_dir(&install_dir)?.next().is_none() {
+            fs::remove_dir(&install_dir)
+                .with_context(|| format!("failed to remove {}", install_dir.display()))?;
+        }
+        return Ok(FontUninstallResult {
+            platform,
+            install_dir,
+            outcome: UninstallOutcome::AlreadyAbsent,
+            removed_ttf_count: 0,
+        });
+    }
+
+    if let Some(metadata_path) = &metadata_path {
+        let metadata_raw = fs::read_to_string(metadata_path)
+            .with_context(|| format!("failed to read {}", metadata_path.display()))?;
+        let metadata: InstalledFontMetadata = serde_json::from_str(&metadata_raw)
+            .with_context(|| format!("failed to parse {}", metadata_path.display()))?;
+        if metadata.manifest_path != manifest_canonical.display().to_string() {
+            bail!(
+                "blocked uninstall for {}: install metadata belongs to {}",
+                install_dir.display(),
+                metadata.manifest_path
+            );
+        }
+    }
+
+    for path in &ttf_files {
+        fs::remove_file(path).with_context(|| format!("failed to remove {}", path.display()))?;
+    }
+
+    if let Some(metadata_path) = metadata_path {
+        fs::remove_file(&metadata_path)
+            .with_context(|| format!("failed to remove {}", metadata_path.display()))?;
+    }
+
+    if fs::read_dir(&install_dir)?.next().is_none() {
+        fs::remove_dir(&install_dir)
+            .with_context(|| format!("failed to remove {}", install_dir.display()))?;
+    }
+
+    refresh_font_cache(&font_root, platform)?;
+    Ok(FontUninstallResult {
+        platform,
+        install_dir,
+        outcome: UninstallOutcome::Removed,
+        removed_ttf_count: ttf_files.len(),
+    })
 }
 
 fn parse_codepoint(value: &str) -> Result<u32> {
@@ -878,7 +1391,7 @@ fn render_svg(path: &Path, glyph_size: u32) -> Result<RgbaImage> {
         .ok_or_else(|| anyhow::anyhow!("failed to allocate SVG render target"))?;
 
     let transform = Transform::from_scale(out_w as f32 / src_w as f32, out_h as f32 / src_h as f32);
-    let _ = resvg::render(&tree, transform, &mut pixmap.as_mut());
+    resvg::render(&tree, transform, &mut pixmap.as_mut());
 
     let pixels = pixmap.data().to_vec();
     ImageBuffer::from_raw(out_w, out_h, pixels)
@@ -1300,9 +1813,7 @@ fn bitmap_glyph_to_ttf(
     }
     push_u16(&mut data, 0);
 
-    for _ in &points {
-        data.push(0x01);
-    }
+    data.extend(std::iter::repeat_n(0x01, points.len()));
 
     let mut prev_x = 0i16;
     for (x, _) in &points {
@@ -2065,8 +2576,11 @@ impl App {
             &summary.ttf_path,
             summary.glyph_count,
         )?;
-        self.installed_font_path = Some(installed.clone());
-        self.status = Some(format!("installed font to {}", installed.display()));
+        self.installed_font_path = Some(installed.install_path.clone());
+        self.status = Some(format!(
+            "installed font to {}",
+            installed.install_path.display()
+        ));
         Ok(())
     }
 
@@ -2483,14 +2997,14 @@ fn draw_font_view(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) {
             Some(path) => format!("Installed font: {}", path.display()),
             None => format!(
                 "Installed font: not installed in this session (target dir: {})",
-                install_dir_for_project(&app.manifest_path)
+                install_dir_for_manifest(&app.manifest_path)
                     .map(|path| path.display().to_string())
                     .unwrap_or_else(|_| "~/.local/share/fonts/petiglyph/<project>".to_string())
             ),
         }),
         Line::from(""),
         Line::from(
-            "Use b to rebuild after changing icons or thresholds. Use i to copy the built TTF into your user font directory and refresh fontconfig.",
+            "Use b to rebuild after changing icons or thresholds. Use i to copy the built TTF into your user font directory and refresh the OS font cache.",
         ),
     ];
 

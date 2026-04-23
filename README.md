@@ -1,17 +1,15 @@
 # petiglyph
 
-`petiglyph` turns a folder of images into a monochrome glyph font project, with a TUI as the primary interface.
+`petiglyph` turns a folder of images into a monochrome glyph font project.
 
-## Current Model
+It is designed for two modes:
 
-- `petiglyph` itself is the installed tool.
-- Each font project is self-contained in its own directory.
-- Source images live in `icons/`.
-- Generated assets live in `build/`.
-- Project config lives in `petiglyph.toml`.
-- The TUI is the main entrypoint for tuning, building, previewing, and installing fonts.
+- direct human use through a TUI (`petiglyph` / `petiglyph tui`)
+- automation use by other tools via stable CLI commands and JSON output
 
-## Project Layout
+## Project Model
+
+Each font project is self-contained:
 
 ```text
 my-font/
@@ -20,7 +18,11 @@ my-font/
   build/
 ```
 
-Deleting the project directory removes the project and all of its generated assets.
+- source images live in `icons/`
+- generated artifacts live in `build/`
+- config lives in `petiglyph.toml`
+
+Deleting the project directory removes project-local assets only.
 
 ## Quick Start
 
@@ -30,15 +32,9 @@ cd my-font
 petiglyph
 ```
 
-After `create`, place your images in `icons/`. The TUI can then:
+After `create`, place your images in `icons/` and use the TUI to tune thresholds, build, and install.
 
-- rescan icons
-- tune per-glyph thresholds
-- show ASCII previews
-- build the `.ttf`, `.bdf`, previews, glyph map, and sample text
-- install the built `.ttf` into `~/.local/share/fonts/petiglyph/<project>/`
-
-## Commands
+## CLI Commands
 
 ```bash
 # create a new project in the current directory
@@ -48,33 +44,151 @@ petiglyph create my-font
 petiglyph
 petiglyph tui
 
-# build from the current project manifest
+# automation-friendly build
 petiglyph build
+petiglyph build --json
 
-# build and print the private-use sample string
+# build and print sample string
 petiglyph sample
+petiglyph sample --json
 
-# build and install the font into the user font directory
+# build and install in user font location
 petiglyph install-font
+petiglyph install-font --json
+
+# uninstall the installed font for this project scope
+petiglyph uninstall-font
+petiglyph uninstall-font --json
 ```
 
-All non-`create` commands also support `--manifest` to target another project.
+All non-`create` commands accept `--manifest` to target another project.
+
+## Automation API Contract
+
+`--json` is supported on:
+
+- `build`
+- `sample`
+- `install-font`
+- `uninstall-font`
+
+When `--json` is enabled, stdout is a single machine-readable envelope:
+
+```json
+{
+  "ok": true,
+  "command": "build",
+  "version": "0.0.1",
+  "data": {},
+  "error": null
+}
+```
+
+Top-level fields are stable:
+
+- `ok` (`bool`)
+- `command` (`string`)
+- `version` (`string`)
+- `data` (`object`)
+- `error` (`object`, present on failures)
+
+Failure mode rules:
+
+- non-zero exit code
+- `ok: false`
+- actionable `error.message`
+- human logs are kept off stdout in JSON mode
+
+## Integration Examples
+
+### Shell
+
+```bash
+# Build and capture JSON
+petiglyph build --manifest ./petiglyph.toml --json
+
+# Install and parse with jq
+petiglyph install-font --json | jq -r '.data.installed_ttf'
+
+# Uninstall during app uninstall hook
+petiglyph uninstall-font --manifest ./petiglyph.toml --json
+```
+
+### Node.js
+
+```js
+import { spawnSync } from "node:child_process";
+
+const run = (args) => {
+  const out = spawnSync("petiglyph", args, { encoding: "utf8" });
+  const payload = JSON.parse(out.stdout.trim());
+  if (!out.status || out.status !== 0 || !payload.ok) {
+    throw new Error(payload.error?.message ?? "petiglyph command failed");
+  }
+  return payload.data;
+};
+
+const build = run(["build", "--manifest", "./petiglyph.toml", "--json"]);
+const install = run(["install-font", "--manifest", "./petiglyph.toml", "--json"]);
+```
+
+### Python
+
+```python
+import json
+import subprocess
+
+
+def run_petiglyph(*args):
+    proc = subprocess.run(["petiglyph", *args], check=False, text=True, capture_output=True)
+    payload = json.loads(proc.stdout.strip())
+    if proc.returncode != 0 or not payload.get("ok"):
+        raise RuntimeError(payload.get("error", {}).get("message", "petiglyph failed"))
+    return payload["data"]
+
+build = run_petiglyph("build", "--manifest", "./petiglyph.toml", "--json")
+install = run_petiglyph("install-font", "--manifest", "./petiglyph.toml", "--json")
+```
+
+## Font Lifecycle Behavior
+
+`install-font` is idempotent for a project scope:
+
+- installs into a project-scoped managed folder
+- replacing existing managed `.ttf` files in that scope is safe
+
+`uninstall-font` removes only managed files for that scope.
+
+Outcomes:
+
+- `removed`
+- `already_absent`
+- blocked/error with actionable message when unexpected files are present
+
+Current install root by OS:
+
+- Linux: `~/.local/share/fonts/petiglyph/<project>/`
+- macOS: `~/Library/Fonts/petiglyph/<project>/`
+- Windows: `%LOCALAPPDATA%/Microsoft/Windows/Fonts/petiglyph/<project>/`
+
+## Command Stability Policy
+
+Within `0.x`, command names and JSON top-level envelope fields are treated as stable for integrators.
+
+- additive fields may be introduced inside `data`
+- existing keys and semantics are not changed silently
+- contract changes are called out in release notes
+
+See [docs/release-notes-template.md](docs/release-notes-template.md) for the release checklist and schema-change callouts.
 
 ## Local Cargo Testing
 
 Run these from the repository root while developing:
 
 ```bash
-# format check
 cargo fmt --all -- --check
-
-# compile check
 cargo check
-
-# lint
 cargo clippy --all-targets --all-features -- -D warnings
-
-# tests
 cargo test
 ```
 
@@ -83,20 +197,17 @@ Quick manual smoke test with the bundled sample manifest:
 ```bash
 cargo run -- build --manifest test-font/petiglyph.toml
 cargo run -- sample --manifest test-font/petiglyph.toml
+cargo run -- install-font --manifest test-font/petiglyph.toml --json
+cargo run -- uninstall-font --manifest test-font/petiglyph.toml --json
 ```
 
 ## Local AUR-Style Test Scripts
 
-Use this script from the repo root to simulate the AUR flow locally on Arch:
+Use this script from repo root to simulate the AUR flow locally on Arch:
 
 ```bash
-# full flow: PKGBUILD -> tarball -> makepkg
 ./scripts/aur.sh
-
-# full flow and install built package
 ./scripts/aur.sh all-install
-
-# individual steps if needed
 ./scripts/aur.sh pkgbuild
 ./scripts/aur.sh tarball
 ./scripts/aur.sh build -- --cleanbuild
@@ -126,16 +237,16 @@ codepoint_start = "U+100000"
 - `1` / `2` / `3`: switch between Home, Glyphs, and Font views
 - `R`: rescan `icons/`
 - `j` / `k` or arrow keys: select glyph
-- `+` / `-`: adjust threshold by 1 for the selected glyph
-- `PgUp` / `PgDn`: adjust threshold by 10 for the selected glyph
-- `r`: clear the selected glyph override
-- `b`: build the project
-- `i`: build and install the font
+- `+` / `-`: adjust threshold by 1 for selected glyph
+- `PgUp` / `PgDn`: adjust threshold by 10 for selected glyph
+- `r`: clear selected glyph override
+- `b`: build project outputs
+- `i`: build and install font
 - `q` / `Esc`: quit
 
-## Outputs
+## Build Outputs
 
-The build step writes these files into `build/`:
+`build/` contains:
 
 - `*.ttf`
 - `*.bdf`
@@ -145,7 +256,7 @@ The build step writes these files into `build/`:
 
 ## Notes
 
-- Supported inputs: `png`, `jpg`, `jpeg`, `webp`, `avif`, `bmp`, `gif`, `svg`
-- If source alpha exists, alpha drives glyph coverage.
-- Otherwise, border color is treated as the background and contrast becomes coverage.
-- The default codepoint range starts at `U+100000` to avoid common BMP private-use collisions.
+- supported inputs: `png`, `jpg`, `jpeg`, `webp`, `avif`, `bmp`, `gif`, `svg`
+- if source alpha exists, alpha drives glyph coverage
+- otherwise, border color is treated as background and contrast becomes coverage
+- default `codepoint_start` is `U+100000` to avoid common BMP private-use collisions
