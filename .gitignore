@@ -1,1 +1,11 @@
 /target
+
+# Local Arch packaging artifacts
+/pkg/
+/petiglyph-*.tar.gz
+/petiglyph-*.pkg.tar.zst
+/petiglyph-debug-*.pkg.tar.zst
+
+# Generated makepkg extraction/output under src/
+/src/petiglyph/
+/src/petiglyph-*.tar.gz
