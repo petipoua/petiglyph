@@ -60,6 +60,25 @@ petiglyph install-font
 
 All non-`create` commands also support `--manifest` to target another project.
 
+## Local AUR-Style Test Scripts
+
+Use this script from the repo root to simulate the AUR flow locally on Arch:
+
+```bash
+# full flow: PKGBUILD -> tarball -> makepkg
+./scripts/aur.sh
+
+# full flow and install built package
+./scripts/aur.sh all-install
+
+# individual steps if needed
+./scripts/aur.sh pkgbuild
+./scripts/aur.sh tarball
+./scripts/aur.sh build -- --cleanbuild
+./scripts/aur.sh install
+./scripts/aur.sh clean-install
+```
+
 ## Manifest
 
 ```toml

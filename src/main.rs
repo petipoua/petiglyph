@@ -2263,19 +2263,14 @@ fn draw_ui(frame: &mut Frame, app: &App) {
                 .add_modifier(Modifier::BOLD),
         ),
         Span::raw("  |  "),
-        Span::raw(format!("project={}", app.project_dir.display())),
-        Span::raw("  |  "),
         Span::raw(format!("font={}", app.config.font_name)),
         Span::raw("  |  "),
         Span::raw(format!("icons={}", app.glyphs.len())),
         Span::raw("  |  "),
         Span::raw(format!("base={}", app.config.base_threshold)),
+        Span::raw("  |  "),
+        Span::raw(format!("size={}", app.config.glyph_size)),
     ])];
-    header_lines.push(Line::from(vec![
-        Span::raw(format!("manifest={}  |  ", app.manifest_path.display())),
-        Span::raw(format!("icons-dir={}  |  ", app.config.input_dir.display())),
-        Span::raw(format!("build-dir={}", app.config.out_dir.display())),
-    ]));
     header_lines.push(Line::from(vec![
         tab_span("1 Home", app.view == AppView::Home),
         Span::raw("  "),
@@ -2346,11 +2341,10 @@ fn draw_home_view(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) {
     let content = Paragraph::new(vec![
         Line::from("Create a self-contained petiglyph project, place image files in icons/, and keep all generated output in build/."),
         Line::from(""),
-        Line::from(format!("Project directory: {}", app.project_dir.display())),
-        Line::from(format!("Manifest: {}", app.manifest_path.display())),
-        Line::from(format!("Icons directory: {}", app.config.input_dir.display())),
-        Line::from(format!("Build directory: {}", app.config.out_dir.display())),
-        Line::from(""),
+        Line::from("Paths:"),
+        Line::from(format!("manifest: {}", app.manifest_path.display())),
+        Line::from(format!("icons: {}", app.config.input_dir.display())),
+        Line::from(format!("build: {}", app.config.out_dir.display())),
         Line::from(format!(
             "Detected images: {}",
             app.glyphs.len()
