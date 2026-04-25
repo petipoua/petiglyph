@@ -41,6 +41,34 @@ fn write_test_png(path: &Path) {
     img.save(path).expect("test image is written");
 }
 
+fn nonzero_coverage_bounds(coverage: &[u8], size: u32) -> Option<(u32, u32, u32, u32)> {
+    if size == 0 {
+        return None;
+    }
+
+    let mut min_x = size;
+    let mut min_y = size;
+    let mut max_x = 0u32;
+    let mut max_y = 0u32;
+    let mut found = false;
+
+    for (idx, value) in coverage.iter().enumerate() {
+        if *value == 0 {
+            continue;
+        }
+
+        found = true;
+        let x = (idx as u32) % size;
+        let y = (idx as u32) / size;
+        min_x = min_x.min(x);
+        min_y = min_y.min(y);
+        max_x = max_x.max(x);
+        max_y = max_y.max(y);
+    }
+
+    found.then_some((min_x, min_y, max_x, max_y))
+}
+
 #[test]
 fn parse_codepoint_accepts_common_formats() {
     assert_eq!(parse_codepoint("U+E000").expect("parse U+"), 0xE000);
@@ -288,6 +316,57 @@ fn unified_tui_multiple_projects_keep_project_card_informational() {
 }
 
 #[test]
+fn welcome_input_edit_mode_types_hjkl_without_navigation() {
+    let workspace = make_temp_dir("welcome-input-edit-mode");
+    let mut app = App::new_workspace(workspace.clone(), None, TuiLaunchOverrides::default())
+        .expect("workspace TUI app initializes");
+
+    assert_eq!(app.view, AppView::Welcome);
+    assert_eq!(app.welcome_focus, WelcomeFocus::CreateInput);
+    assert!(!app.welcome_input_editing);
+
+    handle_key(&mut app, KeyCode::Char('l')).expect("welcome navigation works when not editing");
+    assert_eq!(app.welcome_focus, WelcomeFocus::CreateButton);
+    assert!(app.create_input.is_empty());
+
+    handle_key(&mut app, KeyCode::Left).expect("left arrow returns focus to input");
+    assert_eq!(app.welcome_focus, WelcomeFocus::CreateInput);
+
+    handle_key(&mut app, KeyCode::Enter).expect("enter starts typing mode");
+    assert!(app.welcome_input_editing);
+    assert_eq!(app.welcome_focus, WelcomeFocus::CreateInput);
+
+    for ch in ['l', 'h', 'j', 'k', '2', '3'] {
+        handle_key(&mut app, KeyCode::Char(ch)).expect("typing should append character");
+    }
+    assert_eq!(app.create_input, "lhjk23");
+    assert_eq!(app.welcome_focus, WelcomeFocus::CreateInput);
+
+    handle_key(&mut app, KeyCode::Enter).expect("enter exits typing mode");
+    assert!(!app.welcome_input_editing);
+    assert_eq!(app.welcome_focus, WelcomeFocus::CreateButton);
+
+    fs::remove_dir_all(workspace).expect("temp workspace is removed");
+}
+
+#[test]
+fn welcome_input_edit_mode_esc_exits_typing_without_quit() {
+    let workspace = make_temp_dir("welcome-input-edit-esc");
+    let mut app = App::new_workspace(workspace.clone(), None, TuiLaunchOverrides::default())
+        .expect("workspace TUI app initializes");
+
+    handle_key(&mut app, KeyCode::Enter).expect("enter starts typing mode");
+    assert!(app.welcome_input_editing);
+
+    handle_key(&mut app, KeyCode::Esc).expect("esc exits typing mode");
+    assert!(!app.welcome_input_editing);
+    assert!(!app.quit);
+    assert_eq!(app.welcome_focus, WelcomeFocus::CreateInput);
+
+    fs::remove_dir_all(workspace).expect("temp workspace is removed");
+}
+
+#[test]
 fn project_actions_without_active_project_set_status_and_do_not_crash() {
     let workspace = make_temp_dir("no-active-actions");
     let mut app = App::new_workspace(workspace.clone(), None, TuiLaunchOverrides::default())
@@ -367,24 +446,81 @@ fn spaced_sample_separates_glyphs_for_readability() {
 fn coverage_map_uses_alpha_for_transparent_sources() {
     let mut image = RgbaImage::from_pixel(2, 2, Rgba([255, 255, 255, 0]));
     image.put_pixel(0, 0, Rgba([255, 255, 255, 255]));
+    image.put_pixel(1, 1, Rgba([255, 255, 255, 128]));
 
     let coverage = coverage_map(&image, 2).expect("coverage map succeeds");
 
     assert_eq!(coverage[0], 255);
     assert_eq!(coverage[1], 0);
     assert_eq!(coverage[2], 0);
-    assert_eq!(coverage[3], 0);
+    assert_eq!(coverage[3], 128);
 }
 
 #[test]
 fn coverage_map_detects_foreground_on_opaque_background() {
-    let mut image = RgbaImage::from_pixel(3, 3, Rgba([0, 0, 0, 255]));
-    image.put_pixel(1, 1, Rgba([255, 255, 255, 255]));
+    let mut image = RgbaImage::from_pixel(3, 3, Rgba([255, 255, 255, 255]));
+    for i in 0..3 {
+        image.put_pixel(1, i, Rgba([0, 0, 0, 255]));
+        image.put_pixel(i, 1, Rgba([0, 0, 0, 255]));
+    }
 
     let coverage = coverage_map(&image, 3).expect("coverage map succeeds");
 
     assert_eq!(coverage[0], 0);
     assert_eq!(coverage[4], 255);
+    assert_eq!(coverage[8], 0);
+}
+
+#[test]
+fn coverage_map_recenters_transparent_content_after_trimming() {
+    let mut image = RgbaImage::from_pixel(10, 10, Rgba([255, 255, 255, 0]));
+    for y in 1..=2 {
+        for x in 1..=7 {
+            image.put_pixel(x, y, Rgba([0, 0, 0, 255]));
+        }
+    }
+
+    let coverage = coverage_map(&image, 10).expect("coverage map succeeds");
+    let (min_x, min_y, max_x, max_y) =
+        nonzero_coverage_bounds(&coverage, 10).expect("coverage should contain non-zero pixels");
+    let top = min_y;
+    let bottom = 9 - max_y;
+    let width = max_x - min_x + 1;
+
+    assert!(
+        width >= 9,
+        "trimmed content should nearly fill width, got {width}"
+    );
+    assert!(
+        (top as i32 - bottom as i32).abs() <= 1,
+        "vertical margins should be centered: top={top}, bottom={bottom}"
+    );
+}
+
+#[test]
+fn coverage_map_recenters_opaque_content_after_trimming() {
+    let mut image = RgbaImage::from_pixel(10, 10, Rgba([255, 255, 255, 255]));
+    for y in 2..=9 {
+        for x in 7..=8 {
+            image.put_pixel(x, y, Rgba([0, 0, 0, 255]));
+        }
+    }
+
+    let coverage = coverage_map(&image, 10).expect("coverage map succeeds");
+    let (min_x, min_y, max_x, max_y) =
+        nonzero_coverage_bounds(&coverage, 10).expect("coverage should contain non-zero pixels");
+    let left = min_x;
+    let right = 9 - max_x;
+    let height = max_y - min_y + 1;
+
+    assert!(
+        height >= 9,
+        "trimmed content should nearly fill height, got {height}"
+    );
+    assert!(
+        (left as i32 - right as i32).abs() <= 1,
+        "horizontal margins should be centered: left={left}, right={right}"
+    );
 }
 
 #[test]

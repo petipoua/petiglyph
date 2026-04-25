@@ -298,13 +298,17 @@ fn render_svg(path: &Path, glyph_size: u32) -> Result<RgbaImage> {
 }
 
 pub(crate) fn coverage_map(source: &RgbaImage, glyph_size: u32) -> Result<Vec<u8>> {
+    const OPAQUE_CONTENT_EPSILON: u8 = 6;
+
     if glyph_size == 0 {
         bail!("glyph_size must be > 0");
     }
 
-    let fitted = fit_to_canvas(source, glyph_size);
     let has_transparency = source.pixels().any(|p| p[3] < 255);
     let background = (!has_transparency).then(|| estimate_background_rgb(source));
+    let content =
+        crop_source_to_content(source, has_transparency, background, OPAQUE_CONTENT_EPSILON);
+    let fitted = fit_to_canvas(&content, glyph_size);
 
     let mut out = vec![0u8; (glyph_size as usize) * (glyph_size as usize)];
 
@@ -322,6 +326,74 @@ pub(crate) fn coverage_map(source: &RgbaImage, glyph_size: u32) -> Result<Vec<u8
     }
 
     Ok(out)
+}
+
+fn crop_source_to_content(
+    source: &RgbaImage,
+    has_transparency: bool,
+    background: Option<[u8; 3]>,
+    opaque_content_epsilon: u8,
+) -> RgbaImage {
+    let Some((min_x, min_y, max_x, max_y)) =
+        content_bounds(source, has_transparency, background, opaque_content_epsilon)
+    else {
+        return source.clone();
+    };
+
+    let (width, height) = source.dimensions();
+    if min_x == 0
+        && min_y == 0
+        && max_x == width.saturating_sub(1)
+        && max_y == height.saturating_sub(1)
+    {
+        return source.clone();
+    }
+
+    let crop_w = max_x - min_x + 1;
+    let crop_h = max_y - min_y + 1;
+    image::imageops::crop_imm(source, min_x, min_y, crop_w, crop_h).to_image()
+}
+
+fn content_bounds(
+    source: &RgbaImage,
+    has_transparency: bool,
+    background: Option<[u8; 3]>,
+    opaque_content_epsilon: u8,
+) -> Option<(u32, u32, u32, u32)> {
+    let (width, height) = source.dimensions();
+    if width == 0 || height == 0 {
+        return None;
+    }
+
+    let mut min_x = width;
+    let mut min_y = height;
+    let mut max_x = 0u32;
+    let mut max_y = 0u32;
+    let mut found = false;
+
+    for y in 0..height {
+        for x in 0..width {
+            let pixel = source.get_pixel(x, y);
+            let is_content = if has_transparency {
+                pixel[3] > 0
+            } else {
+                let bg = background.expect("background is available for opaque sources");
+                opaque_coverage(pixel, bg) > opaque_content_epsilon
+            };
+
+            if !is_content {
+                continue;
+            }
+
+            found = true;
+            min_x = min_x.min(x);
+            min_y = min_y.min(y);
+            max_x = max_x.max(x);
+            max_y = max_y.max(y);
+        }
+    }
+
+    found.then_some((min_x, min_y, max_x, max_y))
 }
 
 fn estimate_background_rgb(source: &RgbaImage) -> [u8; 3] {

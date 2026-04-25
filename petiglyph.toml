@@ -8,8 +8,8 @@ codepoint_start = "U+100000"
 [threshold_overrides]
 "claude.png" = 23
 "codex.png" = 245
-"copilot.svg" = 110
+"copilot.svg" = 85
 "cursor.svg" = 40
 "factory.svg" = 180
 "ollama.svg" = 205
-"opencode.png" = 254
+"opencode.png" = 253

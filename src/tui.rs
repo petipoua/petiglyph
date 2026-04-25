@@ -170,6 +170,7 @@ pub(crate) struct App {
     pub(crate) active_project: Option<PathBuf>,
     pub(crate) create_input: String,
     pub(crate) welcome_focus: WelcomeFocus,
+    pub(crate) welcome_input_editing: bool,
     installed_fonts: Vec<InstalledFontSample>,
     pub(crate) switch_notice: Option<ProjectSwitchNotice>,
     pub(crate) selected: usize,
@@ -376,43 +377,66 @@ pub(crate) fn format_welcome_input_field(value: &str, focused: bool, width: usiz
 
 fn handle_welcome_key(app: &mut App, code: KeyCode) -> Result<()> {
     match code {
-        KeyCode::Esc | KeyCode::Char('q') => {
+        KeyCode::Esc => {
+            if app.welcome_input_editing {
+                app.welcome_input_editing = false;
+                app.status = Some("stopped typing project name".to_string());
+            } else {
+                app.quit = true;
+            }
+        }
+        KeyCode::Char('q') if !app.welcome_input_editing => {
             app.quit = true;
         }
-        KeyCode::Char('R') => {
+        KeyCode::Char('R') if !app.welcome_input_editing => {
             app.refresh_workspace_discovery()?;
             if app.active_project.is_some() {
                 app.reload_glyphs()?;
             }
         }
-        KeyCode::Left | KeyCode::Up | KeyCode::Char('h') | KeyCode::Char('k') => {
+        KeyCode::Left | KeyCode::Up | KeyCode::Char('h') | KeyCode::Char('k')
+            if !app.welcome_input_editing =>
+        {
             app.welcome_focus = match app.welcome_focus {
                 WelcomeFocus::CreateButton => WelcomeFocus::CreateInput,
                 other => other,
             };
         }
-        KeyCode::Right | KeyCode::Down | KeyCode::Char('l') | KeyCode::Char('j') => {
+        KeyCode::Right | KeyCode::Down | KeyCode::Char('l') | KeyCode::Char('j')
+            if !app.welcome_input_editing =>
+        {
             app.welcome_focus = match app.welcome_focus {
                 WelcomeFocus::CreateInput => WelcomeFocus::CreateButton,
                 other => other,
             };
         }
         KeyCode::Backspace => {
-            if app.welcome_focus == WelcomeFocus::CreateInput {
+            if app.welcome_focus == WelcomeFocus::CreateInput && app.welcome_input_editing {
                 app.create_input.pop();
             }
         }
         KeyCode::Char(ch)
-            if app.welcome_focus == WelcomeFocus::CreateInput && is_valid_project_name_char(ch) =>
+            if app.welcome_focus == WelcomeFocus::CreateInput
+                && app.welcome_input_editing
+                && is_valid_project_name_char(ch) =>
         {
             app.create_input.push(ch);
         }
         KeyCode::Enter => match app.welcome_focus {
             WelcomeFocus::CreateInput => {
-                app.welcome_focus = WelcomeFocus::CreateButton;
-                app.status = Some("press Enter to create project".to_string());
+                if app.welcome_input_editing {
+                    app.welcome_input_editing = false;
+                    app.welcome_focus = WelcomeFocus::CreateButton;
+                    app.status = Some("press Enter to create project".to_string());
+                } else {
+                    app.welcome_input_editing = true;
+                    app.status = Some("typing project name (Enter/Esc to stop)".to_string());
+                }
             }
-            WelcomeFocus::CreateButton => app.submit_create()?,
+            WelcomeFocus::CreateButton => {
+                app.welcome_input_editing = false;
+                app.submit_create()?;
+            }
         },
         _ => {}
     }
@@ -544,16 +568,25 @@ fn draw_welcome_view(
     };
     let input_value = format_welcome_input_field(
         &app.create_input,
-        app.welcome_focus == WelcomeFocus::CreateInput,
+        app.welcome_input_editing,
         WELCOME_INPUT_WIDTH,
     );
-    projects_text.push(Line::from(vec![
+    let mut new_project_line = vec![
         Span::raw("  "),
         Span::styled("New project: ", Style::default().fg(muted)),
         Span::styled(input_value, input_style),
         Span::raw(" "),
         Span::styled(" Create ", button_style),
-    ]));
+    ];
+    if app.welcome_focus == WelcomeFocus::CreateInput {
+        let hint = if app.welcome_input_editing {
+            "  typing (Enter/Esc to stop)"
+        } else {
+            "  press Enter to type"
+        };
+        new_project_line.push(Span::styled(hint, Style::default().fg(muted)));
+    }
+    projects_text.push(Line::from(new_project_line));
 
     frame.render_widget(
         Paragraph::new(projects_text)
@@ -676,6 +709,7 @@ impl App {
             active_project: None,
             create_input: String::new(),
             welcome_focus: WelcomeFocus::CreateInput,
+            welcome_input_editing: false,
             installed_fonts: Vec::new(),
             switch_notice: None,
             selected: 0,
@@ -714,6 +748,7 @@ impl App {
             active_project: Some(manifest_path),
             create_input: String::new(),
             welcome_focus: WelcomeFocus::CreateInput,
+            welcome_input_editing: false,
             installed_fonts: Vec::new(),
             switch_notice: None,
             selected: 0,
@@ -743,6 +778,7 @@ impl App {
 
         if self.projects.is_empty() {
             self.welcome_focus = WelcomeFocus::CreateInput;
+            self.welcome_input_editing = false;
             if self.active_project.is_none() {
                 self.status = Some(format!(
                     "no petiglyph project in {}",
@@ -759,6 +795,7 @@ impl App {
         if project_name.is_empty() {
             self.status = Some("project name cannot be empty".to_string());
             self.welcome_focus = WelcomeFocus::CreateInput;
+            self.welcome_input_editing = true;
             return Ok(());
         }
 
@@ -770,6 +807,7 @@ impl App {
 
         let manifest_path = create_project_in_dir(&self.workspace_root, &project_name)?;
         self.create_input.clear();
+        self.welcome_input_editing = false;
         self.refresh_workspace_discovery()?;
         self.set_active_project(manifest_path)?;
         self.status = Some(format!("created and opened project `{project_name}`"));
@@ -1276,21 +1314,29 @@ fn remove_selected_threshold_override(app: &mut App) {
 }
 
 pub(crate) fn handle_key(app: &mut App, code: KeyCode) -> Result<()> {
-    if app.view == AppView::Welcome
-        && !matches!(
-            code,
-            KeyCode::Tab | KeyCode::BackTab | KeyCode::Char('2') | KeyCode::Char('3')
-        )
-    {
+    let is_global_panel_jump = matches!(code, KeyCode::Tab | KeyCode::BackTab)
+        || (matches!(code, KeyCode::Char('2') | KeyCode::Char('3')) && !app.welcome_input_editing);
+
+    if app.view == AppView::Welcome && !is_global_panel_jump {
         return handle_welcome_key(app, code);
     }
 
     match code {
         KeyCode::Esc | KeyCode::Char('q') => app.quit = true,
-        KeyCode::Char('1') => app.view = AppView::Welcome,
-        KeyCode::Char('2') => app.view = AppView::Glyphs,
-        KeyCode::Char('3') => app.view = AppView::Font,
+        KeyCode::Char('1') => {
+            app.welcome_input_editing = false;
+            app.view = AppView::Welcome;
+        }
+        KeyCode::Char('2') => {
+            app.welcome_input_editing = false;
+            app.view = AppView::Glyphs;
+        }
+        KeyCode::Char('3') => {
+            app.welcome_input_editing = false;
+            app.view = AppView::Font;
+        }
         KeyCode::Tab => {
+            app.welcome_input_editing = false;
             app.view = match app.view {
                 AppView::Welcome => AppView::Glyphs,
                 AppView::Glyphs => AppView::Font,
@@ -1529,14 +1575,25 @@ fn draw_ui(frame: &mut Frame, app: &App) {
     ];
 
     if app.view == AppView::Welcome {
+        let enter_help = if app.welcome_input_editing {
+            "stop typing  "
+        } else {
+            "type/create  "
+        };
         footer_spans.extend(vec![
             Span::styled(" \u{2190}/\u{2192} ", Style::default().fg(accent)),
             Span::raw("focus  "),
             Span::styled(" Enter ", Style::default().fg(accent)),
-            Span::raw("open/create  "),
+            Span::raw(enter_help),
             Span::styled(" Backspace ", Style::default().fg(accent)),
-            Span::raw("edit input  "),
+            Span::raw("delete char  "),
         ]);
+        if app.welcome_input_editing {
+            footer_spans.extend(vec![
+                Span::styled(" Esc ", Style::default().fg(accent)),
+                Span::raw("stop typing  "),
+            ]);
+        }
     }
     if app.view == AppView::Glyphs {
         footer_spans.extend(vec![
@@ -1771,7 +1828,7 @@ fn draw_font_view(
     let missing_style = Style::default().fg(Color::Red);
 
     let ttf_status = match build_summary {
-        Some(s) => Span::styled(s.ttf_path.display().to_string(), ok_style),
+        Some(s) => Span::styled(format!("✓ installed: {}", s.ttf_path.display()), ok_style),
         None => Span::styled(
             format!(
                 "Not built yet (target: {})",
@@ -1781,7 +1838,7 @@ fn draw_font_view(
         ),
     };
     let bdf_status = match build_summary {
-        Some(s) => Span::styled(s.bdf_path.display().to_string(), ok_style),
+        Some(s) => Span::styled(format!("✓ installed: {}", s.bdf_path.display()), ok_style),
         None => Span::styled(
             format!(
                 "Not built yet (target: {})",
@@ -1791,7 +1848,7 @@ fn draw_font_view(
         ),
     };
     let installed_status = match &app.installed_font_path {
-        Some(p) => Span::styled(p.display().to_string(), ok_style),
+        Some(p) => Span::styled(format!("✓ installed: {}", p.display()), ok_style),
         None => {
             let target = expected_install_ttf_path(&app.manifest_path, &app.config.font_name)
                 .map(|p| p.display().to_string())
@@ -1920,26 +1977,69 @@ fn preview_lines(
         return vec![Line::from("  [Preview too small]")];
     }
 
-    let raw_out_w = usize::max(1, usize::min(src, max_w as usize));
-    let out_w = ((raw_out_w as f32) * PREVIEW_X_COMP).round().max(1.0) as usize;
-    let out_h = usize::max(1, usize::min(src, max_h as usize));
+    let mut found_on = false;
+    let mut sum_x = 0f32;
+    let mut sum_y = 0f32;
+    let mut on_count = 0usize;
+    for y in 0..src {
+        for x in 0..src {
+            let idx = y * src + x;
+            if glyph.coverage[idx] < threshold {
+                continue;
+            }
+            found_on = true;
+            sum_x += x as f32;
+            sum_y += y as f32;
+            on_count += 1;
+        }
+    }
 
-    let mut lines = Vec::with_capacity(out_h);
+    let out_w = ((usize::max(1, usize::min(src, max_w as usize)) as f32) * PREVIEW_X_COMP)
+        .round()
+        .max(1.0) as usize;
+    let out_h = usize::max(1, usize::min(src, max_h as usize));
+    let sample_idx = |out_idx: usize, out_len: usize| -> usize {
+        let numerator = (2 * out_idx + 1) * src;
+        let denominator = 2 * out_len;
+        (numerator / denominator).min(src.saturating_sub(1))
+    };
+    let (shift_x, shift_y) = if found_on && on_count > 0 {
+        let src_center_x = (src.saturating_sub(1)) as f32 / 2.0;
+        let src_center_y = (src.saturating_sub(1)) as f32 / 2.0;
+        let on_center_x = sum_x / on_count as f32;
+        let on_center_y = sum_y / on_count as f32;
+        (src_center_x - on_center_x, src_center_y - on_center_y)
+    } else {
+        (0.0, 0.0)
+    };
+
+    let mut rows = Vec::with_capacity(out_h);
 
     for oy in 0..out_h {
-        let sy = oy * src / out_h;
         let mut row = String::with_capacity(out_w * 2 + 4);
         row.push_str("    ");
         for ox in 0..out_w {
-            let sx = ox * src / out_w;
-            let idx = sy * src + sx;
-            let on = glyph.coverage[idx] >= threshold;
+            let vy = sample_idx(oy, out_h) as f32;
+            let vx = sample_idx(ox, out_w) as f32;
+            let sy = (vy - shift_y).round() as i32;
+            let sx = (vx - shift_x).round() as i32;
+            let on = if sx >= 0 && sy >= 0 && (sx as usize) < src && (sy as usize) < src {
+                let idx = sy as usize * src + sx as usize;
+                glyph.coverage[idx] >= threshold
+            } else {
+                false
+            };
             row.push_str(if on { "██" } else { "  " });
         }
-        lines.push(Line::from(row));
+        rows.push(row);
     }
 
-    lines
+    rows.retain(|row| row.contains('█'));
+    if rows.is_empty() {
+        return vec![Line::from("    [No visible pixels at threshold]")];
+    }
+
+    rows.into_iter().map(Line::from).collect()
 }
 
 pub(crate) fn wrap_sample_for_display(sample: &str, max_chars: usize) -> Vec<String> {
