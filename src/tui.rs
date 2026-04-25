@@ -1180,16 +1180,14 @@ fn draw_font_view(
         idle_button_style
     };
 
-    let build_desc_style = if app.selected_font_action == FontAction::Build {
-        Style::default().fg(accent).add_modifier(Modifier::BOLD)
-    } else {
-        Style::default().fg(muted)
+    let (desc_label, desc_text) = match app.selected_font_action {
+        FontAction::Build => (
+            "Build:",
+            " generate TTF/BDF, glyph map, and sample in build/",
+        ),
+        FontAction::Install => ("Install:", " copy built TTF to your user font directory"),
     };
-    let install_desc_style = if app.selected_font_action == FontAction::Install {
-        Style::default().fg(accent).add_modifier(Modifier::BOLD)
-    } else {
-        Style::default().fg(muted)
-    };
+    let desc_style = Style::default().fg(accent).add_modifier(Modifier::BOLD);
 
     let action_lines = vec![
         Line::from(""),
@@ -1210,13 +1208,8 @@ fn draw_font_view(
         Line::from(""),
         Line::from(vec![
             Span::raw("  "),
-            Span::styled("Build:", build_desc_style),
-            Span::raw(" generate TTF/BDF, glyph map, and sample in build/"),
-        ]),
-        Line::from(vec![
-            Span::raw("  "),
-            Span::styled("Install:", install_desc_style),
-            Span::raw(" copy built TTF to your user font directory"),
+            Span::styled(desc_label, desc_style),
+            Span::raw(desc_text),
         ]),
     ];
 
