@@ -9,17 +9,18 @@ use crate::build::{
     GlyphBitmap, MappingEntry, PreprocessedGlyph, bitmap_to_bdf_rows, build_outputs,
     collect_source_files, coverage_map, glyph_sample_string, is_supported_source,
 };
+use crate::cli::{DefaultTuiTarget, resolve_default_tui_target_for};
 use crate::install::{
     FontInstallNameMode, effective_font_name, expected_install_ttf_path_for_mode,
 };
 use crate::project::{
-    Manifest, RuntimeConfig, auto_detect_manifest_path, load_runtime_config, parse_codepoint,
-    read_manifest, write_manifest,
+    Manifest, RuntimeConfig, auto_detect_manifest_path, discover_project_manifests,
+    load_runtime_config, parse_codepoint, read_manifest, write_manifest,
 };
 use crate::tui::{
-    App, AppView, FontAction, InteractiveGlyph, TuiLaunchOverrides, handle_key,
-    persist_threshold_override, resolve_installed_font_path_with, spaced_sample,
-    wrap_sample_for_display,
+    App, AppView, FontAction, InteractiveGlyph, TuiLaunchOverrides, format_welcome_input_field,
+    handle_key, persist_threshold_override, resolve_installed_font_path_with,
+    sample_glyphs_from_ttf_bytes, spaced_sample, wrap_sample_for_display,
 };
 
 fn make_temp_dir(name: &str) -> PathBuf {
@@ -144,6 +145,62 @@ fn auto_detect_manifest_path_ignores_deep_manifests_beyond_one_level() {
 }
 
 #[test]
+fn discover_project_manifests_scans_current_and_one_level_only() {
+    let root_dir = make_temp_dir("discover-manifests");
+    let root_manifest = root_dir.join("petiglyph.toml");
+    write_manifest(&root_manifest, &Manifest::default()).expect("root manifest is written");
+
+    let child_dir = root_dir.join("child-project");
+    fs::create_dir_all(&child_dir).expect("child dir is created");
+    let child_manifest = child_dir.join("petiglyph.toml");
+    write_manifest(&child_manifest, &Manifest::default()).expect("child manifest is written");
+
+    let deep_dir = root_dir.join("nested").join("too-deep");
+    fs::create_dir_all(&deep_dir).expect("deep dir is created");
+    let deep_manifest = deep_dir.join("petiglyph.toml");
+    write_manifest(&deep_manifest, &Manifest::default()).expect("deep manifest is written");
+
+    let manifests = discover_project_manifests(&root_dir).expect("manifest discovery succeeds");
+    assert_eq!(manifests, vec![root_manifest, child_manifest]);
+
+    fs::remove_dir_all(root_dir).expect("temp root dir is removed");
+}
+
+#[test]
+fn resolve_default_tui_target_prefers_single_project_direct_open() {
+    let root_dir = make_temp_dir("default-target-single");
+    let project_dir = root_dir.join("demo");
+    fs::create_dir_all(&project_dir).expect("project dir is created");
+    let manifest_path = project_dir.join("petiglyph.toml");
+    write_manifest(&manifest_path, &Manifest::default()).expect("manifest is written");
+
+    let target = resolve_default_tui_target_for(&root_dir).expect("target resolves");
+    assert_eq!(target, DefaultTuiTarget::Project(manifest_path));
+
+    fs::remove_dir_all(root_dir).expect("temp root dir is removed");
+}
+
+#[test]
+fn resolve_default_tui_target_uses_welcome_for_none_or_multiple_projects() {
+    let empty_root = make_temp_dir("default-target-none");
+    let target = resolve_default_tui_target_for(&empty_root).expect("target resolves");
+    assert_eq!(target, DefaultTuiTarget::Welcome(empty_root.clone()));
+    fs::remove_dir_all(&empty_root).expect("temp empty root dir is removed");
+
+    let multi_root = make_temp_dir("default-target-multiple");
+    for name in ["p1", "p2"] {
+        let project_dir = multi_root.join(name);
+        fs::create_dir_all(&project_dir).expect("project dir is created");
+        write_manifest(&project_dir.join("petiglyph.toml"), &Manifest::default())
+            .expect("manifest is written");
+    }
+    let multi_target = resolve_default_tui_target_for(&multi_root).expect("target resolves");
+    assert_eq!(multi_target, DefaultTuiTarget::Welcome(multi_root.clone()));
+
+    fs::remove_dir_all(multi_root).expect("temp multi root dir is removed");
+}
+
+#[test]
 fn glyph_sample_string_skips_non_scalar_values() {
     let sample = glyph_sample_string(0xDFFF, 2);
     let expected = char::from_u32(0xE000).expect("valid").to_string();
@@ -154,6 +211,19 @@ fn glyph_sample_string_skips_non_scalar_values() {
 fn wrap_sample_for_display_respects_chunk_size() {
     let wrapped = wrap_sample_for_display("ABCDE", 2);
     assert_eq!(wrapped, vec!["AB", "CD", "E"]);
+}
+
+#[test]
+fn welcome_input_field_keeps_fixed_width_in_all_focus_states() {
+    let empty_blur = format_welcome_input_field("", false, 15);
+    let empty_focus = format_welcome_input_field("", true, 15);
+    let typed_blur = format_welcome_input_field("demo-font", false, 15);
+    let typed_focus = format_welcome_input_field("demo-font", true, 15);
+
+    assert_eq!(empty_blur.chars().count(), empty_focus.chars().count());
+    assert_eq!(empty_blur.chars().count(), typed_blur.chars().count());
+    assert_eq!(typed_blur.chars().count(), typed_focus.chars().count());
+    assert_eq!(empty_blur.chars().count(), 17);
 }
 
 #[test]
@@ -269,6 +339,37 @@ fn build_outputs_generates_non_empty_repo_icon_font() {
     }
 
     fs::remove_dir_all(out_dir).expect("temp output dir is removed");
+}
+
+#[test]
+fn sample_glyphs_from_ttf_bytes_limits_preview_to_requested_count() {
+    let project_dir = make_temp_dir("ttf-sample-limit");
+    let input_dir = project_dir.join("icons");
+    let out_dir = project_dir.join("build");
+    fs::create_dir_all(&input_dir).expect("icons dir is created");
+    fs::create_dir_all(&out_dir).expect("build dir is created");
+    for idx in 0..20 {
+        write_test_png(&input_dir.join(format!("icon-{idx}.png")));
+    }
+
+    let config = RuntimeConfig {
+        input_dir,
+        out_dir,
+        font_name: "SampleLimit".to_string(),
+        glyph_size: 16,
+        base_threshold: 64,
+        threshold_overrides: BTreeMap::new(),
+        codepoint_start: 0x10_0000,
+    };
+    let summary = build_outputs(&config).expect("build succeeds");
+    let ttf = fs::read(&summary.ttf_path).expect("ttf is readable");
+
+    let (sample, truncated) =
+        sample_glyphs_from_ttf_bytes(&ttf, 15).expect("sample should be extracted");
+    assert_eq!(sample.chars().count(), 15);
+    assert!(truncated, "sample should be marked as truncated");
+
+    fs::remove_dir_all(project_dir).expect("temp project dir is removed");
 }
 
 #[test]
@@ -533,6 +634,43 @@ fn tab_cycles_panels_and_glyph_controls_stay_in_glyph_view() {
 }
 
 #[test]
+fn handle_key_w_returns_to_welcome_when_multiple_projects_exist() {
+    let workspace = make_temp_dir("handle-key-welcome-nav");
+    let project_a = workspace.join("project-a");
+    let project_b = workspace.join("project-b");
+    fs::create_dir_all(&project_a).expect("project-a dir is created");
+    fs::create_dir_all(&project_b).expect("project-b dir is created");
+
+    let manifest_a = project_a.join("petiglyph.toml");
+    write_manifest(&manifest_a, &Manifest::default()).expect("manifest-a is written");
+    write_manifest(&project_b.join("petiglyph.toml"), &Manifest::default())
+        .expect("manifest-b is written");
+
+    let config = RuntimeConfig {
+        input_dir: project_a.join("icons"),
+        out_dir: project_a.join("build"),
+        font_name: "Petiglyph".to_string(),
+        glyph_size: 8,
+        base_threshold: 64,
+        threshold_overrides: BTreeMap::new(),
+        codepoint_start: 0x10_0000,
+    };
+
+    let mut app = App::new_with_overrides(
+        manifest_a,
+        config,
+        TuiLaunchOverrides::default(),
+        Some(workspace.clone()),
+    );
+    assert!(!app.quit, "app should start active");
+
+    handle_key(&mut app, KeyCode::Char('w')).expect("key handling should succeed");
+    assert!(app.quit, "w should switch out to welcome chooser");
+
+    fs::remove_dir_all(workspace).expect("temp workspace is removed");
+}
+
+#[test]
 fn font_action_buttons_switch_with_arrows_and_enter_builds() {
     let project_dir = make_temp_dir("font-action-buttons");
     let manifest_path = project_dir.join("petiglyph.toml");
@@ -615,7 +753,7 @@ fn tui_launch_overrides_persist_through_reload_and_build() {
     )
     .expect("runtime config with overrides should load");
 
-    let mut app = App::new_with_overrides(manifest_path.clone(), config, overrides.clone());
+    let mut app = App::new_with_overrides(manifest_path.clone(), config, overrides.clone(), None);
 
     let mut modified_manifest = read_manifest(&manifest_path).expect("manifest reads");
     modified_manifest.threshold = 1;

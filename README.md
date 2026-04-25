@@ -63,7 +63,10 @@ petiglyph uninstall-font --json
 
 All non-`create` commands accept `--manifest` to target another project.
 
-When `--manifest` is omitted, `petiglyph` first checks `./petiglyph.toml`. If not found, it auto-selects a single `petiglyph.toml` found one directory below the current working directory.
+When `--manifest` is omitted, petiglyph checks `./petiglyph.toml` first, then scans one directory below:
+
+- if exactly one project is found, it opens that project directly
+- if none or multiple projects are found, `petiglyph` / `petiglyph tui` open a Welcome panel (interactive terminal only) where you can choose a project or create one
 
 ## Automation API Contract
 
@@ -253,6 +256,7 @@ codepoint_start = "U+100000"
 - `Tab`: cycle Home -> Glyphs -> Font
 - `1` / `2` / `3`: switch between Home, Glyphs, and Font views
 - Home view includes a copy-ready glyph sample string for the current detected font sample
+- `w`: return to Welcome project chooser (only when session started from a multi-project Welcome context)
 - `R`: rescan `icons/`
 - `j` / `k` or `↑` / `↓`: select glyph (Glyphs view)
 - `←` / `→` or `+` / `-`: adjust threshold by 1 for selected glyph (Glyphs view)

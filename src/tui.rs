@@ -12,6 +12,7 @@ use ratatui::widgets::{
     Block, BorderType, Borders, List, ListItem, ListState, Paragraph, Tabs, Wrap,
 };
 use ratatui::{Frame, Terminal};
+use std::collections::BTreeSet;
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
@@ -26,12 +27,17 @@ use crate::build::{
 };
 use crate::install::{
     FontInstallNameMode, expected_install_ttf_path, expected_install_ttf_path_for_mode,
-    install_built_font,
+    install_built_font, install_dir_for_manifest,
 };
-use crate::project::{RuntimeConfig, load_runtime_config, read_manifest, write_manifest};
+use crate::project::{
+    RuntimeConfig, create_project_in_dir, discover_project_manifests, load_runtime_config,
+    read_manifest, write_manifest,
+};
 
 const CLI_VERSION: &str = env!("CARGO_PKG_VERSION");
 const INSTALL_SPINNER_FRAMES: [&str; 4] = ["-", "\\", "|", "/"];
+const WELCOME_SAMPLE_LIMIT: usize = 15;
+const WELCOME_INPUT_WIDTH: usize = 15;
 
 #[derive(Debug, Clone, Default)]
 pub(crate) struct TuiLaunchOverrides {
@@ -41,12 +47,99 @@ pub(crate) struct TuiLaunchOverrides {
     pub(crate) codepoint_start: Option<String>,
 }
 
+#[derive(Debug, Clone)]
+struct WelcomeProject {
+    manifest_path: PathBuf,
+    font_name: String,
+}
+
+#[derive(Debug, Clone)]
+struct InstalledFontSample {
+    file_name: String,
+    path: PathBuf,
+    sample: String,
+    truncated: bool,
+}
+
+struct WelcomeApp {
+    cwd: PathBuf,
+    projects: Vec<WelcomeProject>,
+    selected_project: usize,
+    installed_fonts: Vec<InstalledFontSample>,
+    create_input: String,
+    focus: WelcomeFocus,
+    quit: bool,
+    status: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum WelcomeFocus {
+    Projects,
+    CreateInput,
+    CreateButton,
+}
+
+impl WelcomeFocus {
+    fn next(self, has_projects: bool) -> Self {
+        if !has_projects {
+            return match self {
+                Self::CreateInput | Self::Projects => Self::CreateButton,
+                Self::CreateButton => Self::CreateInput,
+            };
+        }
+
+        match self {
+            Self::Projects => Self::CreateInput,
+            Self::CreateInput => Self::CreateButton,
+            Self::CreateButton => Self::Projects,
+        }
+    }
+
+    fn prev(self, has_projects: bool) -> Self {
+        if !has_projects {
+            return match self {
+                Self::CreateInput | Self::Projects => Self::CreateButton,
+                Self::CreateButton => Self::CreateInput,
+            };
+        }
+
+        match self {
+            Self::Projects => Self::CreateButton,
+            Self::CreateInput => Self::Projects,
+            Self::CreateButton => Self::CreateInput,
+        }
+    }
+}
+
+enum WelcomeNavigationAction {
+    OpenProject(PathBuf),
+    Stay,
+}
+
 pub(crate) fn tui(
     manifest_path: PathBuf,
     input_override: Option<PathBuf>,
     threshold_override: Option<u8>,
     glyph_size_override: Option<u32>,
     codepoint_start_override: Option<String>,
+) -> Result<()> {
+    tui_with_welcome_root(
+        manifest_path,
+        input_override,
+        threshold_override,
+        glyph_size_override,
+        codepoint_start_override,
+        None,
+    )
+}
+
+fn tui_with_welcome_root(
+    manifest_path: PathBuf,
+    input_override: Option<PathBuf>,
+    threshold_override: Option<u8>,
+    glyph_size_override: Option<u32>,
+    codepoint_start_override: Option<String>,
+    welcome_root: Option<PathBuf>,
 ) -> Result<()> {
     let launch_overrides = TuiLaunchOverrides {
         input_dir: input_override.clone(),
@@ -63,7 +156,7 @@ pub(crate) fn tui(
         codepoint_start_override,
     )?;
 
-    let mut app = App::new_with_overrides(manifest_path, config, launch_overrides);
+    let mut app = App::new_with_overrides(manifest_path, config, launch_overrides, welcome_root);
     app.reload_glyphs()?;
 
     let mut session = TerminalSession::start()?;
@@ -80,7 +173,50 @@ pub(crate) fn tui(
         }
     }
 
-    println!("tui session closed for {}", app.project_dir.display());
+    let navigation_action = app.navigation_action.take();
+    let project_dir = app.project_dir.clone();
+    drop(session);
+
+    if let Some(NavigationAction::OpenWelcome(cwd)) = navigation_action {
+        return tui_welcome(cwd);
+    }
+
+    println!("tui session closed for {}", project_dir.display());
+    Ok(())
+}
+
+pub(crate) fn tui_welcome(cwd: PathBuf) -> Result<()> {
+    let mut app = WelcomeApp::new(cwd);
+    app.rescan()?;
+
+    let mut session = TerminalSession::start()?;
+    let mut next_manifest: Option<PathBuf> = None;
+
+    while !app.quit {
+        session
+            .terminal
+            .draw(|frame| draw_welcome_ui(frame, &app))?;
+
+        if event::poll(Duration::from_millis(120))?
+            && let Event::Key(key) = event::read()?
+            && key.kind == KeyEventKind::Press
+        {
+            match handle_welcome_key(&mut app, key.code)? {
+                WelcomeNavigationAction::OpenProject(path) => {
+                    next_manifest = Some(path);
+                    app.quit = true;
+                }
+                WelcomeNavigationAction::Stay => {}
+            }
+        }
+    }
+
+    drop(session);
+    if let Some(manifest_path) = next_manifest {
+        return tui_with_welcome_root(manifest_path, None, None, None, None, Some(app.cwd));
+    }
+
+    println!("tui welcome session closed for {}", app.cwd.display());
     Ok(())
 }
 
@@ -89,6 +225,11 @@ pub(crate) enum AppView {
     Home,
     Glyphs,
     Font,
+}
+
+#[derive(Debug, Clone)]
+enum NavigationAction {
+    OpenWelcome(PathBuf),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -127,6 +268,8 @@ pub(crate) struct App {
     pub(crate) installed_font_path: Option<PathBuf>,
     pub(crate) selected_font_action: FontAction,
     launch_overrides: TuiLaunchOverrides,
+    welcome_root: Option<PathBuf>,
+    navigation_action: Option<NavigationAction>,
     install_task: Option<InstallTask>,
 }
 
@@ -173,16 +316,550 @@ impl Drop for TerminalSession {
     }
 }
 
+impl WelcomeApp {
+    fn new(cwd: PathBuf) -> Self {
+        Self {
+            cwd,
+            projects: Vec::new(),
+            selected_project: 0,
+            installed_fonts: Vec::new(),
+            create_input: String::new(),
+            focus: WelcomeFocus::Projects,
+            quit: false,
+            status: None,
+        }
+    }
+
+    fn rescan(&mut self) -> Result<()> {
+        self.projects = scan_projects_in_scope(&self.cwd)?;
+        self.selected_project = self
+            .selected_project
+            .min(self.projects.len().saturating_sub(1));
+
+        match scan_installed_petiglyph_fonts(&self.cwd) {
+            Ok(fonts) => {
+                self.installed_fonts = fonts;
+            }
+            Err(err) => {
+                self.installed_fonts.clear();
+                self.status = Some(format!("font scan warning: {err}"));
+            }
+        }
+
+        if self.projects.is_empty() {
+            self.focus = WelcomeFocus::CreateInput;
+            self.status = Some(format!(
+                "no petiglyph project in {} (type a name and press Enter on Create)",
+                self.cwd.display()
+            ));
+        } else if self.projects.len() == 1 {
+            self.status = Some("one project detected (press Enter to open)".to_string());
+        } else {
+            self.status = Some(format!(
+                "{} projects detected (choose one and press Enter)",
+                self.projects.len()
+            ));
+        }
+
+        Ok(())
+    }
+
+    fn submit_create(&mut self) -> Result<WelcomeNavigationAction> {
+        let project_name = self.create_input.trim().to_string();
+        if project_name.is_empty() {
+            self.status = Some("project name cannot be empty".to_string());
+            self.focus = WelcomeFocus::CreateInput;
+            return Ok(WelcomeNavigationAction::Stay);
+        }
+
+        let manifest_path = create_project_in_dir(&self.cwd, &project_name)?;
+        self.create_input.clear();
+        self.status = Some(format!("created project `{project_name}`"));
+        Ok(WelcomeNavigationAction::OpenProject(manifest_path))
+    }
+}
+
+fn scan_projects_in_scope(cwd: &Path) -> Result<Vec<WelcomeProject>> {
+    discover_project_manifests(cwd)?
+        .into_iter()
+        .map(|manifest_path| {
+            let manifest = read_manifest(&manifest_path).with_context(|| {
+                format!(
+                    "failed to read project manifest {}",
+                    manifest_path.display()
+                )
+            })?;
+            Ok(WelcomeProject {
+                manifest_path,
+                font_name: manifest.font_name,
+            })
+        })
+        .collect()
+}
+
+fn scan_installed_petiglyph_fonts(cwd: &Path) -> Result<Vec<InstalledFontSample>> {
+    let manifest_probe = cwd.join("petiglyph.toml");
+    let install_dir = install_dir_for_manifest(&manifest_probe)?;
+    if !install_dir.is_dir() {
+        return Ok(Vec::new());
+    }
+
+    let mut ttf_paths = Vec::new();
+    for entry in fs::read_dir(&install_dir)
+        .with_context(|| format!("failed to read {}", install_dir.display()))?
+    {
+        let entry =
+            entry.with_context(|| format!("failed to read entry in {}", install_dir.display()))?;
+        let path = entry.path();
+        let is_ttf = path
+            .extension()
+            .and_then(|ext| ext.to_str())
+            .map(|ext| ext.eq_ignore_ascii_case("ttf"))
+            .unwrap_or(false);
+        if path.is_file() && is_ttf {
+            ttf_paths.push(path);
+        }
+    }
+    ttf_paths.sort();
+
+    let mut samples = Vec::new();
+    for path in ttf_paths {
+        let file_name = path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or("unknown.ttf")
+            .to_string();
+
+        let (sample, truncated) = fs::read(&path)
+            .ok()
+            .and_then(|bytes| sample_glyphs_from_ttf_bytes(&bytes, WELCOME_SAMPLE_LIMIT))
+            .unwrap_or_default();
+
+        samples.push(InstalledFontSample {
+            file_name,
+            path,
+            sample,
+            truncated,
+        });
+    }
+
+    Ok(samples)
+}
+
+pub(crate) fn sample_glyphs_from_ttf_bytes(bytes: &[u8], limit: usize) -> Option<(String, bool)> {
+    if limit == 0 {
+        return None;
+    }
+
+    let face = ttf_parser::Face::parse(bytes, 0).ok()?;
+    let cmap = face.tables().cmap?;
+    let mut codepoints = BTreeSet::new();
+    let mut truncated = false;
+
+    for subtable in cmap.subtables {
+        if !subtable.is_unicode() {
+            continue;
+        }
+
+        subtable.codepoints(|codepoint| {
+            if codepoint <= 0x20 || codepoint > 0x10_FFFF || (0xD800..=0xDFFF).contains(&codepoint)
+            {
+                return;
+            }
+
+            if codepoints.contains(&codepoint) {
+                return;
+            }
+
+            if codepoints.len() < limit {
+                codepoints.insert(codepoint);
+            } else {
+                truncated = true;
+            }
+        });
+
+        if codepoints.len() >= limit && truncated {
+            break;
+        }
+    }
+
+    let sample = codepoints
+        .into_iter()
+        .filter_map(char::from_u32)
+        .collect::<String>();
+    if sample.is_empty() {
+        None
+    } else {
+        Some((sample, truncated))
+    }
+}
+
+fn is_valid_project_name_char(ch: char) -> bool {
+    ch.is_ascii_alphanumeric() || matches!(ch, '-' | '_' | '.')
+}
+
+pub(crate) fn format_welcome_input_field(value: &str, focused: bool, width: usize) -> String {
+    let width = width.max(1);
+    let mut field = vec![' '; width];
+    let trimmed = value.trim();
+
+    if trimmed.is_empty() && !focused {
+        let placeholder = "<project-name>";
+        for (idx, ch) in placeholder.chars().take(width).enumerate() {
+            field[idx] = ch;
+        }
+    } else {
+        let mut len = 0usize;
+        for (idx, ch) in trimmed.chars().take(width).enumerate() {
+            field[idx] = ch;
+            len = idx + 1;
+        }
+
+        if focused {
+            let cursor_index = len.min(width - 1);
+            field[cursor_index] = '_';
+        }
+    }
+
+    let content = field.into_iter().collect::<String>();
+    format!(" {content} ")
+}
+
+fn handle_welcome_key(app: &mut WelcomeApp, code: KeyCode) -> Result<WelcomeNavigationAction> {
+    match code {
+        KeyCode::Esc | KeyCode::Char('q') => {
+            app.quit = true;
+            Ok(WelcomeNavigationAction::Stay)
+        }
+        KeyCode::Char('R') => {
+            app.rescan()?;
+            Ok(WelcomeNavigationAction::Stay)
+        }
+        KeyCode::Down | KeyCode::Char('j') => {
+            if app.focus == WelcomeFocus::Projects {
+                app.selected_project =
+                    (app.selected_project + 1).min(app.projects.len().saturating_sub(1));
+            }
+            Ok(WelcomeNavigationAction::Stay)
+        }
+        KeyCode::Up | KeyCode::Char('k') => {
+            if app.focus == WelcomeFocus::Projects {
+                app.selected_project = app.selected_project.saturating_sub(1);
+            }
+            Ok(WelcomeNavigationAction::Stay)
+        }
+        KeyCode::Tab => {
+            app.focus = app.focus.next(!app.projects.is_empty());
+            Ok(WelcomeNavigationAction::Stay)
+        }
+        KeyCode::BackTab => {
+            app.focus = app.focus.prev(!app.projects.is_empty());
+            Ok(WelcomeNavigationAction::Stay)
+        }
+        KeyCode::Left => {
+            app.focus = match app.focus {
+                WelcomeFocus::CreateButton => WelcomeFocus::CreateInput,
+                other => other,
+            };
+            Ok(WelcomeNavigationAction::Stay)
+        }
+        KeyCode::Right => {
+            app.focus = match app.focus {
+                WelcomeFocus::CreateInput => WelcomeFocus::CreateButton,
+                other => other,
+            };
+            Ok(WelcomeNavigationAction::Stay)
+        }
+        KeyCode::Backspace => {
+            if app.focus == WelcomeFocus::CreateInput {
+                app.create_input.pop();
+            }
+            Ok(WelcomeNavigationAction::Stay)
+        }
+        KeyCode::Char(ch)
+            if app.focus == WelcomeFocus::CreateInput && is_valid_project_name_char(ch) =>
+        {
+            app.create_input.push(ch);
+            Ok(WelcomeNavigationAction::Stay)
+        }
+        KeyCode::Enter => match app.focus {
+            WelcomeFocus::Projects => {
+                if let Some(project) = app.projects.get(app.selected_project) {
+                    Ok(WelcomeNavigationAction::OpenProject(
+                        project.manifest_path.clone(),
+                    ))
+                } else {
+                    app.focus = WelcomeFocus::CreateInput;
+                    app.status = Some(
+                        "no project selected; type a name and press Enter on Create".to_string(),
+                    );
+                    Ok(WelcomeNavigationAction::Stay)
+                }
+            }
+            WelcomeFocus::CreateInput => {
+                app.focus = WelcomeFocus::CreateButton;
+                app.status = Some("press Enter to create project".to_string());
+                Ok(WelcomeNavigationAction::Stay)
+            }
+            WelcomeFocus::CreateButton => app.submit_create(),
+        },
+        _ => Ok(WelcomeNavigationAction::Stay),
+    }
+}
+
+fn draw_welcome_ui(frame: &mut Frame, app: &WelcomeApp) {
+    let area = frame.area();
+    let accent = Color::Cyan;
+    let muted = Color::DarkGray;
+
+    let root = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(3), // Header
+            Constraint::Min(0),    // Body
+            Constraint::Length(1), // Footer
+        ])
+        .split(area);
+
+    let header = Block::default()
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .title(Line::from(vec![
+            Span::styled(
+                " petiglyph welcome ",
+                Style::default().fg(accent).add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(format!(" v{} ", CLI_VERSION), Style::default().fg(muted)),
+        ]));
+    frame.render_widget(header, root[0]);
+
+    let body = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(8),  // intro
+            Constraint::Length(11), // projects
+            Constraint::Min(0),     // installed fonts
+        ])
+        .split(root[1]);
+
+    let intro_block = Block::default()
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(Style::default().fg(muted))
+        .title(Span::styled(
+            " Workspace Scan ",
+            Style::default().fg(accent),
+        ));
+
+    let intro_lines = vec![
+        Line::from(""),
+        Line::from(vec![
+            Span::raw("  "),
+            Span::styled("Current directory: ", Style::default().fg(muted)),
+            Span::raw(app.cwd.display().to_string()),
+        ]),
+        Line::from(vec![
+            Span::raw("  "),
+            Span::styled("Projects scope: ", Style::default().fg(muted)),
+            Span::raw("current directory + one level below"),
+        ]),
+        Line::from(vec![
+            Span::raw("  "),
+            Span::styled("If no project exists: ", Style::default().fg(muted)),
+            Span::raw("use the input + Create button to make one in current directory"),
+        ]),
+    ];
+    frame.render_widget(
+        Paragraph::new(intro_lines)
+            .block(intro_block)
+            .wrap(Wrap { trim: false }),
+        body[0],
+    );
+
+    let projects_border = if app.focus == WelcomeFocus::Projects && !app.projects.is_empty() {
+        Style::default().fg(accent)
+    } else {
+        Style::default().fg(muted)
+    };
+    let projects_block = Block::default()
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(projects_border)
+        .title(Span::styled(
+            " Petiglyph Projects (Open with Enter) ",
+            Style::default().fg(accent),
+        ));
+
+    let mut projects_text = vec![Line::from("")];
+    if app.projects.is_empty() {
+        projects_text.push(Line::from(vec![
+            Span::raw("  "),
+            Span::styled(
+                "No project detected in this scope.",
+                Style::default().fg(Color::Yellow),
+            ),
+        ]));
+    } else {
+        for (idx, project) in app.projects.iter().enumerate() {
+            let marker = if idx == app.selected_project {
+                ">"
+            } else {
+                " "
+            };
+            projects_text.push(Line::from(vec![
+                Span::raw("  "),
+                Span::styled(
+                    format!("{marker} "),
+                    if idx == app.selected_project {
+                        if app.focus == WelcomeFocus::Projects {
+                            Style::default().fg(accent).add_modifier(Modifier::BOLD)
+                        } else {
+                            Style::default().fg(Color::LightCyan)
+                        }
+                    } else {
+                        Style::default().fg(muted)
+                    },
+                ),
+                Span::styled(&project.font_name, Style::default().fg(Color::White)),
+                Span::styled("  ", Style::default().fg(muted)),
+                Span::styled(
+                    project.manifest_path.display().to_string(),
+                    Style::default().fg(muted),
+                ),
+            ]));
+        }
+    }
+
+    projects_text.push(Line::from(""));
+    let input_style = if app.focus == WelcomeFocus::CreateInput {
+        Style::default()
+            .fg(Color::Black)
+            .bg(accent)
+            .add_modifier(Modifier::BOLD)
+    } else {
+        Style::default().fg(Color::White).bg(Color::DarkGray)
+    };
+    let button_style = if app.focus == WelcomeFocus::CreateButton {
+        Style::default()
+            .fg(Color::Black)
+            .bg(accent)
+            .add_modifier(Modifier::BOLD)
+    } else {
+        Style::default().fg(Color::White).bg(Color::DarkGray)
+    };
+    let input_value = format_welcome_input_field(
+        &app.create_input,
+        app.focus == WelcomeFocus::CreateInput,
+        WELCOME_INPUT_WIDTH,
+    );
+    projects_text.push(Line::from(vec![
+        Span::raw("  "),
+        Span::styled("New project: ", Style::default().fg(muted)),
+        Span::styled(input_value, input_style),
+        Span::raw(" "),
+        Span::styled(" Create ", button_style),
+    ]));
+
+    frame.render_widget(
+        Paragraph::new(projects_text)
+            .block(projects_block)
+            .wrap(Wrap { trim: false }),
+        body[1],
+    );
+
+    let fonts_block = Block::default()
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(Style::default().fg(muted))
+        .title(Span::styled(
+            " Installed Petiglyph Fonts (sample first glyphs) ",
+            Style::default().fg(accent),
+        ));
+
+    let mut fonts_text = vec![Line::from("")];
+    if app.installed_fonts.is_empty() {
+        fonts_text.push(Line::from(vec![
+            Span::raw("  "),
+            Span::styled(
+                "No installed petiglyph TTF fonts found.",
+                Style::default().fg(muted),
+            ),
+        ]));
+    } else {
+        for font in &app.installed_fonts {
+            let sample = if font.sample.is_empty() {
+                "[sample unavailable]".to_string()
+            } else if font.truncated {
+                format!("{}...", font.sample)
+            } else {
+                font.sample.clone()
+            };
+            fonts_text.push(Line::from(vec![
+                Span::raw("  "),
+                Span::styled(&font.file_name, Style::default().fg(Color::White)),
+            ]));
+            fonts_text.push(Line::from(vec![
+                Span::raw("    "),
+                Span::styled("path: ", Style::default().fg(muted)),
+                Span::raw(font.path.display().to_string()),
+            ]));
+            fonts_text.push(Line::from(vec![
+                Span::raw("    "),
+                Span::styled("sample: ", Style::default().fg(muted)),
+                Span::styled(sample, Style::default().fg(accent)),
+            ]));
+        }
+    }
+
+    frame.render_widget(
+        Paragraph::new(fonts_text)
+            .block(fonts_block)
+            .wrap(Wrap { trim: false }),
+        body[2],
+    );
+
+    let mut footer_spans = vec![
+        Span::styled(" q/esc ", Style::default().fg(accent)),
+        Span::raw("quit  "),
+        Span::styled(" R ", Style::default().fg(accent)),
+        Span::raw("rescan  "),
+        Span::styled(" tab ", Style::default().fg(accent)),
+        Span::raw("change focus  "),
+        Span::styled(" ↑/↓ ", Style::default().fg(accent)),
+        Span::raw("move in project list  "),
+        Span::styled(" ←/→ ", Style::default().fg(accent)),
+        Span::raw("input/button focus  "),
+        Span::styled(" Enter ", Style::default().fg(accent)),
+        Span::raw("activate selected control  "),
+    ];
+    footer_spans.push(Span::styled(" Backspace ", Style::default().fg(accent)));
+    footer_spans.push(Span::raw("edit input  "));
+
+    if let Some(status) = &app.status {
+        footer_spans.push(Span::styled(" | ", Style::default().fg(muted)));
+        footer_spans.push(Span::styled(
+            status.clone(),
+            Style::default().fg(Color::Yellow),
+        ));
+    }
+
+    let footer = Paragraph::new(Line::from(footer_spans))
+        .alignment(Alignment::Center)
+        .style(Style::default().fg(muted));
+    frame.render_widget(footer, root[2]);
+}
+
 impl App {
     #[cfg(test)]
     pub(crate) fn new(manifest_path: PathBuf, config: RuntimeConfig) -> Self {
-        Self::new_with_overrides(manifest_path, config, TuiLaunchOverrides::default())
+        Self::new_with_overrides(manifest_path, config, TuiLaunchOverrides::default(), None)
     }
 
     pub(crate) fn new_with_overrides(
         manifest_path: PathBuf,
         config: RuntimeConfig,
         launch_overrides: TuiLaunchOverrides,
+        welcome_root: Option<PathBuf>,
     ) -> Self {
         let project_dir = manifest_path
             .parent()
@@ -204,6 +881,8 @@ impl App {
             installed_font_path,
             selected_font_action: FontAction::Build,
             launch_overrides,
+            welcome_root,
+            navigation_action: None,
             install_task: None,
         }
     }
@@ -389,6 +1068,24 @@ impl App {
         } else {
             glyph_sample_string(self.config.codepoint_start, self.glyphs.len())
         }
+    }
+
+    fn request_welcome_navigation(&mut self) -> Result<()> {
+        let Some(root) = self.welcome_root.clone() else {
+            self.status =
+                Some("welcome chooser is available only in multi-project sessions".to_string());
+            return Ok(());
+        };
+
+        let project_count = discover_project_manifests(&root)?.len();
+        if project_count > 1 {
+            self.navigation_action = Some(NavigationAction::OpenWelcome(root));
+            self.quit = true;
+        } else {
+            self.status =
+                Some("welcome chooser requires at least two projects in scope".to_string());
+        }
+        Ok(())
     }
 }
 
@@ -616,6 +1313,9 @@ pub(crate) fn handle_key(app: &mut App, code: KeyCode) -> Result<()> {
         KeyCode::Char('i') => {
             trigger_install_action(app);
         }
+        KeyCode::Char('w') => {
+            app.request_welcome_navigation()?;
+        }
         KeyCode::Down => {
             if app.view == AppView::Font {
                 app.selected_font_action = app.selected_font_action.next();
@@ -791,6 +1491,11 @@ fn draw_ui(frame: &mut Frame, app: &App) {
         Span::styled(" i ", Style::default().fg(accent)),
         Span::raw("install  "),
     ];
+
+    if app.welcome_root.is_some() {
+        footer_spans.push(Span::styled(" w ", Style::default().fg(accent)));
+        footer_spans.push(Span::raw("back to welcome chooser  "));
+    }
 
     if app.view == AppView::Glyphs {
         footer_spans.extend(vec![

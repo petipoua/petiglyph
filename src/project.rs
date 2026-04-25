@@ -57,13 +57,15 @@ pub(crate) fn manifest_path_from_option(manifest: Option<PathBuf>) -> Result<Pat
     }
 }
 
-pub(crate) fn auto_detect_manifest_path(current_dir: &Path) -> Result<PathBuf> {
+pub(crate) fn discover_project_manifests(current_dir: &Path) -> Result<Vec<PathBuf>> {
+    let mut manifests = Vec::new();
+    let mut nested_manifests = Vec::new();
+
     let manifest_path = current_dir.join("petiglyph.toml");
     if manifest_path.is_file() {
-        return Ok(manifest_path);
+        manifests.push(manifest_path);
     }
 
-    let mut nested_manifests = Vec::new();
     for entry in fs::read_dir(current_dir).with_context(|| {
         format!(
             "failed while searching for petiglyph.toml in {}",
@@ -92,8 +94,15 @@ pub(crate) fn auto_detect_manifest_path(current_dir: &Path) -> Result<PathBuf> {
         }
     }
 
-    match nested_manifests.len() {
-        1 => Ok(nested_manifests.remove(0)),
+    nested_manifests.sort();
+    manifests.extend(nested_manifests);
+    Ok(manifests)
+}
+
+pub(crate) fn auto_detect_manifest_path(current_dir: &Path) -> Result<PathBuf> {
+    let mut manifests = discover_project_manifests(current_dir)?;
+    match manifests.len() {
+        1 => Ok(manifests.remove(0)),
         0 => bail!(
             "no petiglyph project detected in {} (run `petiglyph create <name>` or pass --manifest)",
             current_dir.display()
@@ -105,13 +114,12 @@ pub(crate) fn auto_detect_manifest_path(current_dir: &Path) -> Result<PathBuf> {
     }
 }
 
-pub(crate) fn create_project(project_name: &str, no_launch: bool) -> Result<()> {
+pub(crate) fn create_project_in_dir(base_dir: &Path, project_name: &str) -> Result<PathBuf> {
     if project_name.trim().is_empty() {
         bail!("project name cannot be empty");
     }
 
-    let current_dir = env::current_dir().context("failed to read current directory")?;
-    let project_dir = current_dir.join(project_name);
+    let project_dir = base_dir.join(project_name);
     if project_dir.exists() {
         bail!(
             "project directory already exists: {}",
@@ -138,6 +146,18 @@ pub(crate) fn create_project(project_name: &str, no_launch: bool) -> Result<()> 
         ..Manifest::default()
     };
     write_manifest(&manifest_path, &manifest)?;
+    Ok(manifest_path)
+}
+
+pub(crate) fn create_project(project_name: &str, no_launch: bool) -> Result<()> {
+    let current_dir = env::current_dir().context("failed to read current directory")?;
+    let manifest_path = create_project_in_dir(&current_dir, project_name)?;
+    let project_dir = manifest_path
+        .parent()
+        .unwrap_or_else(|| Path::new("."))
+        .to_path_buf();
+    let icons_dir = project_dir.join("icons");
+    let out_dir = project_dir.join("build");
 
     println!("created petiglyph project: {}", project_dir.display());
     println!("  project: {}", project_dir.display());

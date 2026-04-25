@@ -123,8 +123,8 @@ fn cli_no_subcommand_errors_without_manifest() {
     );
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
-        stderr.contains("no petiglyph project detected"),
-        "stderr should mention missing project manifest: {stderr}"
+        stderr.contains("interactive TUI welcome requires a terminal"),
+        "stderr should mention interactive welcome requirement in non-tty runs: {stderr}"
     );
 
     fs::remove_dir_all(workspace).expect("temp dir is removed");
