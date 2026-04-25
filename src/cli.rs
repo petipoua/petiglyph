@@ -13,7 +13,7 @@ use crate::project::{
     RuntimeConfig, create_project, discover_project_manifests, format_codepoint,
     load_runtime_config, manifest_path_from_option,
 };
-use crate::tui::{tui, tui_welcome};
+use crate::tui::{tui, tui_workspace};
 
 const CLI_VERSION: &str = env!("CARGO_PKG_VERSION");
 
@@ -206,9 +206,9 @@ enum CliRunError {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) enum DefaultTuiTarget {
-    Project(PathBuf),
-    Welcome(PathBuf),
+pub(crate) struct DefaultTuiTarget {
+    pub(crate) workspace_root: PathBuf,
+    pub(crate) initial_project: Option<PathBuf>,
 }
 
 pub(crate) fn run() {
@@ -229,31 +229,34 @@ pub(crate) fn run() {
 
 pub(crate) fn resolve_default_tui_target_for(current_dir: &Path) -> Result<DefaultTuiTarget> {
     let manifests = discover_project_manifests(current_dir)?;
-    match manifests.len() {
-        1 => Ok(DefaultTuiTarget::Project(
-            manifests
-                .into_iter()
-                .next()
-                .expect("single manifest exists"),
-        )),
-        _ => Ok(DefaultTuiTarget::Welcome(current_dir.to_path_buf())),
-    }
+    let initial_project = if manifests.len() == 1 {
+        manifests.into_iter().next()
+    } else {
+        None
+    };
+    Ok(DefaultTuiTarget {
+        workspace_root: current_dir.to_path_buf(),
+        initial_project,
+    })
 }
 
 fn run_default_tui() -> Result<()> {
     let current_dir = std::env::current_dir().context("failed to read current directory")?;
-    match resolve_default_tui_target_for(&current_dir)? {
-        DefaultTuiTarget::Project(manifest_path) => tui(manifest_path, None, None, None, None),
-        DefaultTuiTarget::Welcome(cwd) => {
-            if !io::stdin().is_terminal() || !io::stdout().is_terminal() {
-                anyhow::bail!(
-                    "no single petiglyph project detected in {} and interactive TUI welcome requires a terminal",
-                    cwd.display()
-                );
-            }
-            tui_welcome(cwd)
-        }
+    if !io::stdin().is_terminal() || !io::stdout().is_terminal() {
+        anyhow::bail!(
+            "interactive petiglyph TUI requires a terminal in {}",
+            current_dir.display()
+        );
     }
+    let target = resolve_default_tui_target_for(&current_dir)?;
+    tui_workspace(
+        target.workspace_root,
+        target.initial_project,
+        None,
+        None,
+        None,
+        None,
+    )
 }
 
 fn run_cli(cli: Cli) -> std::result::Result<(), CliRunError> {
@@ -275,36 +278,35 @@ fn run_cli(cli: Cli) -> std::result::Result<(), CliRunError> {
             match manifest {
                 Some(path) => tui(path, input_dir, threshold, glyph_size, codepoint_start)
                     .map_err(CliRunError::Plain),
-                None => match resolve_default_tui_target_for(&current_dir)
-                    .map_err(CliRunError::Plain)?
-                {
-                    DefaultTuiTarget::Project(manifest_path) => tui(
-                        manifest_path,
+                None => {
+                    let target =
+                        resolve_default_tui_target_for(&current_dir).map_err(CliRunError::Plain)?;
+                    if target.initial_project.is_none()
+                        && (input_dir.is_some()
+                            || threshold.is_some()
+                            || glyph_size.is_some()
+                            || codepoint_start.is_some())
+                    {
+                        return Err(CliRunError::Plain(anyhow::anyhow!(
+                            "--input-dir/--threshold/--glyph-size/--codepoint-start require a concrete project; choose a project in Welcome first or pass --manifest"
+                        )));
+                    }
+                    if !io::stdin().is_terminal() || !io::stdout().is_terminal() {
+                        return Err(CliRunError::Plain(anyhow::anyhow!(
+                            "interactive petiglyph TUI requires a terminal in {}",
+                            current_dir.display()
+                        )));
+                    }
+                    tui_workspace(
+                        target.workspace_root,
+                        target.initial_project,
                         input_dir,
                         threshold,
                         glyph_size,
                         codepoint_start,
                     )
-                    .map_err(CliRunError::Plain),
-                    DefaultTuiTarget::Welcome(cwd) => {
-                        if input_dir.is_some()
-                            || threshold.is_some()
-                            || glyph_size.is_some()
-                            || codepoint_start.is_some()
-                        {
-                            return Err(CliRunError::Plain(anyhow::anyhow!(
-                                "--input-dir/--threshold/--glyph-size/--codepoint-start require a concrete project; choose a project in welcome first or pass --manifest"
-                            )));
-                        }
-                        if !io::stdin().is_terminal() || !io::stdout().is_terminal() {
-                            return Err(CliRunError::Plain(anyhow::anyhow!(
-                                "no single petiglyph project detected in {} and interactive TUI welcome requires a terminal",
-                                cwd.display()
-                            )));
-                        }
-                        tui_welcome(cwd).map_err(CliRunError::Plain)
-                    }
-                },
+                    .map_err(CliRunError::Plain)
+                }
             }
         }
         Some(CliCommand::Build {

@@ -3,7 +3,7 @@ use image::{Rgba, RgbaImage};
 use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use crate::build::{
     GlyphBitmap, MappingEntry, PreprocessedGlyph, bitmap_to_bdf_rows, build_outputs,
@@ -18,9 +18,10 @@ use crate::project::{
     load_runtime_config, parse_codepoint, read_manifest, write_manifest,
 };
 use crate::tui::{
-    App, AppView, FontAction, InteractiveGlyph, TuiLaunchOverrides, format_welcome_input_field,
-    handle_key, persist_threshold_override, resolve_installed_font_path_with,
-    sample_glyphs_from_ttf_bytes, spaced_sample, wrap_sample_for_display,
+    App, AppView, FontAction, InteractiveGlyph, TuiLaunchOverrides, WelcomeFocus,
+    format_welcome_input_field, handle_key, persist_threshold_override,
+    resolve_installed_font_path_with, sample_glyphs_from_ttf_bytes, spaced_sample,
+    switch_notice_visible, wrap_sample_for_display,
 };
 
 fn make_temp_dir(name: &str) -> PathBuf {
@@ -175,7 +176,13 @@ fn resolve_default_tui_target_prefers_single_project_direct_open() {
     write_manifest(&manifest_path, &Manifest::default()).expect("manifest is written");
 
     let target = resolve_default_tui_target_for(&root_dir).expect("target resolves");
-    assert_eq!(target, DefaultTuiTarget::Project(manifest_path));
+    assert_eq!(
+        target,
+        DefaultTuiTarget {
+            workspace_root: root_dir.clone(),
+            initial_project: Some(manifest_path),
+        }
+    );
 
     fs::remove_dir_all(root_dir).expect("temp root dir is removed");
 }
@@ -184,7 +191,13 @@ fn resolve_default_tui_target_prefers_single_project_direct_open() {
 fn resolve_default_tui_target_uses_welcome_for_none_or_multiple_projects() {
     let empty_root = make_temp_dir("default-target-none");
     let target = resolve_default_tui_target_for(&empty_root).expect("target resolves");
-    assert_eq!(target, DefaultTuiTarget::Welcome(empty_root.clone()));
+    assert_eq!(
+        target,
+        DefaultTuiTarget {
+            workspace_root: empty_root.clone(),
+            initial_project: None,
+        }
+    );
     fs::remove_dir_all(&empty_root).expect("temp empty root dir is removed");
 
     let multi_root = make_temp_dir("default-target-multiple");
@@ -195,9 +208,128 @@ fn resolve_default_tui_target_uses_welcome_for_none_or_multiple_projects() {
             .expect("manifest is written");
     }
     let multi_target = resolve_default_tui_target_for(&multi_root).expect("target resolves");
-    assert_eq!(multi_target, DefaultTuiTarget::Welcome(multi_root.clone()));
+    assert_eq!(
+        multi_target,
+        DefaultTuiTarget {
+            workspace_root: multi_root.clone(),
+            initial_project: None,
+        }
+    );
 
     fs::remove_dir_all(multi_root).expect("temp multi root dir is removed");
+}
+
+#[test]
+fn unified_tui_zero_projects_starts_without_active_project() {
+    let workspace = make_temp_dir("unified-zero-projects");
+    let app = App::new_workspace(workspace.clone(), None, TuiLaunchOverrides::default())
+        .expect("workspace TUI app initializes");
+
+    assert_eq!(app.view, AppView::Welcome);
+    assert_eq!(app.active_project, None);
+    assert_eq!(app.welcome_focus, WelcomeFocus::CreateInput);
+
+    fs::remove_dir_all(workspace).expect("temp workspace is removed");
+}
+
+#[test]
+fn unified_tui_single_project_can_start_active() {
+    let workspace = make_temp_dir("unified-single-project");
+    let project_dir = workspace.join("demo");
+    let icons_dir = project_dir.join("icons");
+    fs::create_dir_all(&icons_dir).expect("icons dir is created");
+    write_test_png(&icons_dir.join("icon.png"));
+    let manifest_path = project_dir.join("petiglyph.toml");
+    write_manifest(&manifest_path, &Manifest::default()).expect("manifest is written");
+
+    let app = App::new_workspace(
+        workspace.clone(),
+        Some(manifest_path.clone()),
+        TuiLaunchOverrides::default(),
+    )
+    .expect("workspace TUI app initializes");
+
+    assert_eq!(app.view, AppView::Welcome);
+    assert_eq!(app.active_project.as_deref(), Some(manifest_path.as_path()));
+    assert_eq!(app.glyphs.len(), 1);
+
+    fs::remove_dir_all(workspace).expect("temp workspace is removed");
+}
+
+#[test]
+fn unified_tui_multiple_projects_keep_project_card_informational() {
+    let workspace = make_temp_dir("unified-multi-project");
+    for name in ["project-a", "project-b"] {
+        let project_dir = workspace.join(name);
+        let icons_dir = project_dir.join("icons");
+        fs::create_dir_all(&icons_dir).expect("icons dir is created");
+        write_test_png(&icons_dir.join(format!("{name}.png")));
+        let manifest_path = project_dir.join("petiglyph.toml");
+        write_manifest(&manifest_path, &Manifest::default()).expect("manifest is written");
+    }
+
+    let mut app = App::new_workspace(workspace.clone(), None, TuiLaunchOverrides::default())
+        .expect("workspace TUI app initializes");
+    assert_eq!(app.active_project, None);
+    assert_eq!(app.welcome_focus, WelcomeFocus::CreateInput);
+
+    handle_key(&mut app, KeyCode::Down).expect("welcome arrows move to create button");
+    assert_eq!(app.welcome_focus, WelcomeFocus::CreateButton);
+
+    handle_key(&mut app, KeyCode::Up).expect("welcome arrows move to input");
+    assert_eq!(app.welcome_focus, WelcomeFocus::CreateInput);
+    handle_key(&mut app, KeyCode::Enter).expect("enter on input moves to create button");
+
+    assert_eq!(app.active_project, None);
+    assert!(app.glyphs.is_empty());
+    assert!(app.switch_notice.is_none());
+
+    fs::remove_dir_all(workspace).expect("temp workspace is removed");
+}
+
+#[test]
+fn project_actions_without_active_project_set_status_and_do_not_crash() {
+    let workspace = make_temp_dir("no-active-actions");
+    let mut app = App::new_workspace(workspace.clone(), None, TuiLaunchOverrides::default())
+        .expect("workspace TUI app initializes");
+
+    app.view = AppView::Font;
+    handle_key(&mut app, KeyCode::Char('b')).expect("build guard succeeds");
+    assert!(
+        app.status
+            .as_deref()
+            .is_some_and(|status| status.contains("before building"))
+    );
+
+    handle_key(&mut app, KeyCode::Char('i')).expect("install guard succeeds");
+    assert!(
+        app.status
+            .as_deref()
+            .is_some_and(|status| status.contains("before installing"))
+    );
+
+    app.view = AppView::Glyphs;
+    handle_key(&mut app, KeyCode::Right).expect("threshold guard succeeds");
+    assert!(
+        app.status
+            .as_deref()
+            .is_some_and(|status| status.contains("before tuning glyphs"))
+    );
+
+    fs::remove_dir_all(workspace).expect("temp workspace is removed");
+}
+
+#[test]
+fn switch_notice_visibility_expires_deterministically() {
+    let started_at = Instant::now();
+    assert!(switch_notice_visible(
+        started_at,
+        started_at + Duration::from_millis(100)
+    ));
+    assert!(!switch_notice_visible(
+        started_at,
+        started_at + Duration::from_millis(2500)
+    ));
 }
 
 #[test]
@@ -610,9 +742,9 @@ fn tab_cycles_panels_and_glyph_controls_stay_in_glyph_view() {
     });
 
     // Glyph-specific keys do nothing outside Glyphs view.
-    assert_eq!(app.view, AppView::Home);
+    assert_eq!(app.view, AppView::Welcome);
     handle_key(&mut app, KeyCode::Right).expect("key handling should succeed");
-    assert_eq!(app.view, AppView::Home);
+    assert_eq!(app.view, AppView::Welcome);
     assert_eq!(app.glyphs[0].working_threshold, 64);
 
     // Tab is now the primary panel navigation key.
@@ -621,7 +753,7 @@ fn tab_cycles_panels_and_glyph_controls_stay_in_glyph_view() {
     handle_key(&mut app, KeyCode::Tab).expect("key handling should succeed");
     assert_eq!(app.view, AppView::Font);
     handle_key(&mut app, KeyCode::Tab).expect("key handling should succeed");
-    assert_eq!(app.view, AppView::Home);
+    assert_eq!(app.view, AppView::Welcome);
 
     // Threshold arrows still provide granular (+/-1) changes in Glyphs.
     app.view = AppView::Glyphs;
@@ -634,7 +766,7 @@ fn tab_cycles_panels_and_glyph_controls_stay_in_glyph_view() {
 }
 
 #[test]
-fn handle_key_w_returns_to_welcome_when_multiple_projects_exist() {
+fn handle_key_w_is_not_a_navigation_path() {
     let workspace = make_temp_dir("handle-key-welcome-nav");
     let project_a = workspace.join("project-a");
     let project_b = workspace.join("project-b");
@@ -665,7 +797,11 @@ fn handle_key_w_returns_to_welcome_when_multiple_projects_exist() {
     assert!(!app.quit, "app should start active");
 
     handle_key(&mut app, KeyCode::Char('w')).expect("key handling should succeed");
-    assert!(app.quit, "w should switch out to welcome chooser");
+    assert!(
+        !app.quit,
+        "w should not switch out to a separate welcome runtime"
+    );
+    assert_eq!(app.view, AppView::Welcome);
 
     fs::remove_dir_all(workspace).expect("temp workspace is removed");
 }

@@ -65,8 +65,8 @@ All non-`create` commands accept `--manifest` to target another project.
 
 When `--manifest` is omitted, petiglyph checks `./petiglyph.toml` first, then scans one directory below:
 
-- if exactly one project is found, it opens that project directly
-- if none or multiple projects are found, `petiglyph` / `petiglyph tui` open a Welcome panel (interactive terminal only) where you can choose a project or create one
+- if exactly one project is found, it auto-selects that project while keeping the Home panel available
+- if none or multiple projects are found, `petiglyph` / `petiglyph tui` start on the integrated Home panel where you can create a project folder
 
 ## Automation API Contract
 
@@ -254,9 +254,8 @@ codepoint_start = "U+100000"
 ## TUI Keys
 
 - `Tab`: cycle Home -> Glyphs -> Font
-- `1` / `2` / `3`: switch between Home, Glyphs, and Font views
-- Home view includes a copy-ready glyph sample string for the current detected font sample
-- `w`: return to Welcome project chooser (only when session started from a multi-project Welcome context)
+- `1` / `2` / `3`: switch between Home, Glyphs, and Font panels
+- Home shows detected project folders, project creation controls, and installed petiglyph font samples
 - `R`: rescan `icons/`
 - `j` / `k` or `↑` / `↓`: select glyph (Glyphs view)
 - `←` / `→` or `+` / `-`: adjust threshold by 1 for selected glyph (Glyphs view)
