@@ -5,7 +5,6 @@ use std::env;
 use std::fs;
 use std::io::{self, IsTerminal, Write};
 use std::path::{Path, PathBuf};
-use walkdir::WalkDir;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub(crate) struct Manifest {
@@ -53,36 +52,56 @@ pub(crate) fn manifest_path_from_option(manifest: Option<PathBuf>) -> Result<Pat
         Some(path) => Ok(path),
         None => {
             let current_dir = env::current_dir().context("failed to read current directory")?;
-            let manifest_path = current_dir.join("petiglyph.toml");
-            if manifest_path.exists() {
-                Ok(manifest_path)
-            } else {
-                let mut nested_manifests = Vec::new();
-                for entry in WalkDir::new(&current_dir).follow_links(true) {
-                    let entry = entry.with_context(|| {
-                        format!(
-                            "failed while searching for petiglyph.toml in {}",
-                            current_dir.display()
-                        )
-                    })?;
-                    if entry.file_type().is_file() && entry.file_name() == "petiglyph.toml" {
-                        nested_manifests.push(entry.into_path());
-                    }
-                }
-
-                match nested_manifests.len() {
-                    1 => Ok(nested_manifests.remove(0)),
-                    0 => bail!(
-                        "no petiglyph project detected in {} (run `petiglyph create <name>` or pass --manifest)",
-                        current_dir.display()
-                    ),
-                    _ => bail!(
-                        "multiple petiglyph projects detected in {} (pass --manifest to choose one)",
-                        current_dir.display()
-                    ),
-                }
-            }
+            auto_detect_manifest_path(&current_dir)
         }
+    }
+}
+
+pub(crate) fn auto_detect_manifest_path(current_dir: &Path) -> Result<PathBuf> {
+    let manifest_path = current_dir.join("petiglyph.toml");
+    if manifest_path.is_file() {
+        return Ok(manifest_path);
+    }
+
+    let mut nested_manifests = Vec::new();
+    for entry in fs::read_dir(current_dir).with_context(|| {
+        format!(
+            "failed while searching for petiglyph.toml in {}",
+            current_dir.display()
+        )
+    })? {
+        let entry = entry.with_context(|| {
+            format!(
+                "failed while searching for petiglyph.toml in {}",
+                current_dir.display()
+            )
+        })?;
+        let file_type = entry.file_type().with_context(|| {
+            format!(
+                "failed while searching for petiglyph.toml in {}",
+                current_dir.display()
+            )
+        })?;
+        if !file_type.is_dir() {
+            continue;
+        }
+
+        let candidate = entry.path().join("petiglyph.toml");
+        if candidate.is_file() {
+            nested_manifests.push(candidate);
+        }
+    }
+
+    match nested_manifests.len() {
+        1 => Ok(nested_manifests.remove(0)),
+        0 => bail!(
+            "no petiglyph project detected in {} (run `petiglyph create <name>` or pass --manifest)",
+            current_dir.display()
+        ),
+        _ => bail!(
+            "multiple petiglyph projects detected in {} (pass --manifest to choose one)",
+            current_dir.display()
+        ),
     }
 }
 

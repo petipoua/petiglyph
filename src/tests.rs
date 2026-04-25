@@ -9,11 +9,17 @@ use crate::build::{
     GlyphBitmap, MappingEntry, PreprocessedGlyph, bitmap_to_bdf_rows, build_outputs,
     collect_source_files, coverage_map, glyph_sample_string, is_supported_source,
 };
-use crate::install::{FontInstallNameMode, effective_font_name};
-use crate::project::{Manifest, RuntimeConfig, parse_codepoint, read_manifest, write_manifest};
+use crate::install::{
+    FontInstallNameMode, effective_font_name, expected_install_ttf_path_for_mode,
+};
+use crate::project::{
+    Manifest, RuntimeConfig, auto_detect_manifest_path, load_runtime_config, parse_codepoint,
+    read_manifest, write_manifest,
+};
 use crate::tui::{
-    App, AppView, FontAction, InteractiveGlyph, handle_key, persist_threshold_override,
-    spaced_sample, wrap_sample_for_display,
+    App, AppView, FontAction, InteractiveGlyph, TuiLaunchOverrides, handle_key,
+    persist_threshold_override, resolve_installed_font_path_with, spaced_sample,
+    wrap_sample_for_display,
 };
 
 fn make_temp_dir(name: &str) -> PathBuf {
@@ -77,6 +83,64 @@ fn effective_font_name_uses_project_prefix_in_project_mode() {
     assert_ne!(prefixed, plain);
 
     fs::remove_dir_all(project_dir).expect("temp project dir is removed");
+}
+
+#[test]
+fn resolve_installed_font_path_detects_cli_project_prefixed_name() {
+    let project_dir = make_temp_dir("installed-path-fallback");
+    let manifest_path = project_dir.join("petiglyph.toml");
+
+    let plain_path =
+        expected_install_ttf_path_for_mode(&manifest_path, "My Font", FontInstallNameMode::Plain)
+            .expect("plain install path resolves");
+    let prefixed_path = expected_install_ttf_path_for_mode(
+        &manifest_path,
+        "My Font",
+        FontInstallNameMode::ProjectPrefixed,
+    )
+    .expect("project-prefixed install path resolves");
+
+    let resolved = resolve_installed_font_path_with(&manifest_path, "My Font", |path| {
+        path == prefixed_path.as_path()
+    });
+
+    assert_ne!(plain_path, prefixed_path);
+    assert_eq!(resolved.as_deref(), Some(prefixed_path.as_path()));
+
+    fs::remove_dir_all(project_dir).expect("temp project dir is removed");
+}
+
+#[test]
+fn auto_detect_manifest_path_finds_single_child_manifest() {
+    let root_dir = make_temp_dir("manifest-child-detect");
+    let child_dir = root_dir.join("project-a");
+    fs::create_dir_all(&child_dir).expect("child dir is created");
+    let child_manifest = child_dir.join("petiglyph.toml");
+    write_manifest(&child_manifest, &Manifest::default()).expect("manifest is written");
+
+    let detected = auto_detect_manifest_path(&root_dir).expect("manifest should auto-detect");
+    assert_eq!(detected, child_manifest);
+
+    fs::remove_dir_all(root_dir).expect("temp root dir is removed");
+}
+
+#[test]
+fn auto_detect_manifest_path_ignores_deep_manifests_beyond_one_level() {
+    let root_dir = make_temp_dir("manifest-depth-limit");
+    let deep_dir = root_dir.join("a").join("b");
+    fs::create_dir_all(&deep_dir).expect("deep dir is created");
+    let deep_manifest = deep_dir.join("petiglyph.toml");
+    write_manifest(&deep_manifest, &Manifest::default()).expect("manifest is written");
+
+    let error =
+        auto_detect_manifest_path(&root_dir).expect_err("deep manifest should not auto-detect");
+    let message = format!("{error:#}");
+    assert!(
+        message.contains("no petiglyph project detected"),
+        "unexpected error: {message}"
+    );
+
+    fs::remove_dir_all(root_dir).expect("temp root dir is removed");
 }
 
 #[test]
@@ -240,6 +304,66 @@ fn build_outputs_supports_upper_unicode_edge() {
             .trim()
             .to_string(),
         glyph_sample_string(0x10_FFFE, 2)
+    );
+
+    fs::remove_dir_all(project_dir).expect("temp project dir is removed");
+}
+
+#[test]
+fn build_outputs_rejects_codepoint_range_above_unicode_max() {
+    let project_dir = make_temp_dir("unicode-overflow");
+    let input_dir = project_dir.join("icons");
+    let out_dir = project_dir.join("build");
+    fs::create_dir_all(&input_dir).expect("icons dir is created");
+    fs::create_dir_all(&out_dir).expect("build dir is created");
+    write_test_png(&input_dir.join("a.png"));
+    write_test_png(&input_dir.join("b.png"));
+
+    let config = RuntimeConfig {
+        input_dir,
+        out_dir,
+        font_name: "Overflow".to_string(),
+        glyph_size: 32,
+        base_threshold: 64,
+        threshold_overrides: BTreeMap::new(),
+        codepoint_start: 0x10_FFFF,
+    };
+
+    let error = build_outputs(&config).expect_err("build should reject codepoint overflow");
+    let message = format!("{error:#}");
+    assert!(
+        message.contains("codepoint range exceeds Unicode limit"),
+        "unexpected error: {message}"
+    );
+
+    fs::remove_dir_all(project_dir).expect("temp project dir is removed");
+}
+
+#[test]
+fn build_outputs_rejects_codepoint_range_crossing_surrogates() {
+    let project_dir = make_temp_dir("unicode-surrogate-crossing");
+    let input_dir = project_dir.join("icons");
+    let out_dir = project_dir.join("build");
+    fs::create_dir_all(&input_dir).expect("icons dir is created");
+    fs::create_dir_all(&out_dir).expect("build dir is created");
+    write_test_png(&input_dir.join("a.png"));
+    write_test_png(&input_dir.join("b.png"));
+
+    let config = RuntimeConfig {
+        input_dir,
+        out_dir,
+        font_name: "Surrogate".to_string(),
+        glyph_size: 32,
+        base_threshold: 64,
+        threshold_overrides: BTreeMap::new(),
+        codepoint_start: 0xD7FF,
+    };
+
+    let error = build_outputs(&config).expect_err("build should reject surrogate-range codepoint");
+    let message = format!("{error:#}");
+    assert!(
+        message.contains("surrogate range"),
+        "unexpected error: {message}"
     );
 
     fs::remove_dir_all(project_dir).expect("temp project dir is removed");
@@ -445,6 +569,82 @@ fn font_action_buttons_switch_with_arrows_and_enter_builds() {
     assert!(summary.ttf_path.is_file(), "ttf output should exist");
     assert!(summary.bdf_path.is_file(), "bdf output should exist");
     assert_eq!(app.view, AppView::Font);
+
+    fs::remove_dir_all(project_dir).expect("temp project dir is removed");
+}
+
+#[test]
+fn tui_launch_overrides_persist_through_reload_and_build() {
+    let project_dir = make_temp_dir("tui-overrides");
+    let manifest_path = project_dir.join("petiglyph.toml");
+    let default_icons = project_dir.join("icons");
+    let override_icons = project_dir.join("icons-override");
+    let build_dir = project_dir.join("build");
+
+    fs::create_dir_all(&default_icons).expect("default icons dir is created");
+    fs::create_dir_all(&override_icons).expect("override icons dir is created");
+    fs::create_dir_all(&build_dir).expect("build dir is created");
+    write_test_png(&default_icons.join("default.png"));
+    write_test_png(&override_icons.join("override.png"));
+
+    let manifest = Manifest {
+        input_dir: "icons".to_string(),
+        out_dir: "build".to_string(),
+        font_name: "Petiglyph".to_string(),
+        glyph_size: 8,
+        threshold: 10,
+        codepoint_start: "U+100000".to_string(),
+        threshold_overrides: BTreeMap::new(),
+    };
+    write_manifest(&manifest_path, &manifest).expect("manifest is written");
+
+    let overrides = TuiLaunchOverrides {
+        input_dir: Some(override_icons.clone()),
+        threshold: Some(201),
+        glyph_size: Some(16),
+        codepoint_start: Some("U+E100".to_string()),
+    };
+
+    let config = load_runtime_config(
+        &manifest_path,
+        overrides.input_dir.clone(),
+        None,
+        overrides.threshold,
+        overrides.glyph_size,
+        overrides.codepoint_start.clone(),
+    )
+    .expect("runtime config with overrides should load");
+
+    let mut app = App::new_with_overrides(manifest_path.clone(), config, overrides.clone());
+
+    let mut modified_manifest = read_manifest(&manifest_path).expect("manifest reads");
+    modified_manifest.threshold = 1;
+    modified_manifest.glyph_size = 4;
+    modified_manifest.codepoint_start = "U+100010".to_string();
+    write_manifest(&manifest_path, &modified_manifest).expect("modified manifest is written");
+
+    handle_key(&mut app, KeyCode::Char('R')).expect("rescan should succeed");
+    assert_eq!(app.config.input_dir, override_icons);
+    assert_eq!(app.config.base_threshold, 201);
+    assert_eq!(app.config.glyph_size, 16);
+    assert_eq!(
+        app.config.codepoint_start,
+        parse_codepoint("U+E100").expect("override codepoint parses")
+    );
+    assert_eq!(app.glyphs.len(), 1);
+    assert_eq!(app.glyphs[0].glyph.source_key, "override.png");
+
+    app.view = AppView::Font;
+    handle_key(&mut app, KeyCode::Enter).expect("enter should run build action");
+    let summary = app
+        .last_build
+        .as_ref()
+        .expect("build summary should be present");
+    let bdf = fs::read_to_string(&summary.bdf_path).expect("bdf is written");
+    assert!(
+        bdf.contains("SIZE 16 75 75"),
+        "build should honor glyph_size override; bdf={bdf}"
+    );
 
     fs::remove_dir_all(project_dir).expect("temp project dir is removed");
 }

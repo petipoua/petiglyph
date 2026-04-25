@@ -46,6 +46,7 @@ pub(crate) struct BuildSummary {
 pub(crate) fn build_outputs(config: &RuntimeConfig) -> Result<BuildSummary> {
     let sources = collect_source_files(&config.input_dir)?;
     let glyphs = preprocess_sources(&sources, &config.input_dir, config.glyph_size)?;
+    validate_codepoint_range(config.codepoint_start, glyphs.len())?;
 
     let previews_dir = config.out_dir.join("previews");
     fs::create_dir_all(&previews_dir)
@@ -55,7 +56,8 @@ pub(crate) fn build_outputs(config: &RuntimeConfig) -> Result<BuildSummary> {
     let mut bdf_glyphs = Vec::with_capacity(glyphs.len());
 
     for (idx, glyph) in glyphs.iter().enumerate() {
-        let codepoint = config.codepoint_start + idx as u32;
+        let idx_u32 = u32::try_from(idx).context("too many glyphs to assign Unicode codepoints")?;
+        let codepoint = config.codepoint_start + idx_u32;
         let threshold = effective_threshold(
             config.base_threshold,
             &config.threshold_overrides,
@@ -105,6 +107,51 @@ pub(crate) fn build_outputs(config: &RuntimeConfig) -> Result<BuildSummary> {
         sample_path,
         previews_dir,
     })
+}
+
+fn is_valid_unicode_scalar(codepoint: u32) -> bool {
+    codepoint <= 0x10_FFFF && !(0xD800..=0xDFFF).contains(&codepoint)
+}
+
+fn validate_codepoint_range(codepoint_start: u32, glyph_count: usize) -> Result<()> {
+    if glyph_count == 0 {
+        return Ok(());
+    }
+
+    if !is_valid_unicode_scalar(codepoint_start) {
+        bail!(
+            "codepoint_start is not a valid Unicode scalar value: U+{:04X}",
+            codepoint_start
+        );
+    }
+
+    let max_offset = u32::try_from(glyph_count - 1)
+        .context("glyph count is too large to assign Unicode codepoints")?;
+    let codepoint_end = codepoint_start.checked_add(max_offset).ok_or_else(|| {
+        anyhow::anyhow!(
+            "codepoint range overflow: start U+{:04X} with {} glyphs",
+            codepoint_start,
+            glyph_count
+        )
+    })?;
+
+    if codepoint_end > 0x10_FFFF {
+        bail!(
+            "codepoint range exceeds Unicode limit: start U+{:04X}, glyph_count {}, max U+10FFFF",
+            codepoint_start,
+            glyph_count
+        );
+    }
+
+    if codepoint_start <= 0xDFFF && codepoint_end >= 0xD800 {
+        bail!(
+            "codepoint range intersects UTF-16 surrogate range (U+D800..U+DFFF): start U+{:04X}, end U+{:04X}",
+            codepoint_start,
+            codepoint_end
+        );
+    }
+
+    Ok(())
 }
 
 fn expected_font_file_stem(font_name: &str) -> String {

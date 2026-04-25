@@ -24,11 +24,22 @@ use crate::build::{
     BuildSummary, MappingEntry, PreprocessedGlyph, build_outputs, expected_bdf_path,
     expected_ttf_path, glyph_sample_string, is_supported_source, preprocess_sources,
 };
-use crate::install::{expected_install_ttf_path, install_built_font};
+use crate::install::{
+    FontInstallNameMode, expected_install_ttf_path, expected_install_ttf_path_for_mode,
+    install_built_font,
+};
 use crate::project::{RuntimeConfig, load_runtime_config, read_manifest, write_manifest};
 
 const CLI_VERSION: &str = env!("CARGO_PKG_VERSION");
 const INSTALL_SPINNER_FRAMES: [&str; 4] = ["-", "\\", "|", "/"];
+
+#[derive(Debug, Clone, Default)]
+pub(crate) struct TuiLaunchOverrides {
+    pub(crate) input_dir: Option<PathBuf>,
+    pub(crate) threshold: Option<u8>,
+    pub(crate) glyph_size: Option<u32>,
+    pub(crate) codepoint_start: Option<String>,
+}
 
 pub(crate) fn tui(
     manifest_path: PathBuf,
@@ -37,6 +48,12 @@ pub(crate) fn tui(
     glyph_size_override: Option<u32>,
     codepoint_start_override: Option<String>,
 ) -> Result<()> {
+    let launch_overrides = TuiLaunchOverrides {
+        input_dir: input_override.clone(),
+        threshold: threshold_override,
+        glyph_size: glyph_size_override,
+        codepoint_start: codepoint_start_override.clone(),
+    };
     let config = load_runtime_config(
         &manifest_path,
         input_override,
@@ -46,7 +63,7 @@ pub(crate) fn tui(
         codepoint_start_override,
     )?;
 
-    let mut app = App::new(manifest_path, config);
+    let mut app = App::new_with_overrides(manifest_path, config, launch_overrides);
     app.reload_glyphs()?;
 
     let mut session = TerminalSession::start()?;
@@ -109,6 +126,7 @@ pub(crate) struct App {
     pub(crate) last_sample: Option<String>,
     pub(crate) installed_font_path: Option<PathBuf>,
     pub(crate) selected_font_action: FontAction,
+    launch_overrides: TuiLaunchOverrides,
     install_task: Option<InstallTask>,
 }
 
@@ -156,7 +174,16 @@ impl Drop for TerminalSession {
 }
 
 impl App {
+    #[cfg(test)]
     pub(crate) fn new(manifest_path: PathBuf, config: RuntimeConfig) -> Self {
+        Self::new_with_overrides(manifest_path, config, TuiLaunchOverrides::default())
+    }
+
+    pub(crate) fn new_with_overrides(
+        manifest_path: PathBuf,
+        config: RuntimeConfig,
+        launch_overrides: TuiLaunchOverrides,
+    ) -> Self {
         let project_dir = manifest_path
             .parent()
             .unwrap_or_else(|| Path::new("."))
@@ -176,12 +203,20 @@ impl App {
             last_sample,
             installed_font_path,
             selected_font_action: FontAction::Build,
+            launch_overrides,
             install_task: None,
         }
     }
 
     fn reload_config(&mut self) -> Result<()> {
-        self.config = load_runtime_config(&self.manifest_path, None, None, None, None, None)?;
+        self.config = load_runtime_config(
+            &self.manifest_path,
+            self.launch_overrides.input_dir.clone(),
+            None,
+            self.launch_overrides.threshold,
+            self.launch_overrides.glyph_size,
+            self.launch_overrides.codepoint_start.clone(),
+        )?;
         let (last_build, last_sample) = cached_build_state(&self.config);
         self.last_build = last_build;
         self.last_sample = last_sample;
@@ -281,9 +316,11 @@ impl App {
         }
 
         let manifest_path = self.manifest_path.clone();
+        let launch_overrides = self.launch_overrides.clone();
         let (sender, receiver) = mpsc::channel();
         thread::spawn(move || {
-            let result = build_and_install(manifest_path).map_err(|err| err.to_string());
+            let result =
+                build_and_install(manifest_path, launch_overrides).map_err(|err| err.to_string());
             let _ = sender.send(result);
         });
 
@@ -361,8 +398,18 @@ impl BuildSummary {
     }
 }
 
-fn build_and_install(manifest_path: PathBuf) -> Result<InstallTaskOutput> {
-    let config = load_runtime_config(&manifest_path, None, None, None, None, None)?;
+fn build_and_install(
+    manifest_path: PathBuf,
+    launch_overrides: TuiLaunchOverrides,
+) -> Result<InstallTaskOutput> {
+    let config = load_runtime_config(
+        &manifest_path,
+        launch_overrides.input_dir,
+        None,
+        launch_overrides.threshold,
+        launch_overrides.glyph_size,
+        launch_overrides.codepoint_start,
+    )?;
     if config.glyph_size == 0 {
         bail!("glyph_size must be > 0");
     }
@@ -425,8 +472,33 @@ fn cached_build_state(config: &RuntimeConfig) -> (Option<BuildSummary>, Option<S
 }
 
 fn cached_installed_font_path(manifest_path: &Path, font_name: &str) -> Option<PathBuf> {
-    let path = expected_install_ttf_path(manifest_path, font_name).ok()?;
-    if path.is_file() { Some(path) } else { None }
+    resolve_installed_font_path_with(manifest_path, font_name, |path| path.is_file())
+}
+
+pub(crate) fn resolve_installed_font_path_with<F>(
+    manifest_path: &Path,
+    font_name: &str,
+    mut is_installed: F,
+) -> Option<PathBuf>
+where
+    F: FnMut(&Path) -> bool,
+{
+    let mut candidates = Vec::new();
+    if let Ok(path) =
+        expected_install_ttf_path_for_mode(manifest_path, font_name, FontInstallNameMode::Plain)
+    {
+        candidates.push(path);
+    }
+    if let Ok(path) = expected_install_ttf_path_for_mode(
+        manifest_path,
+        font_name,
+        FontInstallNameMode::ProjectPrefixed,
+    ) && !candidates.contains(&path)
+    {
+        candidates.push(path);
+    }
+
+    candidates.into_iter().find(|path| is_installed(path))
 }
 
 pub(crate) fn persist_threshold_override(
@@ -665,8 +737,8 @@ fn draw_ui(frame: &mut Frame, app: &App) {
         .split(area);
 
     // Header
-    let titles = vec![" 1 Home ", " 2 Glyphs ", " 3 Font "];
-    let tabs = Tabs::new(titles.iter().copied().map(Line::from).collect::<Vec<_>>())
+    let titles = [" 1 Home ", " 2 Glyphs ", " 3 Font "];
+    let tabs = Tabs::new(titles.into_iter().map(Line::from).collect::<Vec<_>>())
         .block(
             Block::default()
                 .borders(Borders::ALL)
