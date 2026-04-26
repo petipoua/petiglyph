@@ -5,11 +5,11 @@ use crossterm::terminal::{
     EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode,
 };
 use ratatui::backend::CrosstermBackend;
-use ratatui::layout::{Alignment, Constraint, Direction, Layout};
+use ratatui::layout::{Alignment, Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{
-    Block, BorderType, Borders, List, ListItem, ListState, Paragraph, Tabs, Wrap,
+    Block, BorderType, Borders, Clear, List, ListItem, ListState, Paragraph, Tabs, Wrap,
 };
 use ratatui::{Frame, Terminal};
 use std::collections::BTreeSet;
@@ -45,6 +45,12 @@ const WELCOME_INPUT_WIDTH: usize = 15;
 const SWITCH_NOTICE_MS: u64 = 2500;
 const EVENT_POLL_MS: u64 = 33;
 const TUI_DEBUG_LOG_PATH: &str = "/tmp/petiglyph-tui-debug.log";
+const TUI_MIN_WIDTH: u16 = 96;
+const TUI_MIN_HEIGHT: u16 = 28;
+const TUI_MAX_WIDTH: u16 = 128;
+const TUI_MAX_HEIGHT: u16 = 40;
+const GLYPH_PREVIEW_TARGET_WIDTH: u16 = 24;
+const GLYPH_PREVIEW_TARGET_HEIGHT: u16 = 16;
 
 #[derive(Debug, Clone, Default)]
 pub(crate) struct TuiLaunchOverrides {
@@ -1719,6 +1725,14 @@ fn draw_ui(frame: &mut Frame, app: &App) {
     let accent = Color::Cyan;
     let muted = Color::DarkGray;
 
+    frame.render_widget(Clear, area);
+
+    if !terminal_size_supported(area) {
+        draw_terminal_too_small(frame, area, accent, muted);
+        return;
+    }
+    let area = centered_bounded_viewport(area);
+
     let root = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
@@ -1878,6 +1892,58 @@ fn draw_ui(frame: &mut Frame, app: &App) {
     frame.render_widget(footer, root[3]);
 }
 
+fn terminal_size_supported(area: Rect) -> bool {
+    area.width >= TUI_MIN_WIDTH && area.height >= TUI_MIN_HEIGHT
+}
+
+fn centered_bounded_viewport(area: Rect) -> Rect {
+    let viewport_width = area.width.min(TUI_MAX_WIDTH);
+    let viewport_height = area.height.min(TUI_MAX_HEIGHT);
+    let x = area.x + area.width.saturating_sub(viewport_width) / 2;
+    let y = area.y + area.height.saturating_sub(viewport_height) / 2;
+    Rect::new(x, y, viewport_width, viewport_height)
+}
+
+fn draw_terminal_too_small(frame: &mut Frame, area: Rect, accent: Color, muted: Color) {
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(Style::default().fg(muted))
+        .title(Span::styled(
+            " petiglyph ",
+            Style::default().fg(accent).add_modifier(Modifier::BOLD),
+        ));
+    let text = vec![
+        Line::from(""),
+        Line::from(Span::styled(
+            "Terminal too small",
+            Style::default()
+                .fg(Color::Yellow)
+                .add_modifier(Modifier::BOLD),
+        )),
+        Line::from(""),
+        Line::from(format!(
+            "Need at least {}x{} (W x H)",
+            TUI_MIN_WIDTH, TUI_MIN_HEIGHT
+        )),
+        Line::from(format!("Current: {}x{}", area.width, area.height)),
+        Line::from(""),
+        Line::from(Span::styled(
+            "Resize terminal to continue.",
+            Style::default().fg(muted),
+        )),
+        Line::from(Span::styled(
+            "Press q or Esc to quit.",
+            Style::default().fg(muted),
+        )),
+    ];
+    let panel = Paragraph::new(text)
+        .block(block)
+        .alignment(Alignment::Center)
+        .wrap(Wrap { trim: true });
+    frame.render_widget(panel, area);
+}
+
 fn draw_blocked_project_view(
     frame: &mut Frame,
     area: ratatui::layout::Rect,
@@ -2023,11 +2089,12 @@ fn draw_glyphs_view(
 
     if !app.glyphs.is_empty() {
         let active = &app.glyphs[app.selected];
+        let (preview_w, preview_h) = glyph_preview_target_size(preview_area);
         let mut ascii = preview_lines(
             &active.glyph,
             active.working_threshold,
-            preview_area.width.saturating_sub(4) / 2,
-            preview_area.height.saturating_sub(5),
+            preview_w,
+            preview_h,
         );
         preview_content.append(&mut ascii);
     }
@@ -2036,6 +2103,15 @@ fn draw_glyphs_view(
         .block(preview_block)
         .wrap(Wrap { trim: false });
     frame.render_widget(p, chunks[1]);
+}
+
+fn glyph_preview_target_size(preview_area: Rect) -> (u16, u16) {
+    let max_preview_width = preview_area.width.saturating_sub(4) / 2;
+    let max_preview_height = preview_area.height.saturating_sub(5);
+    (
+        max_preview_width.min(GLYPH_PREVIEW_TARGET_WIDTH),
+        max_preview_height.min(GLYPH_PREVIEW_TARGET_HEIGHT),
+    )
 }
 
 fn draw_font_view(

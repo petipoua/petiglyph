@@ -253,6 +253,7 @@ codepoint_start = "U+100000"
 
 ## TUI Keys
 
+- TUI viewport is centered and capped at `128x40`; terminals smaller than `96x28` show a size warning screen
 - `Tab`: cycle Home -> Glyphs -> Font
 - `1` / `2` / `3`: switch between Home, Glyphs, and Font panels
 - Home shows detected project folders, project creation controls, and installed petiglyph font samples
