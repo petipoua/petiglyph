@@ -49,8 +49,8 @@ const TUI_MIN_WIDTH: u16 = 96;
 const TUI_MIN_HEIGHT: u16 = 28;
 const TUI_MAX_WIDTH: u16 = 128;
 const TUI_MAX_HEIGHT: u16 = 40;
-const GLYPH_PREVIEW_TARGET_WIDTH: u16 = 24;
-const GLYPH_PREVIEW_TARGET_HEIGHT: u16 = 16;
+const GLYPH_PREVIEW_TARGET_WIDTH: u16 = 30;
+const GLYPH_PREVIEW_TARGET_HEIGHT: u16 = 18;
 
 #[derive(Debug, Clone, Default)]
 pub(crate) struct TuiLaunchOverrides {
