@@ -13,12 +13,15 @@ use ratatui::widgets::{
 };
 use ratatui::{Frame, Terminal};
 use std::collections::BTreeSet;
-use std::fs;
-use std::io;
+use std::fs::{self, OpenOptions};
+use std::io::{self, Write};
 use std::path::{Path, PathBuf};
-use std::sync::mpsc::{self, Receiver, TryRecvError};
+use std::sync::{
+    OnceLock,
+    mpsc::{self, Receiver, TryRecvError},
+};
 use std::thread;
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tui_input::{Input, backend::crossterm::EventHandler};
 use walkdir::WalkDir;
 
@@ -40,6 +43,8 @@ const INSTALL_SPINNER_FRAMES: [&str; 4] = ["-", "\\", "|", "/"];
 const WELCOME_SAMPLE_LIMIT: usize = 15;
 const WELCOME_INPUT_WIDTH: usize = 15;
 const SWITCH_NOTICE_MS: u64 = 2500;
+const EVENT_POLL_MS: u64 = 33;
+const TUI_DEBUG_LOG_PATH: &str = "/tmp/petiglyph-tui-debug.log";
 
 #[derive(Debug, Clone, Default)]
 pub(crate) struct TuiLaunchOverrides {
@@ -65,6 +70,7 @@ pub(crate) struct InstalledFontSample {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum WelcomeFocus {
+    ProjectList,
     CreateInput,
     CreateButton,
 }
@@ -111,18 +117,44 @@ pub(crate) fn tui_workspace(
 
     let mut app = App::new_workspace(workspace_root, initial_manifest, launch_overrides)?;
 
+    reset_tui_debug_log();
+    tui_debug_log("tui.start", app_debug_state(&app));
+
     let mut session = TerminalSession::start()?;
+    let mut log_next_draw_after_esc = false;
     while !app.quit {
         app.poll_install_task();
         app.clear_expired_switch_notice();
         session.terminal.draw(|frame| draw_ui(frame, &app))?;
+        if log_next_draw_after_esc {
+            tui_debug_log("draw.after_esc", app_debug_state(&app));
+            log_next_draw_after_esc = false;
+        }
 
-        if event::poll(Duration::from_millis(120))?
-            && let Event::Key(key) = event::read()?
-            && key.kind == KeyEventKind::Press
-            && let Err(err) = handle_key_event(&mut app, key)
-        {
-            app.status = Some(err.to_string());
+        if event::poll(Duration::from_millis(EVENT_POLL_MS))? {
+            tui_debug_log("event.poll.ready", app_debug_state(&app));
+            match event::read()? {
+                Event::Key(key) => {
+                    tui_debug_log("event.read.key", key_debug(&key));
+                    if key.kind == KeyEventKind::Press {
+                        tui_debug_log("event.dispatch.before", app_debug_state(&app));
+                        if let Err(err) = handle_key_event(&mut app, key) {
+                            app.status = Some(err.to_string());
+                            tui_debug_log("event.dispatch.error", app_debug_state(&app));
+                        } else {
+                            tui_debug_log("event.dispatch.after", app_debug_state(&app));
+                        }
+                        if matches!(key.code, KeyCode::Esc) {
+                            log_next_draw_after_esc = true;
+                        }
+                    } else {
+                        tui_debug_log("event.key.ignored_non_press", key_debug(&key));
+                    }
+                }
+                other => {
+                    tui_debug_log("event.read.non_key", format!("{other:?}"));
+                }
+            }
         }
     }
 
@@ -169,6 +201,7 @@ pub(crate) struct App {
     pub(crate) workspace_root: PathBuf,
     pub(crate) projects: Vec<WelcomeProject>,
     pub(crate) active_project: Option<PathBuf>,
+    pub(crate) selected_project: usize,
     pub(crate) create_input: Input,
     pub(crate) welcome_focus: WelcomeFocus,
     pub(crate) welcome_input_editing: bool,
@@ -211,11 +244,16 @@ struct InstallTaskOutput {
 
 impl TerminalSession {
     fn start() -> Result<Self> {
+        tui_debug_log("terminal.start.enable_raw_mode.before", "");
         enable_raw_mode().context("failed to enable raw mode")?;
+        tui_debug_log("terminal.start.enable_raw_mode.after", "");
         let mut stdout = io::stdout();
+        tui_debug_log("terminal.start.alternate_screen.before", "");
         stdout
             .execute(EnterAlternateScreen)
             .context("failed to enter alternate screen")?;
+        tui_debug_log("terminal.start.alternate_screen.after", "");
+
         let backend = CrosstermBackend::new(stdout);
         let terminal = Terminal::new(backend).context("failed to initialize terminal UI")?;
         Ok(Self { terminal })
@@ -383,15 +421,96 @@ pub(crate) fn format_welcome_input_field(value: &str, focused: bool, width: usiz
     format_welcome_input_field_with_cursor(value.trim(), focused, value.chars().count(), width)
 }
 
+fn reset_tui_debug_log() {
+    if !tui_debug_enabled() {
+        return;
+    }
+
+    let now = debug_timestamp();
+    let _ = fs::write(
+        TUI_DEBUG_LOG_PATH,
+        format!("[{now}] petiglyph TUI debug log reset\n"),
+    );
+}
+
+fn tui_debug_log(event: &str, details: impl AsRef<str>) {
+    if !tui_debug_enabled() {
+        return;
+    }
+
+    let Ok(mut file) = OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(TUI_DEBUG_LOG_PATH)
+    else {
+        return;
+    };
+
+    let _ = writeln!(
+        file,
+        "[{}] {event}: {}",
+        debug_timestamp(),
+        details.as_ref()
+    );
+}
+
+fn tui_debug_enabled() -> bool {
+    static ENABLED: OnceLock<bool> = OnceLock::new();
+    *ENABLED.get_or_init(|| {
+        std::env::var("PETIGLYPH_TUI_DEBUG")
+            .map(|value| {
+                let value = value.trim().to_ascii_lowercase();
+                !matches!(value.as_str(), "" | "0" | "false" | "off" | "no")
+            })
+            .unwrap_or(false)
+    })
+}
+
+fn debug_timestamp() -> String {
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default();
+    format!("{}.{:03}", now.as_secs(), now.subsec_millis())
+}
+
+fn key_debug(key: &KeyEvent) -> String {
+    format!(
+        "code={:?} modifiers={:?} kind={:?} state={:?}",
+        key.code, key.modifiers, key.kind, key.state
+    )
+}
+
+fn app_debug_state(app: &App) -> String {
+    format!(
+        "view={:?} focus={:?} selected_project={} editing={} input={:?} cursor={} visual_cursor={} status={:?} quit={}",
+        app.view,
+        app.welcome_focus,
+        app.selected_project,
+        app.welcome_input_editing,
+        app.create_input.value(),
+        app.create_input.cursor(),
+        app.create_input.visual_cursor(),
+        app.status,
+        app.quit
+    )
+}
+
 fn handle_welcome_key(app: &mut App, key: KeyEvent) -> Result<()> {
     let code = key.code;
+    tui_debug_log(
+        "welcome.handle.enter",
+        format!("{} {}", key_debug(&key), app_debug_state(app)),
+    );
     match code {
         KeyCode::Esc => {
+            tui_debug_log("welcome.esc.before", app_debug_state(app));
             if app.welcome_input_editing {
                 app.welcome_input_editing = false;
-                app.status = Some("stopped typing project name".to_string());
+                app.status = None;
+                tui_debug_log("welcome.esc.unfocus_input", app_debug_state(app));
             } else {
                 app.quit = true;
+                tui_debug_log("welcome.esc.quit", app_debug_state(app));
             }
         }
         KeyCode::Char('q') if !app.welcome_input_editing => {
@@ -407,6 +526,14 @@ fn handle_welcome_key(app: &mut App, key: KeyEvent) -> Result<()> {
             if !app.welcome_input_editing =>
         {
             app.welcome_focus = match app.welcome_focus {
+                WelcomeFocus::ProjectList => {
+                    app.selected_project = app.selected_project.saturating_sub(1);
+                    WelcomeFocus::ProjectList
+                }
+                WelcomeFocus::CreateInput if !app.projects.is_empty() => {
+                    app.selected_project = app.projects.len() - 1;
+                    WelcomeFocus::ProjectList
+                }
                 WelcomeFocus::CreateButton => WelcomeFocus::CreateInput,
                 other => other,
             };
@@ -415,19 +542,33 @@ fn handle_welcome_key(app: &mut App, key: KeyEvent) -> Result<()> {
             if !app.welcome_input_editing =>
         {
             app.welcome_focus = match app.welcome_focus {
+                WelcomeFocus::ProjectList => {
+                    if app.selected_project + 1 < app.projects.len() {
+                        app.selected_project += 1;
+                        WelcomeFocus::ProjectList
+                    } else {
+                        WelcomeFocus::CreateInput
+                    }
+                }
                 WelcomeFocus::CreateInput => WelcomeFocus::CreateButton,
                 other => other,
             };
         }
         KeyCode::Enter => match app.welcome_focus {
+            WelcomeFocus::ProjectList => {
+                app.welcome_input_editing = false;
+                if let Some(project) = app.projects.get(app.selected_project) {
+                    app.set_active_project(project.manifest_path.clone())?;
+                }
+            }
             WelcomeFocus::CreateInput => {
                 if app.welcome_input_editing {
                     app.welcome_input_editing = false;
                     app.welcome_focus = WelcomeFocus::CreateButton;
-                    app.status = Some("press Enter to create project".to_string());
+                    app.status = None;
                 } else {
                     app.welcome_input_editing = true;
-                    app.status = Some("typing project name (Enter/Esc to stop)".to_string());
+                    app.status = None;
                 }
             }
             WelcomeFocus::CreateButton => {
@@ -443,9 +584,11 @@ fn handle_welcome_key(app: &mut App, key: KeyEvent) -> Result<()> {
                     return Ok(());
                 }
                 app.create_input.handle_event(&Event::Key(key));
+                tui_debug_log("welcome.input.handled_by_tui_input", app_debug_state(app));
             }
         }
     }
+    tui_debug_log("welcome.handle.exit", app_debug_state(app));
     Ok(())
 }
 
@@ -520,17 +663,39 @@ fn draw_welcome_view(
             ),
         ]));
     } else {
-        for project in &app.projects {
+        for (idx, project) in app.projects.iter().enumerate() {
             let is_active = app
                 .active_project
                 .as_ref()
                 .is_some_and(|active| active == &project.manifest_path);
+            let is_selected =
+                app.welcome_focus == WelcomeFocus::ProjectList && app.selected_project == idx;
             let marker = if is_active { "active" } else { "found " };
+            let row_style = if is_selected {
+                Style::default()
+                    .fg(Color::Black)
+                    .bg(accent)
+                    .add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().fg(Color::White)
+            };
             projects_text.push(Line::from(vec![
-                Span::raw("  "),
+                Span::styled(
+                    if is_selected { "> " } else { "  " },
+                    if is_selected {
+                        Style::default()
+                            .fg(Color::Black)
+                            .bg(accent)
+                            .add_modifier(Modifier::BOLD)
+                    } else {
+                        Style::default().fg(muted)
+                    },
+                ),
                 Span::styled(
                     format!("[{marker}] "),
-                    if is_active {
+                    if is_selected {
+                        row_style
+                    } else if is_active {
                         Style::default().fg(accent).add_modifier(Modifier::BOLD)
                     } else {
                         Style::default().fg(muted)
@@ -538,7 +703,9 @@ fn draw_welcome_view(
                 ),
                 Span::styled(
                     &project.font_name,
-                    if is_active {
+                    if is_selected {
+                        row_style
+                    } else if is_active {
                         Style::default()
                             .fg(Color::White)
                             .add_modifier(Modifier::BOLD)
@@ -546,10 +713,21 @@ fn draw_welcome_view(
                         Style::default().fg(Color::White)
                     },
                 ),
-                Span::styled("  ", Style::default().fg(muted)),
+                Span::styled(
+                    "  ",
+                    if is_selected {
+                        row_style
+                    } else {
+                        Style::default().fg(muted)
+                    },
+                ),
                 Span::styled(
                     project.manifest_path.display().to_string(),
-                    Style::default().fg(muted),
+                    if is_selected {
+                        row_style
+                    } else {
+                        Style::default().fg(muted)
+                    },
                 ),
             ]));
         }
@@ -601,7 +779,7 @@ fn draw_welcome_view(
         let hint = if app.welcome_input_editing {
             "  typing (Enter/Esc to stop)"
         } else {
-            "  press Enter to type"
+            "  press Enter to type       "
         };
         new_project_line.push(Span::styled(hint, Style::default().fg(muted)));
     }
@@ -726,6 +904,7 @@ impl App {
             workspace_root,
             projects: Vec::new(),
             active_project: None,
+            selected_project: 0,
             create_input: Input::default(),
             welcome_focus: WelcomeFocus::CreateInput,
             welcome_input_editing: false,
@@ -765,6 +944,7 @@ impl App {
             workspace_root,
             projects: Vec::new(),
             active_project: Some(manifest_path),
+            selected_project: 0,
             create_input: Input::default(),
             welcome_focus: WelcomeFocus::CreateInput,
             welcome_input_editing: false,
@@ -786,6 +966,7 @@ impl App {
 
     fn refresh_workspace_discovery(&mut self) -> Result<()> {
         self.projects = scan_projects_in_folder(&self.workspace_root)?;
+        self.sync_selected_project();
 
         match scan_installed_petiglyph_fonts(&self.workspace_root) {
             Ok(fonts) => self.installed_fonts = fonts,
@@ -804,9 +985,30 @@ impl App {
                     self.workspace_root.display()
                 ));
             }
+        } else if self.active_project.is_none() && self.welcome_focus == WelcomeFocus::CreateInput {
+            self.welcome_focus = WelcomeFocus::ProjectList;
         }
 
         Ok(())
+    }
+
+    fn sync_selected_project(&mut self) {
+        if self.projects.is_empty() {
+            self.selected_project = 0;
+            return;
+        }
+
+        if let Some(active_project) = &self.active_project
+            && let Some(idx) = self
+                .projects
+                .iter()
+                .position(|project| &project.manifest_path == active_project)
+        {
+            self.selected_project = idx;
+            return;
+        }
+
+        self.selected_project = self.selected_project.min(self.projects.len() - 1);
     }
 
     fn submit_create(&mut self) -> Result<()> {
@@ -1342,11 +1544,18 @@ pub(crate) fn handle_key(app: &mut App, code: KeyCode) -> Result<()> {
 
 fn handle_key_event(app: &mut App, key: KeyEvent) -> Result<()> {
     let code = key.code;
+    tui_debug_log(
+        "handle_key_event.enter",
+        format!("{} {}", key_debug(&key), app_debug_state(app)),
+    );
     let is_global_panel_jump = matches!(code, KeyCode::Tab | KeyCode::BackTab)
         || (matches!(code, KeyCode::Char('2') | KeyCode::Char('3')) && !app.welcome_input_editing);
 
     if app.view == AppView::Welcome && !is_global_panel_jump {
-        return handle_welcome_key(app, key);
+        tui_debug_log("handle_key_event.route_welcome", app_debug_state(app));
+        let result = handle_welcome_key(app, key);
+        tui_debug_log("handle_key_event.exit_welcome", app_debug_state(app));
+        return result;
     }
 
     match code {
@@ -1489,6 +1698,7 @@ fn handle_key_event(app: &mut App, key: KeyEvent) -> Result<()> {
         }
         _ => {}
     }
+    tui_debug_log("handle_key_event.exit_global", app_debug_state(app));
     Ok(())
 }
 
@@ -1605,12 +1815,14 @@ fn draw_ui(frame: &mut Frame, app: &App) {
     if app.view == AppView::Welcome {
         let enter_help = if app.welcome_input_editing {
             "stop typing  "
+        } else if app.welcome_focus == WelcomeFocus::ProjectList {
+            "open project  "
         } else {
             "type/create  "
         };
         footer_spans.extend(vec![
-            Span::styled(" \u{2190}/\u{2192} ", Style::default().fg(accent)),
-            Span::raw("focus  "),
+            Span::styled(" \u{2191}/\u{2193} ", Style::default().fg(accent)),
+            Span::raw("select  "),
             Span::styled(" Enter ", Style::default().fg(accent)),
             Span::raw(enter_help),
             Span::styled(" Backspace ", Style::default().fg(accent)),

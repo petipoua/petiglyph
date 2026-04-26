@@ -41,6 +41,17 @@ fn write_test_png(path: &Path) {
     img.save(path).expect("test image is written");
 }
 
+fn write_transparent_rect_png(path: &Path, rect_width: u32, rect_height: u32) {
+    let mut img = RgbaImage::from_pixel(rect_width + 2, rect_height + 2, Rgba([255, 255, 255, 0]));
+    for y in 1..=rect_height {
+        for x in 1..=rect_width {
+            img.put_pixel(x, y, Rgba([0, 0, 0, 255]));
+        }
+    }
+
+    img.save(path).expect("test image is written");
+}
+
 fn nonzero_coverage_bounds(coverage: &[u8], size: u32) -> Option<(u32, u32, u32, u32)> {
     if size == 0 {
         return None;
@@ -285,7 +296,7 @@ fn unified_tui_single_project_can_start_active() {
 }
 
 #[test]
-fn unified_tui_multiple_projects_keep_project_card_informational() {
+fn unified_tui_multiple_projects_can_be_selected_from_home() {
     let workspace = make_temp_dir("unified-multi-project");
     for name in ["project-a", "project-b"] {
         let project_dir = workspace.join(name);
@@ -299,18 +310,35 @@ fn unified_tui_multiple_projects_keep_project_card_informational() {
     let mut app = App::new_workspace(workspace.clone(), None, TuiLaunchOverrides::default())
         .expect("workspace TUI app initializes");
     assert_eq!(app.active_project, None);
-    assert_eq!(app.welcome_focus, WelcomeFocus::CreateInput);
+    assert_eq!(app.welcome_focus, WelcomeFocus::ProjectList);
+    assert_eq!(app.selected_project, 0);
 
-    handle_key(&mut app, KeyCode::Down).expect("welcome arrows move to create button");
+    handle_key(&mut app, KeyCode::Enter).expect("enter opens selected project");
+    assert_eq!(
+        app.active_project.as_deref(),
+        Some(workspace.join("project-a/petiglyph.toml").as_path())
+    );
+    assert_eq!(app.glyphs.len(), 1);
+    assert!(app.switch_notice.is_some());
+
+    handle_key(&mut app, KeyCode::Down).expect("down selects next project");
+    assert_eq!(app.welcome_focus, WelcomeFocus::ProjectList);
+    assert_eq!(app.selected_project, 1);
+    handle_key(&mut app, KeyCode::Enter).expect("enter opens next project");
+    assert_eq!(
+        app.active_project.as_deref(),
+        Some(workspace.join("project-b/petiglyph.toml").as_path())
+    );
+
+    handle_key(&mut app, KeyCode::Down).expect("down leaves project list after last project");
+    assert_eq!(app.welcome_focus, WelcomeFocus::CreateInput);
+    handle_key(&mut app, KeyCode::Down).expect("down moves to create button");
     assert_eq!(app.welcome_focus, WelcomeFocus::CreateButton);
-
-    handle_key(&mut app, KeyCode::Up).expect("welcome arrows move to input");
+    handle_key(&mut app, KeyCode::Up).expect("up returns to input");
     assert_eq!(app.welcome_focus, WelcomeFocus::CreateInput);
-    handle_key(&mut app, KeyCode::Enter).expect("enter on input moves to create button");
-
-    assert_eq!(app.active_project, None);
-    assert!(app.glyphs.is_empty());
-    assert!(app.switch_notice.is_none());
+    handle_key(&mut app, KeyCode::Up).expect("up returns to project list");
+    assert_eq!(app.welcome_focus, WelcomeFocus::ProjectList);
+    assert_eq!(app.selected_project, 1);
 
     fs::remove_dir_all(workspace).expect("temp workspace is removed");
 }
@@ -607,6 +635,67 @@ fn build_outputs_generates_non_empty_repo_icon_font() {
     }
 
     fs::remove_dir_all(out_dir).expect("temp output dir is removed");
+}
+
+#[test]
+fn build_outputs_centers_non_square_glyphs_in_ttf_line_box() {
+    let project_dir = make_temp_dir("non-square-centering");
+    let input_dir = project_dir.join("icons");
+    let out_dir = project_dir.join("build");
+    fs::create_dir_all(&input_dir).expect("input dir is created");
+    write_transparent_rect_png(&input_dir.join("wide.png"), 100, 77);
+    write_transparent_rect_png(&input_dir.join("tall.png"), 77, 100);
+
+    let config = RuntimeConfig {
+        input_dir: input_dir.clone(),
+        out_dir,
+        font_name: "Petiglyph".to_string(),
+        glyph_size: 64,
+        base_threshold: 64,
+        threshold_overrides: BTreeMap::new(),
+        codepoint_start: 0x10_0000,
+    };
+
+    let summary = build_outputs(&config).expect("build succeeds");
+    let bdf = fs::read_to_string(&summary.bdf_path).expect("bdf is written");
+    let ttf = fs::read(&summary.ttf_path).expect("ttf is written");
+    let face = ttf_parser::Face::parse(&ttf, 0).expect("ttf parses");
+    assert!(
+        bdf.contains("FONT_DESCENT 13\n"),
+        "BDF export should reserve descender space"
+    );
+    assert!(
+        face.descender() < 0,
+        "icon font should reserve descender space"
+    );
+    let expected_x_min_max_sum = i32::from(face.units_per_em());
+    let expected_y_min_max_sum = i32::from(face.ascender()) + i32::from(face.descender());
+
+    for idx in 0..summary.glyph_count {
+        let codepoint = config.codepoint_start + idx as u32;
+        let glyph_id = face
+            .glyph_index(char::from_u32(codepoint).expect("codepoint is valid"))
+            .expect("glyph is mapped");
+        let bounds = face.glyph_bounding_box(glyph_id).expect("glyph has bounds");
+
+        assert_eq!(
+            i32::from(bounds.x_min) + i32::from(bounds.x_max),
+            expected_x_min_max_sum,
+            "glyph U+{codepoint:04X} should be horizontally centered"
+        );
+        assert_eq!(
+            i32::from(bounds.y_min) + i32::from(bounds.y_max),
+            expected_y_min_max_sum,
+            "glyph U+{codepoint:04X} should be vertically centered around the line box"
+        );
+        assert_eq!(
+            i32::from(bounds.y_min) - i32::from(face.descender()),
+            i32::from(face.ascender()) - i32::from(bounds.y_max),
+            "glyph U+{codepoint:04X} should have balanced vertical line-box margins"
+        );
+    }
+
+    fs::remove_dir_all(project_dir).expect("temp project dir is removed");
 }
 
 #[test]

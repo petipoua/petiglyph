@@ -479,17 +479,20 @@ fn write_bdf(
     glyphs: &[(String, u32, GlyphBitmap)],
 ) -> Result<()> {
     let mut out = String::new();
+    let metrics = font_vertical_metrics(
+        u16::try_from(glyph_size).context("glyph_size is too large for BDF export")?,
+    );
 
     out.push_str("STARTFONT 2.1\n");
     out.push_str(&format!("FONT {}\n", bdf_font_name(font_name, glyph_size)));
     out.push_str(&format!("SIZE {} 75 75\n", glyph_size));
     out.push_str(&format!(
-        "FONTBOUNDINGBOX {} {} 0 0\n",
-        glyph_size, glyph_size
+        "FONTBOUNDINGBOX {} {} 0 {}\n",
+        glyph_size, glyph_size, metrics.descent
     ));
     out.push_str("STARTPROPERTIES 2\n");
-    out.push_str(&format!("FONT_ASCENT {}\n", glyph_size));
-    out.push_str("FONT_DESCENT 0\n");
+    out.push_str(&format!("FONT_ASCENT {}\n", metrics.ascent));
+    out.push_str(&format!("FONT_DESCENT {}\n", metrics.descent_abs()));
     out.push_str("ENDPROPERTIES\n");
     out.push_str(&format!("CHARS {}\n", glyphs.len()));
 
@@ -498,7 +501,10 @@ fn write_bdf(
         out.push_str(&format!("ENCODING {}\n", codepoint));
         out.push_str("SWIDTH 500 0\n");
         out.push_str(&format!("DWIDTH {} 0\n", glyph_size));
-        out.push_str(&format!("BBX {} {} 0 0\n", glyph_size, glyph_size));
+        out.push_str(&format!(
+            "BBX {} {} 0 {}\n",
+            glyph_size, glyph_size, metrics.descent
+        ));
         out.push_str("BITMAP\n");
         out.push_str(&bitmap_to_bdf_rows(bitmap));
         out.push_str("ENDCHAR\n");
@@ -523,6 +529,26 @@ struct TtfGlyph {
     data: Vec<u8>,
 }
 
+#[derive(Debug, Clone, Copy)]
+struct FontVerticalMetrics {
+    ascent: i16,
+    descent: i16,
+}
+
+impl FontVerticalMetrics {
+    fn descent_abs(self) -> u16 {
+        self.descent.unsigned_abs()
+    }
+}
+
+fn font_vertical_metrics(units_per_em: u16) -> FontVerticalMetrics {
+    let descent_abs = ((u32::from(units_per_em) + 2) / 5) as i16;
+    FontVerticalMetrics {
+        ascent: units_per_em as i16 - descent_abs,
+        descent: -descent_abs,
+    }
+}
+
 fn write_ttf(
     path: &Path,
     font_name: &str,
@@ -544,12 +570,14 @@ fn build_ttf(
         .context("glyph_size is too large for TTF export")?;
     let units_per_em =
         u16::try_from(units_per_em).context("glyph_size is too large for TTF export")?;
+    let vertical_metrics = font_vertical_metrics(units_per_em);
 
     let mut ttf_glyphs = Vec::with_capacity(glyphs.len() + 2);
     ttf_glyphs.push(bitmap_glyph_to_ttf(
         &notdef_bitmap(glyph_size),
         None,
         units_per_em,
+        vertical_metrics,
         units_per_em,
     )?);
     ttf_glyphs.push(bitmap_glyph_to_ttf(
@@ -559,6 +587,7 @@ fn build_ttf(
         },
         Some(0x0020),
         units_per_em,
+        vertical_metrics,
         units_per_em / 2,
     )?);
 
@@ -567,6 +596,7 @@ fn build_ttf(
             bitmap,
             Some(*codepoint),
             units_per_em,
+            vertical_metrics,
             units_per_em,
         )?);
     }
@@ -647,7 +677,7 @@ fn build_ttf(
 
     let head = build_head_table(units_per_em, x_min, y_min, x_max, y_max);
     let hhea = build_hhea_table(
-        units_per_em,
+        vertical_metrics,
         advance_width_max,
         min_left_side_bearing,
         min_right_side_bearing,
@@ -659,7 +689,7 @@ fn build_ttf(
     let cmap = build_cmap_table(&mappings);
     let name = build_name_table(font_name);
     let post = build_post_table();
-    let os2 = build_os2_table(units_per_em, &mappings, advance_width_max);
+    let os2 = build_os2_table(units_per_em, vertical_metrics, &mappings, advance_width_max);
 
     let mut tables = vec![
         (*b"OS/2", os2),
@@ -702,6 +732,7 @@ fn bitmap_glyph_to_ttf(
     bitmap: &GlyphBitmap,
     codepoint: Option<u32>,
     units_per_em: u16,
+    vertical_metrics: FontVerticalMetrics,
     advance_width: u16,
 ) -> Result<TtfGlyph> {
     if bitmap.size == 0 {
@@ -765,6 +796,22 @@ fn bitmap_glyph_to_ttf(
         });
     }
 
+    let x_shift = center_shift(
+        i32::from(advance_width),
+        i32::from(x_min) + i32::from(x_max),
+    );
+    let y_shift = center_shift(
+        i32::from(vertical_metrics.ascent) + i32::from(vertical_metrics.descent),
+        i32::from(y_min) + i32::from(y_max),
+    );
+    if x_shift != 0 || y_shift != 0 {
+        translate_points(&mut points, x_shift, y_shift)?;
+        x_min = checked_i16(i32::from(x_min) + x_shift, "x_min after TTF centering")?;
+        x_max = checked_i16(i32::from(x_max) + x_shift, "x_max after TTF centering")?;
+        y_min = checked_i16(i32::from(y_min) + y_shift, "y_min after TTF centering")?;
+        y_max = checked_i16(i32::from(y_max) + y_shift, "y_max after TTF centering")?;
+    }
+
     let contour_count =
         u16::try_from(end_points.len()).context("too many contours for TTF export")?;
     let point_count = u16::try_from(points.len()).context("too many points for TTF export")?;
@@ -812,6 +859,22 @@ fn bitmap_glyph_to_ttf(
     })
 }
 
+fn center_shift(container_extent: i32, glyph_min_plus_max: i32) -> i32 {
+    (container_extent - glyph_min_plus_max) / 2
+}
+
+fn translate_points(points: &mut [(i16, i16)], x_shift: i32, y_shift: i32) -> Result<()> {
+    for (x, y) in points {
+        *x = checked_i16(i32::from(*x) + x_shift, "x coordinate after TTF centering")?;
+        *y = checked_i16(i32::from(*y) + y_shift, "y coordinate after TTF centering")?;
+    }
+    Ok(())
+}
+
+fn checked_i16(value: i32, context: &str) -> Result<i16> {
+    i16::try_from(value).with_context(|| format!("{context} overflowed i16 range"))
+}
+
 fn build_head_table(units_per_em: u16, x_min: i16, y_min: i16, x_max: i16, y_max: i16) -> Vec<u8> {
     let mut out = Vec::with_capacity(54);
     push_u32(&mut out, 0x0001_0000);
@@ -835,7 +898,7 @@ fn build_head_table(units_per_em: u16, x_min: i16, y_min: i16, x_max: i16, y_max
 }
 
 fn build_hhea_table(
-    units_per_em: u16,
+    vertical_metrics: FontVerticalMetrics,
     advance_width_max: u16,
     min_left_side_bearing: i16,
     min_right_side_bearing: i16,
@@ -844,8 +907,8 @@ fn build_hhea_table(
 ) -> Vec<u8> {
     let mut out = Vec::with_capacity(36);
     push_u32(&mut out, 0x0001_0000);
-    push_i16(&mut out, units_per_em as i16);
-    push_i16(&mut out, 0);
+    push_i16(&mut out, vertical_metrics.ascent);
+    push_i16(&mut out, vertical_metrics.descent);
     push_i16(&mut out, 0);
     push_u16(&mut out, advance_width_max);
     push_i16(&mut out, min_left_side_bearing);
@@ -1128,7 +1191,12 @@ fn build_post_table() -> Vec<u8> {
     out
 }
 
-fn build_os2_table(units_per_em: u16, mappings: &[(u32, u16)], advance_width: u16) -> Vec<u8> {
+fn build_os2_table(
+    units_per_em: u16,
+    vertical_metrics: FontVerticalMetrics,
+    mappings: &[(u32, u16)],
+    advance_width: u16,
+) -> Vec<u8> {
     let (first_char, last_char) = mappings
         .iter()
         .filter_map(|(codepoint, _)| u16::try_from(*codepoint).ok())
@@ -1164,14 +1232,14 @@ fn build_os2_table(units_per_em: u16, mappings: &[(u32, u16)], advance_width: u1
     push_u32(&mut out, 0);
     push_u32(&mut out, 0);
     out.extend_from_slice(b"PTGL");
-    push_u16(&mut out, 0x0040);
+    push_u16(&mut out, 0x00C0);
     push_u16(&mut out, first_char);
     push_u16(&mut out, last_char);
-    push_i16(&mut out, units_per_em as i16);
+    push_i16(&mut out, vertical_metrics.ascent);
+    push_i16(&mut out, vertical_metrics.descent);
     push_i16(&mut out, 0);
-    push_i16(&mut out, 0);
-    push_u16(&mut out, units_per_em);
-    push_u16(&mut out, 0);
+    push_u16(&mut out, vertical_metrics.ascent as u16);
+    push_u16(&mut out, vertical_metrics.descent_abs());
     push_u32(&mut out, 0);
     push_u32(&mut out, 0);
     push_i16(&mut out, units_per_em as i16 / 2);
