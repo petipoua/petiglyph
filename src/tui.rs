@@ -49,8 +49,6 @@ const TUI_MIN_WIDTH: u16 = 96;
 const TUI_MIN_HEIGHT: u16 = 28;
 const TUI_MAX_WIDTH: u16 = 128;
 const TUI_MAX_HEIGHT: u16 = 40;
-const GLYPH_PREVIEW_TARGET_WIDTH: u16 = 30;
-const GLYPH_PREVIEW_TARGET_HEIGHT: u16 = 18;
 
 #[derive(Debug, Clone, Default)]
 pub(crate) struct TuiLaunchOverrides {
@@ -1995,7 +1993,7 @@ fn draw_glyphs_view(
 
     let chunks = Layout::default()
         .direction(Direction::Horizontal)
-        .constraints([Constraint::Percentage(40), Constraint::Percentage(60)])
+        .constraints([Constraint::Percentage(35), Constraint::Percentage(65)])
         .split(area);
 
     let list_block = Block::default()
@@ -2089,12 +2087,11 @@ fn draw_glyphs_view(
 
     if !app.glyphs.is_empty() {
         let active = &app.glyphs[app.selected];
-        let (preview_w, preview_h) = glyph_preview_target_size(preview_area);
         let mut ascii = preview_lines(
             &active.glyph,
             active.working_threshold,
-            preview_w,
-            preview_h,
+            preview_area.width.saturating_sub(4) / 2,
+            preview_area.height.saturating_sub(5),
         );
         preview_content.append(&mut ascii);
     }
@@ -2103,15 +2100,6 @@ fn draw_glyphs_view(
         .block(preview_block)
         .wrap(Wrap { trim: false });
     frame.render_widget(p, chunks[1]);
-}
-
-fn glyph_preview_target_size(preview_area: Rect) -> (u16, u16) {
-    let max_preview_width = preview_area.width.saturating_sub(4) / 2;
-    let max_preview_height = preview_area.height.saturating_sub(5);
-    (
-        max_preview_width.min(GLYPH_PREVIEW_TARGET_WIDTH),
-        max_preview_height.min(GLYPH_PREVIEW_TARGET_HEIGHT),
-    )
 }
 
 fn draw_font_view(
