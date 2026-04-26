@@ -327,7 +327,7 @@ fn welcome_input_edit_mode_types_hjkl_without_navigation() {
 
     handle_key(&mut app, KeyCode::Char('l')).expect("welcome navigation works when not editing");
     assert_eq!(app.welcome_focus, WelcomeFocus::CreateButton);
-    assert!(app.create_input.is_empty());
+    assert!(app.create_input.value().is_empty());
 
     handle_key(&mut app, KeyCode::Left).expect("left arrow returns focus to input");
     assert_eq!(app.welcome_focus, WelcomeFocus::CreateInput);
@@ -339,7 +339,7 @@ fn welcome_input_edit_mode_types_hjkl_without_navigation() {
     for ch in ['l', 'h', 'j', 'k', '2', '3'] {
         handle_key(&mut app, KeyCode::Char(ch)).expect("typing should append character");
     }
-    assert_eq!(app.create_input, "lhjk23");
+    assert_eq!(app.create_input.value(), "lhjk23");
     assert_eq!(app.welcome_focus, WelcomeFocus::CreateInput);
 
     handle_key(&mut app, KeyCode::Enter).expect("enter exits typing mode");

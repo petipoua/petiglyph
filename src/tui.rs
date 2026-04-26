@@ -1,6 +1,6 @@
 use anyhow::{Context, Result, bail};
 use crossterm::ExecutableCommand;
-use crossterm::event::{self, Event, KeyCode, KeyEventKind};
+use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind};
 use crossterm::terminal::{
     EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode,
 };
@@ -19,6 +19,7 @@ use std::path::{Path, PathBuf};
 use std::sync::mpsc::{self, Receiver, TryRecvError};
 use std::thread;
 use std::time::{Duration, Instant};
+use tui_input::{Input, backend::crossterm::EventHandler};
 use walkdir::WalkDir;
 
 use crate::build::{
@@ -119,7 +120,7 @@ pub(crate) fn tui_workspace(
         if event::poll(Duration::from_millis(120))?
             && let Event::Key(key) = event::read()?
             && key.kind == KeyEventKind::Press
-            && let Err(err) = handle_key(&mut app, key.code)
+            && let Err(err) = handle_key_event(&mut app, key)
         {
             app.status = Some(err.to_string());
         }
@@ -168,7 +169,7 @@ pub(crate) struct App {
     pub(crate) workspace_root: PathBuf,
     pub(crate) projects: Vec<WelcomeProject>,
     pub(crate) active_project: Option<PathBuf>,
-    pub(crate) create_input: String,
+    pub(crate) create_input: Input,
     pub(crate) welcome_focus: WelcomeFocus,
     pub(crate) welcome_input_editing: bool,
     installed_fonts: Vec<InstalledFontSample>,
@@ -348,25 +349,27 @@ fn is_valid_project_name_char(ch: char) -> bool {
     ch.is_ascii_alphanumeric() || matches!(ch, '-' | '_' | '.')
 }
 
-pub(crate) fn format_welcome_input_field(value: &str, focused: bool, width: usize) -> String {
+fn format_welcome_input_field_with_cursor(
+    value: &str,
+    editing: bool,
+    cursor: usize,
+    width: usize,
+) -> String {
     let width = width.max(1);
     let mut field = vec![' '; width];
-    let trimmed = value.trim();
 
-    if trimmed.is_empty() && !focused {
+    if value.is_empty() && !editing {
         let placeholder = "<project-name>";
         for (idx, ch) in placeholder.chars().take(width).enumerate() {
             field[idx] = ch;
         }
     } else {
-        let mut len = 0usize;
-        for (idx, ch) in trimmed.chars().take(width).enumerate() {
+        for (idx, ch) in value.chars().take(width).enumerate() {
             field[idx] = ch;
-            len = idx + 1;
         }
 
-        if focused {
-            let cursor_index = len.min(width - 1);
+        if editing {
+            let cursor_index = cursor.min(width - 1);
             field[cursor_index] = '_';
         }
     }
@@ -375,7 +378,13 @@ pub(crate) fn format_welcome_input_field(value: &str, focused: bool, width: usiz
     format!(" {content} ")
 }
 
-fn handle_welcome_key(app: &mut App, code: KeyCode) -> Result<()> {
+#[cfg(test)]
+pub(crate) fn format_welcome_input_field(value: &str, focused: bool, width: usize) -> String {
+    format_welcome_input_field_with_cursor(value.trim(), focused, value.chars().count(), width)
+}
+
+fn handle_welcome_key(app: &mut App, key: KeyEvent) -> Result<()> {
+    let code = key.code;
     match code {
         KeyCode::Esc => {
             if app.welcome_input_editing {
@@ -410,18 +419,6 @@ fn handle_welcome_key(app: &mut App, code: KeyCode) -> Result<()> {
                 other => other,
             };
         }
-        KeyCode::Backspace => {
-            if app.welcome_focus == WelcomeFocus::CreateInput && app.welcome_input_editing {
-                app.create_input.pop();
-            }
-        }
-        KeyCode::Char(ch)
-            if app.welcome_focus == WelcomeFocus::CreateInput
-                && app.welcome_input_editing
-                && is_valid_project_name_char(ch) =>
-        {
-            app.create_input.push(ch);
-        }
         KeyCode::Enter => match app.welcome_focus {
             WelcomeFocus::CreateInput => {
                 if app.welcome_input_editing {
@@ -438,7 +435,16 @@ fn handle_welcome_key(app: &mut App, code: KeyCode) -> Result<()> {
                 app.submit_create()?;
             }
         },
-        _ => {}
+        _ => {
+            if app.welcome_focus == WelcomeFocus::CreateInput && app.welcome_input_editing {
+                if let KeyCode::Char(ch) = code
+                    && !is_valid_project_name_char(ch)
+                {
+                    return Ok(());
+                }
+                app.create_input.handle_event(&Event::Key(key));
+            }
+        }
     }
     Ok(())
 }
@@ -566,9 +572,22 @@ fn draw_welcome_view(
     } else {
         Style::default().fg(Color::White).bg(Color::DarkGray)
     };
-    let input_value = format_welcome_input_field(
-        &app.create_input,
+    let input_scroll = app.create_input.visual_scroll(WELCOME_INPUT_WIDTH);
+    let visible_input = app
+        .create_input
+        .value()
+        .chars()
+        .skip(input_scroll)
+        .take(WELCOME_INPUT_WIDTH)
+        .collect::<String>();
+    let input_cursor = app
+        .create_input
+        .visual_cursor()
+        .saturating_sub(input_scroll);
+    let input_value = format_welcome_input_field_with_cursor(
+        &visible_input,
         app.welcome_input_editing,
+        input_cursor,
         WELCOME_INPUT_WIDTH,
     );
     let mut new_project_line = vec![
@@ -707,7 +726,7 @@ impl App {
             workspace_root,
             projects: Vec::new(),
             active_project: None,
-            create_input: String::new(),
+            create_input: Input::default(),
             welcome_focus: WelcomeFocus::CreateInput,
             welcome_input_editing: false,
             installed_fonts: Vec::new(),
@@ -746,7 +765,7 @@ impl App {
             workspace_root,
             projects: Vec::new(),
             active_project: Some(manifest_path),
-            create_input: String::new(),
+            create_input: Input::default(),
             welcome_focus: WelcomeFocus::CreateInput,
             welcome_input_editing: false,
             installed_fonts: Vec::new(),
@@ -791,7 +810,7 @@ impl App {
     }
 
     fn submit_create(&mut self) -> Result<()> {
-        let project_name = self.create_input.trim().to_string();
+        let project_name = self.create_input.value().trim().to_string();
         if project_name.is_empty() {
             self.status = Some("project name cannot be empty".to_string());
             self.welcome_focus = WelcomeFocus::CreateInput;
@@ -806,7 +825,7 @@ impl App {
         }
 
         let manifest_path = create_project_in_dir(&self.workspace_root, &project_name)?;
-        self.create_input.clear();
+        self.create_input = Input::default();
         self.welcome_input_editing = false;
         self.refresh_workspace_discovery()?;
         self.set_active_project(manifest_path)?;
@@ -1313,12 +1332,21 @@ fn remove_selected_threshold_override(app: &mut App) {
     }
 }
 
+#[cfg(test)]
 pub(crate) fn handle_key(app: &mut App, code: KeyCode) -> Result<()> {
+    handle_key_event(
+        app,
+        KeyEvent::new(code, crossterm::event::KeyModifiers::NONE),
+    )
+}
+
+fn handle_key_event(app: &mut App, key: KeyEvent) -> Result<()> {
+    let code = key.code;
     let is_global_panel_jump = matches!(code, KeyCode::Tab | KeyCode::BackTab)
         || (matches!(code, KeyCode::Char('2') | KeyCode::Char('3')) && !app.welcome_input_editing);
 
     if app.view == AppView::Welcome && !is_global_panel_jump {
-        return handle_welcome_key(app, code);
+        return handle_welcome_key(app, key);
     }
 
     match code {
