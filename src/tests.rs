@@ -1,4 +1,4 @@
-use crossterm::event::KeyCode;
+use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyEventState, KeyModifiers};
 use image::{Rgba, RgbaImage};
 use std::collections::BTreeMap;
 use std::fs;
@@ -19,9 +19,9 @@ use crate::project::{
 };
 use crate::tui::{
     App, AppView, FontAction, InteractiveGlyph, TuiLaunchOverrides, WelcomeFocus,
-    format_welcome_input_field, handle_key, persist_threshold_override,
-    resolve_installed_font_path_with, sample_glyphs_from_ttf_bytes, spaced_sample,
-    switch_notice_visible, wrap_sample_for_display,
+    format_welcome_hint, format_welcome_input_field, handle_key, handle_key_event_for_test,
+    persist_threshold_override, resolve_installed_font_path_with, sample_glyphs_from_ttf_bytes,
+    should_dispatch_key_kind, spaced_sample, switch_notice_visible, wrap_sample_for_display,
 };
 
 fn make_temp_dir(name: &str) -> PathBuf {
@@ -463,6 +463,20 @@ fn welcome_input_field_keeps_fixed_width_in_all_focus_states() {
     assert_eq!(empty_blur.chars().count(), typed_blur.chars().count());
     assert_eq!(typed_blur.chars().count(), typed_focus.chars().count());
     assert_eq!(empty_blur.chars().count(), 17);
+}
+
+#[test]
+fn welcome_hint_keeps_fixed_width_across_focus_states() {
+    let input_hint = format_welcome_hint(WelcomeFocus::CreateInput, false);
+    let typing_hint = format_welcome_hint(WelcomeFocus::CreateInput, true);
+    let button_hint = format_welcome_hint(WelcomeFocus::CreateButton, false);
+    let list_hint = format_welcome_hint(WelcomeFocus::ProjectList, false);
+
+    assert_eq!(input_hint.chars().count(), typing_hint.chars().count());
+    assert_eq!(input_hint.chars().count(), button_hint.chars().count());
+    assert_eq!(input_hint.chars().count(), list_hint.chars().count());
+    assert!(input_hint.contains("press Enter to type"));
+    assert!(button_hint.contains("press Enter to create"));
 }
 
 #[test]
@@ -933,6 +947,71 @@ fn handle_key_updates_and_clears_selected_threshold_override() {
     assert_eq!(app.view, AppView::Glyphs);
     let manifest = read_manifest(&manifest_path).expect("manifest reads");
     assert!(!manifest.threshold_overrides.contains_key("icon.png"));
+
+    fs::remove_dir_all(project_dir).expect("temp project dir is removed");
+}
+
+#[test]
+fn dispatches_press_and_repeat_key_kinds() {
+    assert!(should_dispatch_key_kind(KeyEventKind::Press));
+    assert!(should_dispatch_key_kind(KeyEventKind::Repeat));
+    assert!(!should_dispatch_key_kind(KeyEventKind::Release));
+}
+
+#[test]
+fn handle_key_supports_keypad_plus_minus_aliases_for_threshold() {
+    let project_dir = make_temp_dir("handle-key-keypad-plus-minus");
+    let manifest_path = project_dir.join("petiglyph.toml");
+    write_manifest(&manifest_path, &Manifest::default()).expect("manifest is written");
+
+    let config = RuntimeConfig {
+        input_dir: project_dir.join("icons"),
+        out_dir: project_dir.join("build"),
+        font_name: "Petiglyph".to_string(),
+        glyph_size: 8,
+        base_threshold: 64,
+        threshold_overrides: BTreeMap::new(),
+        codepoint_start: 0x10_0000,
+    };
+
+    let mut app = App::new(manifest_path.clone(), config);
+    app.glyphs.push(InteractiveGlyph {
+        glyph: PreprocessedGlyph {
+            source_path: project_dir.join("icons/icon.png"),
+            source_key: "icon.png".to_string(),
+            glyph_name: "icon".to_string(),
+            size: 8,
+            coverage: vec![0; 64],
+        },
+        saved_threshold: None,
+        working_threshold: 64,
+    });
+    app.selected = 0;
+    app.view = AppView::Glyphs;
+
+    handle_key_event_for_test(
+        &mut app,
+        KeyEvent::new_with_kind_and_state(
+            KeyCode::Char('k'),
+            KeyModifiers::NONE,
+            KeyEventKind::Press,
+            KeyEventState::KEYPAD,
+        ),
+    )
+    .expect("keypad plus alias should increment threshold");
+    assert_eq!(app.glyphs[0].working_threshold, 65);
+
+    handle_key_event_for_test(
+        &mut app,
+        KeyEvent::new_with_kind_and_state(
+            KeyCode::Char('m'),
+            KeyModifiers::NONE,
+            KeyEventKind::Press,
+            KeyEventState::KEYPAD,
+        ),
+    )
+    .expect("keypad minus alias should decrement threshold");
+    assert_eq!(app.glyphs[0].working_threshold, 64);
 
     fs::remove_dir_all(project_dir).expect("temp project dir is removed");
 }

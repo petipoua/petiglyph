@@ -1,6 +1,9 @@
 use anyhow::{Context, Result, bail};
 use crossterm::ExecutableCommand;
-use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind};
+use crossterm::event::{
+    self, Event, KeyCode, KeyEvent, KeyEventKind, KeyEventState, KeyboardEnhancementFlags,
+    PopKeyboardEnhancementFlags, PushKeyboardEnhancementFlags,
+};
 use crossterm::terminal::{
     EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode,
 };
@@ -49,6 +52,8 @@ const TUI_MIN_WIDTH: u16 = 96;
 const TUI_MIN_HEIGHT: u16 = 28;
 const TUI_MAX_WIDTH: u16 = 128;
 const TUI_MAX_HEIGHT: u16 = 40;
+const DECPNM_NUMERIC_KEYPAD_MODE: &str = "\x1B>";
+const WELCOME_HINT_WIDTH: usize = 27;
 
 #[derive(Debug, Clone, Default)]
 pub(crate) struct TuiLaunchOverrides {
@@ -140,7 +145,7 @@ pub(crate) fn tui_workspace(
             match event::read()? {
                 Event::Key(key) => {
                     tui_debug_log("event.read.key", key_debug(&key));
-                    if key.kind == KeyEventKind::Press {
+                    if should_dispatch_key_kind(key.kind) {
                         tui_debug_log("event.dispatch.before", app_debug_state(&app));
                         if let Err(err) = handle_key_event(&mut app, key) {
                             app.status = Some(err.to_string());
@@ -233,6 +238,7 @@ pub(crate) struct InteractiveGlyph {
 
 struct TerminalSession {
     terminal: Terminal<CrosstermBackend<io::Stdout>>,
+    keyboard_enhancements_enabled: bool,
 }
 
 struct InstallTask {
@@ -257,15 +263,43 @@ impl TerminalSession {
             .execute(EnterAlternateScreen)
             .context("failed to enter alternate screen")?;
         tui_debug_log("terminal.start.alternate_screen.after", "");
+        let keypad_mode_set = stdout
+            .write_all(DECPNM_NUMERIC_KEYPAD_MODE.as_bytes())
+            .is_ok();
+        let _ = stdout.flush();
+        tui_debug_log(
+            "terminal.start.keypad_numeric_mode",
+            format!("enabled={keypad_mode_set}"),
+        );
+        let keyboard_enhancements_enabled = stdout
+            .execute(PushKeyboardEnhancementFlags(
+                KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES
+                    | KeyboardEnhancementFlags::REPORT_EVENT_TYPES
+                    | KeyboardEnhancementFlags::REPORT_ALL_KEYS_AS_ESCAPE_CODES,
+            ))
+            .is_ok();
+        tui_debug_log(
+            "terminal.start.keyboard_enhancements",
+            format!("enabled={keyboard_enhancements_enabled}"),
+        );
 
         let backend = CrosstermBackend::new(stdout);
         let terminal = Terminal::new(backend).context("failed to initialize terminal UI")?;
-        Ok(Self { terminal })
+        Ok(Self {
+            terminal,
+            keyboard_enhancements_enabled,
+        })
     }
 }
 
 impl Drop for TerminalSession {
     fn drop(&mut self) {
+        if self.keyboard_enhancements_enabled {
+            let _ = self
+                .terminal
+                .backend_mut()
+                .execute(PopKeyboardEnhancementFlags);
+        }
         let _ = disable_raw_mode();
         let _ = self.terminal.backend_mut().execute(LeaveAlternateScreen);
         let _ = self.terminal.show_cursor();
@@ -425,6 +459,22 @@ pub(crate) fn format_welcome_input_field(value: &str, focused: bool, width: usiz
     format_welcome_input_field_with_cursor(value.trim(), focused, value.chars().count(), width)
 }
 
+#[cfg(test)]
+pub(crate) fn format_welcome_hint(focus: WelcomeFocus, editing: bool) -> String {
+    format_welcome_hint_for_display(focus, editing)
+}
+
+fn format_welcome_hint_for_display(focus: WelcomeFocus, editing: bool) -> String {
+    let hint = match (focus, editing) {
+        (WelcomeFocus::CreateInput, true) => "typing (Enter/Esc to stop)",
+        (WelcomeFocus::CreateInput, false) => "press Enter to type",
+        (WelcomeFocus::CreateButton, _) => "press Enter to create",
+        (WelcomeFocus::ProjectList, _) => "",
+    };
+
+    format!("  {hint:<WELCOME_HINT_WIDTH$}")
+}
+
 fn reset_tui_debug_log() {
     if !tui_debug_enabled() {
         return;
@@ -482,6 +532,10 @@ fn key_debug(key: &KeyEvent) -> String {
         "code={:?} modifiers={:?} kind={:?} state={:?}",
         key.code, key.modifiers, key.kind, key.state
     )
+}
+
+pub(crate) fn should_dispatch_key_kind(kind: KeyEventKind) -> bool {
+    matches!(kind, KeyEventKind::Press | KeyEventKind::Repeat)
 }
 
 fn app_debug_state(app: &App) -> String {
@@ -779,14 +833,10 @@ fn draw_welcome_view(
         Span::raw(" "),
         Span::styled(" Create ", button_style),
     ];
-    if app.welcome_focus == WelcomeFocus::CreateInput {
-        let hint = if app.welcome_input_editing {
-            "  typing (Enter/Esc to stop)"
-        } else {
-            "  press Enter to type       "
-        };
-        new_project_line.push(Span::styled(hint, Style::default().fg(muted)));
-    }
+    new_project_line.push(Span::styled(
+        format_welcome_hint_for_display(app.welcome_focus, app.welcome_input_editing),
+        Style::default().fg(muted),
+    ));
     projects_text.push(Line::from(new_project_line));
 
     frame.render_widget(
@@ -1546,6 +1596,32 @@ pub(crate) fn handle_key(app: &mut App, code: KeyCode) -> Result<()> {
     )
 }
 
+#[cfg(test)]
+pub(crate) fn handle_key_event_for_test(app: &mut App, key: KeyEvent) -> Result<()> {
+    handle_key_event(app, key)
+}
+
+fn is_keypad_plus_alias(key: &KeyEvent) -> bool {
+    matches!(key.code, KeyCode::Char('k')) && key.state.contains(KeyEventState::KEYPAD)
+}
+
+fn is_keypad_minus_alias(key: &KeyEvent) -> bool {
+    matches!(key.code, KeyCode::Char('m')) && key.state.contains(KeyEventState::KEYPAD)
+}
+
+fn adjust_selected_threshold_by(app: &mut App, step: i16) {
+    if let Some(glyph) = selected_glyph(app) {
+        let next = if step >= 0 {
+            glyph.working_threshold.saturating_add(step as u8)
+        } else {
+            glyph.working_threshold.saturating_sub((-step) as u8)
+        };
+        set_selected_threshold(app, next);
+    } else if app.active_project.is_none() {
+        set_selected_threshold(app, 0);
+    }
+}
+
 fn handle_key_event(app: &mut App, key: KeyEvent) -> Result<()> {
     let code = key.code;
     tui_debug_log(
@@ -1560,6 +1636,27 @@ fn handle_key_event(app: &mut App, key: KeyEvent) -> Result<()> {
         let result = handle_welcome_key(app, key);
         tui_debug_log("handle_key_event.exit_welcome", app_debug_state(app));
         return result;
+    }
+
+    if app.view == AppView::Glyphs {
+        if matches!(
+            code,
+            KeyCode::Right | KeyCode::Char('l') | KeyCode::Char('+') | KeyCode::Char('=')
+        ) || is_keypad_plus_alias(&key)
+        {
+            adjust_selected_threshold_by(app, 1);
+            tui_debug_log("handle_key_event.exit_global", app_debug_state(app));
+            return Ok(());
+        }
+        if matches!(
+            code,
+            KeyCode::Left | KeyCode::Char('h') | KeyCode::Char('-')
+        ) || is_keypad_minus_alias(&key)
+        {
+            adjust_selected_threshold_by(app, -1);
+            tui_debug_log("handle_key_event.exit_global", app_debug_state(app));
+            return Ok(());
+        }
     }
 
     match code {
@@ -1626,45 +1723,11 @@ fn handle_key_event(app: &mut App, key: KeyEvent) -> Result<()> {
         KeyCode::Right => {
             if app.view == AppView::Font {
                 app.selected_font_action = app.selected_font_action.next();
-            } else if app.view == AppView::Glyphs {
-                if let Some(glyph) = selected_glyph(app) {
-                    let next = glyph.working_threshold.saturating_add(1);
-                    set_selected_threshold(app, next);
-                } else if app.active_project.is_none() {
-                    set_selected_threshold(app, 0);
-                }
-            }
-        }
-        KeyCode::Char('l') | KeyCode::Char('+') | KeyCode::Char('=') => {
-            if app.view == AppView::Glyphs {
-                if let Some(glyph) = selected_glyph(app) {
-                    let next = glyph.working_threshold.saturating_add(1);
-                    set_selected_threshold(app, next);
-                } else if app.active_project.is_none() {
-                    set_selected_threshold(app, 0);
-                }
             }
         }
         KeyCode::Left => {
             if app.view == AppView::Font {
                 app.selected_font_action = app.selected_font_action.prev();
-            } else if app.view == AppView::Glyphs {
-                if let Some(glyph) = selected_glyph(app) {
-                    let next = glyph.working_threshold.saturating_sub(1);
-                    set_selected_threshold(app, next);
-                } else if app.active_project.is_none() {
-                    set_selected_threshold(app, 0);
-                }
-            }
-        }
-        KeyCode::Char('h') | KeyCode::Char('-') => {
-            if app.view == AppView::Glyphs {
-                if let Some(glyph) = selected_glyph(app) {
-                    let next = glyph.working_threshold.saturating_sub(1);
-                    set_selected_threshold(app, next);
-                } else if app.active_project.is_none() {
-                    set_selected_threshold(app, 0);
-                }
             }
         }
         KeyCode::Enter => {
