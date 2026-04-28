@@ -22,7 +22,7 @@ use crate::project::{
 use crate::tui::{
     App, AppView, HomeToolAction, InteractiveGlyph, TuiLaunchOverrides, WelcomeFocus,
     format_welcome_hint, format_welcome_input_field, handle_key, handle_key_event_for_test,
-    persist_threshold_override, requested_keyboard_enhancement_flags,
+    persist_threshold_override, render_ui_for_test, requested_keyboard_enhancement_flags,
     resolve_installed_font_path_with, sample_glyphs_from_ttf_bytes, should_dispatch_key_kind,
     spaced_sample, switch_notice_visible, wrap_sample_for_display,
 };
@@ -548,6 +548,32 @@ fn home_tool_list_runs_advanced_placeholder_action() {
             .is_some_and(|status| status.contains("Compose Grid is planned"))
     );
     assert_eq!(app.view, AppView::Welcome);
+
+    fs::remove_dir_all(project_dir).expect("temp project dir is removed");
+}
+
+#[test]
+fn home_view_renders_without_panicking() {
+    let project_dir = make_temp_dir("home-render");
+    let manifest_path = project_dir.join("petiglyph.toml");
+    write_manifest(&manifest_path, &Manifest::default()).expect("manifest is written");
+
+    let icons_dir = project_dir.join("icons");
+    fs::create_dir_all(&icons_dir).expect("icons dir is created");
+    write_test_png(&icons_dir.join("icon.png"));
+
+    let config = RuntimeConfig {
+        input_dir: icons_dir,
+        out_dir: project_dir.join("build"),
+        font_name: "Petiglyph".to_string(),
+        glyph_size: 8,
+        base_threshold: 64,
+        threshold_overrides: BTreeMap::new(),
+        codepoint_start: 0x10_0000,
+    };
+
+    let app = App::new(manifest_path, config);
+    render_ui_for_test(&app, 148, 46).expect("home view should render");
 
     fs::remove_dir_all(project_dir).expect("temp project dir is removed");
 }

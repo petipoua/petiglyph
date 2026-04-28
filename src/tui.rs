@@ -33,8 +33,8 @@ use crate::build::{
     expected_ttf_path, glyph_sample_string, is_supported_source, preprocess_sources,
 };
 use crate::install::{
-    FontInstallNameMode, expected_install_ttf_path, expected_install_ttf_path_for_mode,
-    install_built_font, install_dir_for_manifest,
+    FontInstallNameMode, expected_install_ttf_path_for_mode, install_built_font,
+    install_dir_for_manifest,
 };
 use crate::project::{
     RuntimeConfig, create_project_in_dir, discover_project_manifests, load_runtime_config,
@@ -747,16 +747,23 @@ fn draw_welcome_view(
     let body = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(8),  // workspace + build status
-            Constraint::Length(18), // projects + advanced tools
-            Constraint::Min(0),     // installed fonts
+            Constraint::Length(26), // workspace + projects + current project
+            Constraint::Min(0),     // installed petiglyph fonts
         ])
         .split(area);
 
-    let top = Layout::default()
+    let main = Layout::default()
         .direction(Direction::Horizontal)
-        .constraints([Constraint::Percentage(58), Constraint::Percentage(42)])
+        .constraints([Constraint::Percentage(54), Constraint::Percentage(46)])
         .split(body[0]);
+
+    let left = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(8), // workspace scan
+            Constraint::Min(0),    // projects
+        ])
+        .split(main[0]);
 
     let intro_block = Block::default()
         .borders(Borders::ALL)
@@ -791,79 +798,8 @@ fn draw_welcome_view(
         Paragraph::new(intro_lines)
             .block(intro_block)
             .wrap(Wrap { trim: false }),
-        top[0],
+        left[0],
     );
-
-    let status_block = Block::default()
-        .borders(Borders::ALL)
-        .border_type(BorderType::Rounded)
-        .border_style(Style::default().fg(muted))
-        .title(Span::styled(" Build Status ", Style::default().fg(accent)));
-
-    let ok_style = Style::default().fg(Color::Green);
-    let missing_style = Style::default().fg(Color::Red);
-    let (ttf_status, bdf_status, installed_status) = if app.active_project.is_none() {
-        (
-            Span::styled("Select a project first", missing_style),
-            Span::styled("Select a project first", missing_style),
-            Span::styled("Select a project first", missing_style),
-        )
-    } else {
-        let build_summary = app.last_build.as_ref();
-        let ttf_status = match build_summary {
-            Some(s) => Span::styled(format!("built: {}", s.ttf_path.display()), ok_style),
-            None => Span::styled(
-                format!("pending: {}", expected_ttf_path(&app.config).display()),
-                missing_style,
-            ),
-        };
-        let bdf_status = match build_summary {
-            Some(s) => Span::styled(format!("built: {}", s.bdf_path.display()), ok_style),
-            None => Span::styled(
-                format!("pending: {}", expected_bdf_path(&app.config).display()),
-                missing_style,
-            ),
-        };
-        let installed_status = match &app.installed_font_path {
-            Some(path) => Span::styled(format!("installed: {}", path.display()), ok_style),
-            None => {
-                let target = expected_install_ttf_path(&app.manifest_path, &app.config.font_name)
-                    .map(|p| p.display().to_string())
-                    .unwrap_or_else(|_| "~/.local/share/fonts/petiglyph/<font>.ttf".to_string());
-                Span::styled(format!("pending: {target}"), missing_style)
-            }
-        };
-        (ttf_status, bdf_status, installed_status)
-    };
-    let status_lines = vec![
-        Line::from(vec![
-            Span::raw("  "),
-            Span::styled("TTF: ", Style::default().fg(muted)),
-            ttf_status,
-        ]),
-        Line::from(vec![
-            Span::raw("  "),
-            Span::styled("BDF: ", Style::default().fg(muted)),
-            bdf_status,
-        ]),
-        Line::from(vec![
-            Span::raw("  "),
-            Span::styled("Font:", Style::default().fg(muted)),
-            Span::raw(" "),
-            installed_status,
-        ]),
-    ];
-    frame.render_widget(
-        Paragraph::new(status_lines)
-            .block(status_block)
-            .wrap(Wrap { trim: true }),
-        top[1],
-    );
-
-    let middle = Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints([Constraint::Percentage(54), Constraint::Percentage(46)])
-        .split(body[1]);
 
     let projects_block = Block::default()
         .borders(Borders::ALL)
@@ -1051,26 +987,20 @@ fn draw_welcome_view(
         Paragraph::new(projects_text)
             .block(projects_block)
             .wrap(Wrap { trim: false }),
-        middle[0],
+        left[1],
     );
 
-    let right = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Length(9), // advanced tools
-            Constraint::Min(0),    // sample
-        ])
-        .split(middle[1]);
-
-    let tools_block = Block::default()
+    let current_project_block = Block::default()
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
         .border_style(Style::default().fg(muted))
         .title(Span::styled(
-            " Advanced Tools ",
+            " Current Project ",
             Style::default().fg(accent),
         ));
 
+    let ok_style = Style::default().fg(Color::Green);
+    let missing_style = Style::default().fg(Color::Red);
     let tools_active = app.active_project.is_some();
     let section_style = Style::default().fg(muted);
     let selected_style = Style::default()
@@ -1088,26 +1018,78 @@ fn draw_welcome_view(
         Style::default().fg(Color::Yellow)
     };
 
-    let mut tools_lines = vec![
+    let (ttf_status, bdf_status, installed_status) = if app.active_project.is_none() {
+        (
+            Span::styled("Select a project first", missing_style),
+            Span::styled("Select a project first", missing_style),
+            Span::styled("Select a project first", missing_style),
+        )
+    } else {
+        let build_summary = app.last_build.as_ref();
+        let ttf_status = match build_summary {
+            Some(s) => Span::styled(format!("built: {}", s.ttf_path.display()), ok_style),
+            None => Span::styled(
+                format!("pending: {}", expected_ttf_path(&app.config).display()),
+                missing_style,
+            ),
+        };
+        let bdf_status = match build_summary {
+            Some(s) => Span::styled(format!("built: {}", s.bdf_path.display()), ok_style),
+            None => Span::styled(
+                format!("pending: {}", expected_bdf_path(&app.config).display()),
+                missing_style,
+            ),
+        };
+        let installed_status = match &app.installed_font_path {
+            Some(_) => Span::styled("installed for this project", ok_style),
+            None => Span::styled("not installed", missing_style),
+        };
+        (ttf_status, bdf_status, installed_status)
+    };
+
+    let current_project_summary = if tools_active {
+        app.active_project_label()
+    } else {
+        "Select or create a project to see project-local status.".to_string()
+    };
+
+    let mut current_project_lines = vec![
         Line::from(vec![
             Span::raw("  "),
-            Span::styled(
-                if tools_active {
-                    "Optional generators for project-local extras."
-                } else {
-                    "Select or create a project to enable tools."
-                },
-                hint_style,
-            ),
+            Span::styled(current_project_summary, hint_style),
         ]),
         Line::from(""),
+        Line::from(vec![
+            Span::raw("  "),
+            Span::styled("Outputs", section_style.add_modifier(Modifier::BOLD)),
+        ]),
+        Line::from(vec![
+            Span::raw("    "),
+            Span::styled("TTF: ", Style::default().fg(muted)),
+            ttf_status,
+        ]),
+        Line::from(vec![
+            Span::raw("    "),
+            Span::styled("BDF: ", Style::default().fg(muted)),
+            bdf_status,
+        ]),
+        Line::from(vec![
+            Span::raw("    "),
+            Span::styled("Install: ", Style::default().fg(muted)),
+            installed_status,
+        ]),
+        Line::from(""),
+        Line::from(vec![
+            Span::raw("  "),
+            Span::styled("Advanced Tools", section_style.add_modifier(Modifier::BOLD)),
+        ]),
     ];
 
     let mut last_section = "";
     for action in HomeToolAction::ALL {
         if action.section() != last_section {
-            tools_lines.push(Line::from(vec![
-                Span::raw("  "),
+            current_project_lines.push(Line::from(vec![
+                Span::raw("    "),
                 Span::styled(action.section(), section_style),
             ]));
             last_section = action.section();
@@ -1121,59 +1103,50 @@ fn draw_welcome_view(
         } else {
             idle_style
         };
-        tools_lines.push(Line::from(vec![
-            Span::styled(format!(" {marker} "), row_style),
+        current_project_lines.push(Line::from(vec![
+            Span::styled(format!("   {marker} "), row_style),
             Span::styled(action.label(), row_style),
         ]));
     }
 
-    tools_lines.push(Line::from(""));
-    tools_lines.push(Line::from(vec![
-        Span::raw("  "),
+    current_project_lines.push(Line::from(""));
+    current_project_lines.push(Line::from(vec![
+        Span::raw("    "),
         Span::styled(
             app.selected_home_tool.description(),
             Style::default().fg(muted),
         ),
     ]));
-
-    frame.render_widget(
-        Paragraph::new(tools_lines)
-            .block(tools_block)
-            .wrap(Wrap { trim: true }),
-        right[0],
-    );
-
-    let sample_block = Block::default()
-        .borders(Borders::ALL)
-        .border_type(BorderType::Rounded)
-        .border_style(Style::default().fg(muted))
-        .title(Span::styled(" Sample ", Style::default().fg(accent)));
-    let sample_lines = if app.active_project.is_none() {
-        vec![Line::from(vec![
-            Span::raw("  "),
+    current_project_lines.push(Line::from(""));
+    current_project_lines.push(Line::from(vec![
+        Span::raw("  "),
+        Span::styled("Sample", section_style.add_modifier(Modifier::BOLD)),
+    ]));
+    if app.active_project.is_none() {
+        current_project_lines.push(Line::from(vec![
+            Span::raw("    "),
             Span::styled(
                 "Select or create a project to preview its sample string.",
                 Style::default().fg(Color::Yellow),
             ),
-        ])]
+        ]));
     } else {
-        vec![
-            Line::from(vec![
-                Span::raw("  "),
-                Span::styled(
-                    "Latest build sample:",
-                    Style::default().fg(muted).add_modifier(Modifier::BOLD),
-                ),
-            ]),
-            Line::from(""),
-            Line::from(vec![Span::raw("  "), Span::raw(app.sample_string())]),
-        ]
-    };
+        current_project_lines.push(Line::from(vec![
+            Span::raw("    "),
+            Span::styled("Latest build sample:", Style::default().fg(muted)),
+        ]));
+        current_project_lines.push(Line::from(""));
+        current_project_lines.push(Line::from(vec![
+            Span::raw("    "),
+            Span::raw(app.sample_string()),
+        ]));
+    }
+
     frame.render_widget(
-        Paragraph::new(sample_lines)
-            .block(sample_block)
-            .wrap(Wrap { trim: false }),
-        right[1],
+        Paragraph::new(current_project_lines)
+            .block(current_project_block)
+            .wrap(Wrap { trim: true }),
+        main[1],
     );
 
     let fonts_block = Block::default()
@@ -1181,11 +1154,34 @@ fn draw_welcome_view(
         .border_type(BorderType::Rounded)
         .border_style(Style::default().fg(muted))
         .title(Span::styled(
-            " Installed Petiglyph Fonts (sample first glyphs) ",
+            " Installed Petiglyph Fonts on This Machine (sample first glyphs) ",
             Style::default().fg(accent),
         ));
 
-    let mut fonts_text = vec![Line::from("")];
+    let installed_font_count = app.installed_fonts.len();
+    let mut fonts_text = vec![
+        Line::from(""),
+        Line::from(vec![
+            Span::raw("  "),
+            Span::styled(
+                format!(
+                    "Found {installed_font_count} installed petiglyph font{}.",
+                    if installed_font_count == 1 { "" } else { "s" }
+                ),
+                Style::default()
+                    .fg(Color::White)
+                    .add_modifier(Modifier::BOLD),
+            ),
+        ]),
+        Line::from(vec![
+            Span::raw("  "),
+            Span::styled(
+                "Machine-wide inventory of petiglyph-managed fonts.",
+                Style::default().fg(muted),
+            ),
+        ]),
+        Line::from(""),
+    ];
     if app.installed_fonts.is_empty() {
         fonts_text.push(Line::from(vec![
             Span::raw("  "),
@@ -1237,7 +1233,7 @@ fn draw_welcome_view(
         Paragraph::new(fonts_text)
             .block(fonts_block)
             .wrap(Wrap { trim: false }),
-        body[2],
+        body[1],
     );
 }
 
@@ -1926,6 +1922,14 @@ pub(crate) fn handle_key(app: &mut App, code: KeyCode) -> Result<()> {
 #[cfg(test)]
 pub(crate) fn handle_key_event_for_test(app: &mut App, key: KeyEvent) -> Result<()> {
     handle_key_event(app, key)
+}
+
+#[cfg(test)]
+pub(crate) fn render_ui_for_test(app: &App, width: u16, height: u16) -> Result<()> {
+    let backend = ratatui::backend::TestBackend::new(width, height);
+    let mut terminal = Terminal::new(backend).context("failed to initialize test terminal")?;
+    terminal.draw(|frame| draw_ui(frame, app))?;
+    Ok(())
 }
 
 fn is_keypad_plus_alias(key: &KeyEvent) -> bool {

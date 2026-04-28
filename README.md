@@ -252,10 +252,10 @@ codepoint_start = "U+100000"
 
 ## TUI Keys
 
-- TUI viewport is centered and capped at `128x40`; terminals smaller than `96x28` show a size warning screen
+- TUI viewport is centered and capped at `148x46`; terminals smaller than `96x28` show a size warning screen
 - `Tab`: cycle Home -> Glyphs
 - `1` / `2`: switch between Home and Glyphs panels
-- Home shows detected project folders, project creation controls, build/install actions, advanced tools, build status, sample output, and installed petiglyph font samples
+- Home shows detected project folders, project creation controls, build/install actions, a grouped current-project panel for outputs/tools/sample, and a machine-wide installed petiglyph font inventory with sample glyphs
 - Home navigation: project list uses `↑` / `↓`; the create/build/install controls use a 2x2 grid with `←` / `→` moving within each row and `↑` / `↓` moving between rows; `→` from the right edge opens the advanced-tools column, and `Enter` opens the selected project or runs the focused Home action
 - `R`: rescan the workspace project list and the active project's `icons/`
 - `j` / `k` or `↑` / `↓`: select glyph (Glyphs view)

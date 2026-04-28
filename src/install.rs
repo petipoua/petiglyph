@@ -136,10 +136,6 @@ pub(crate) fn effective_font_name(
     }
 }
 
-pub(crate) fn expected_install_ttf_path(manifest_path: &Path, font_name: &str) -> Result<PathBuf> {
-    expected_install_ttf_path_for_mode(manifest_path, font_name, FontInstallNameMode::Plain)
-}
-
 pub(crate) fn expected_install_ttf_path_for_mode(
     manifest_path: &Path,
     font_name: &str,
