@@ -50,8 +50,8 @@ const EVENT_POLL_MS: u64 = 33;
 const TUI_DEBUG_LOG_PATH: &str = "/tmp/petiglyph-tui-debug.log";
 const TUI_MIN_WIDTH: u16 = 96;
 const TUI_MIN_HEIGHT: u16 = 28;
-const TUI_MAX_WIDTH: u16 = 128;
-const TUI_MAX_HEIGHT: u16 = 40;
+const TUI_MAX_WIDTH: u16 = 148;
+const TUI_MAX_HEIGHT: u16 = 46;
 const DECPNM_NUMERIC_KEYPAD_MODE: &str = "\x1B>";
 const WELCOME_HINT_WIDTH: usize = 27;
 
@@ -82,6 +82,8 @@ pub(crate) enum WelcomeFocus {
     ProjectList,
     CreateInput,
     CreateButton,
+    BuildButton,
+    InstallButton,
     ToolList,
 }
 
@@ -179,48 +181,16 @@ pub(crate) fn tui_workspace(
 pub(crate) enum AppView {
     Welcome,
     Glyphs,
-    Font,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum FontAction {
-    Build,
-    Install,
-}
-
-impl FontAction {
-    fn next(self) -> Self {
-        match self {
-            Self::Build => Self::Install,
-            Self::Install => Self::Build,
-        }
-    }
-
-    fn prev(self) -> Self {
-        match self {
-            Self::Build => Self::Install,
-            Self::Install => Self::Build,
-        }
-    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum HomeToolAction {
-    Build,
-    SamplePreview,
-    InstallFont,
     ComposeGrid,
     AnimateGlyph,
 }
 
 impl HomeToolAction {
-    const ALL: [Self; 5] = [
-        Self::Build,
-        Self::SamplePreview,
-        Self::InstallFont,
-        Self::ComposeGrid,
-        Self::AnimateGlyph,
-    ];
+    const ALL: [Self; 2] = [Self::ComposeGrid, Self::AnimateGlyph];
 
     fn next(self) -> Self {
         let idx = Self::ALL
@@ -240,9 +210,6 @@ impl HomeToolAction {
 
     fn label(self) -> &'static str {
         match self {
-            Self::Build => "Build",
-            Self::SamplePreview => "Sample Preview",
-            Self::InstallFont => "Install Font",
             Self::ComposeGrid => "Compose Grid...",
             Self::AnimateGlyph => "Animate Glyph...",
         }
@@ -250,9 +217,6 @@ impl HomeToolAction {
 
     fn description(self) -> &'static str {
         match self {
-            Self::Build => "Generate TTF/BDF, glyph map, and sample in build/.",
-            Self::SamplePreview => "Open Font to inspect the current sample string and outputs.",
-            Self::InstallFont => "Build and copy the project font into your user font directory.",
             Self::ComposeGrid => "Planned: build combined glyphs from tiled source layouts.",
             Self::AnimateGlyph => "Planned: build frame-based animated glyph assets.",
         }
@@ -260,7 +224,6 @@ impl HomeToolAction {
 
     fn section(self) -> &'static str {
         match self {
-            Self::Build | Self::SamplePreview | Self::InstallFont => "Quick Actions",
             Self::ComposeGrid | Self::AnimateGlyph => "Advanced Generators",
         }
     }
@@ -288,7 +251,6 @@ pub(crate) struct App {
     pub(crate) last_build: Option<BuildSummary>,
     pub(crate) last_sample: Option<String>,
     pub(crate) installed_font_path: Option<PathBuf>,
-    pub(crate) selected_font_action: FontAction,
     launch_overrides: TuiLaunchOverrides,
     install_task: Option<InstallTask>,
 }
@@ -535,6 +497,8 @@ fn format_welcome_hint_for_display(focus: WelcomeFocus, editing: bool) -> String
         (WelcomeFocus::CreateInput, true) => "typing (Enter/Esc to stop)",
         (WelcomeFocus::CreateInput, false) => "press Enter to type",
         (WelcomeFocus::CreateButton, _) => "press Enter to create",
+        (WelcomeFocus::BuildButton, _) => "press Enter to build",
+        (WelcomeFocus::InstallButton, _) => "press Enter to install",
         (WelcomeFocus::ToolList, _) => "press Enter to run",
         (WelcomeFocus::ProjectList, _) => "",
     };
@@ -647,6 +611,12 @@ fn handle_welcome_key(app: &mut App, key: KeyEvent) -> Result<()> {
                 app.reload_glyphs()?;
             }
         }
+        KeyCode::Char('b') if !app.welcome_input_editing => {
+            trigger_build_action(app)?;
+        }
+        KeyCode::Char('i') if !app.welcome_input_editing => {
+            trigger_install_action(app);
+        }
         KeyCode::Up | KeyCode::Char('k') if !app.welcome_input_editing => {
             app.welcome_focus = match app.welcome_focus {
                 WelcomeFocus::ProjectList => {
@@ -657,7 +627,13 @@ fn handle_welcome_key(app: &mut App, key: KeyEvent) -> Result<()> {
                     app.selected_project = app.projects.len() - 1;
                     WelcomeFocus::ProjectList
                 }
-                WelcomeFocus::CreateButton => WelcomeFocus::CreateInput,
+                WelcomeFocus::CreateButton if !app.projects.is_empty() => {
+                    app.selected_project = app.projects.len() - 1;
+                    WelcomeFocus::ProjectList
+                }
+                WelcomeFocus::CreateButton => WelcomeFocus::CreateButton,
+                WelcomeFocus::BuildButton => WelcomeFocus::CreateInput,
+                WelcomeFocus::InstallButton => WelcomeFocus::CreateButton,
                 WelcomeFocus::ToolList => {
                     app.selected_home_tool = app.selected_home_tool.prev();
                     WelcomeFocus::ToolList
@@ -675,28 +651,39 @@ fn handle_welcome_key(app: &mut App, key: KeyEvent) -> Result<()> {
                         WelcomeFocus::CreateInput
                     }
                 }
-                WelcomeFocus::CreateInput => WelcomeFocus::CreateButton,
+                WelcomeFocus::CreateInput => WelcomeFocus::BuildButton,
+                WelcomeFocus::CreateButton => WelcomeFocus::InstallButton,
+                WelcomeFocus::BuildButton => WelcomeFocus::BuildButton,
+                WelcomeFocus::InstallButton => WelcomeFocus::InstallButton,
                 WelcomeFocus::ToolList => {
                     app.selected_home_tool = app.selected_home_tool.next();
                     WelcomeFocus::ToolList
                 }
-                other => other,
             };
         }
         KeyCode::Left | KeyCode::Char('h') if !app.welcome_input_editing => {
-            if app.welcome_focus == WelcomeFocus::ToolList {
-                app.welcome_focus = if !app.projects.is_empty() {
-                    WelcomeFocus::ProjectList
-                } else {
-                    WelcomeFocus::CreateInput
-                };
-            }
+            app.welcome_focus = match app.welcome_focus {
+                WelcomeFocus::ToolList => {
+                    if app.active_project.is_some() {
+                        WelcomeFocus::InstallButton
+                    } else if !app.projects.is_empty() {
+                        WelcomeFocus::CreateButton
+                    } else {
+                        WelcomeFocus::CreateInput
+                    }
+                }
+                WelcomeFocus::CreateButton => WelcomeFocus::CreateInput,
+                WelcomeFocus::InstallButton => WelcomeFocus::BuildButton,
+                other => other,
+            };
         }
         KeyCode::Right | KeyCode::Char('l') if !app.welcome_input_editing => {
             app.welcome_focus = match app.welcome_focus {
+                WelcomeFocus::CreateInput => WelcomeFocus::CreateButton,
+                WelcomeFocus::BuildButton => WelcomeFocus::InstallButton,
                 WelcomeFocus::ProjectList
-                | WelcomeFocus::CreateInput
-                | WelcomeFocus::CreateButton => WelcomeFocus::ToolList,
+                | WelcomeFocus::CreateButton
+                | WelcomeFocus::InstallButton => WelcomeFocus::ToolList,
                 other => other,
             };
         }
@@ -720,6 +707,14 @@ fn handle_welcome_key(app: &mut App, key: KeyEvent) -> Result<()> {
             WelcomeFocus::CreateButton => {
                 app.welcome_input_editing = false;
                 app.submit_create()?;
+            }
+            WelcomeFocus::BuildButton => {
+                app.welcome_input_editing = false;
+                trigger_build_action(app)?;
+            }
+            WelcomeFocus::InstallButton => {
+                app.welcome_input_editing = false;
+                trigger_install_action(app);
             }
             WelcomeFocus::ToolList => {
                 app.welcome_input_editing = false;
@@ -752,11 +747,16 @@ fn draw_welcome_view(
     let body = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(7),  // intro
-            Constraint::Length(14), // projects + tools
+            Constraint::Length(8),  // workspace + build status
+            Constraint::Length(18), // projects + advanced tools
             Constraint::Min(0),     // installed fonts
         ])
         .split(area);
+
+    let top = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([Constraint::Percentage(58), Constraint::Percentage(42)])
+        .split(body[0]);
 
     let intro_block = Block::default()
         .borders(Borders::ALL)
@@ -791,12 +791,78 @@ fn draw_welcome_view(
         Paragraph::new(intro_lines)
             .block(intro_block)
             .wrap(Wrap { trim: false }),
-        body[0],
+        top[0],
+    );
+
+    let status_block = Block::default()
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(Style::default().fg(muted))
+        .title(Span::styled(" Build Status ", Style::default().fg(accent)));
+
+    let ok_style = Style::default().fg(Color::Green);
+    let missing_style = Style::default().fg(Color::Red);
+    let (ttf_status, bdf_status, installed_status) = if app.active_project.is_none() {
+        (
+            Span::styled("Select a project first", missing_style),
+            Span::styled("Select a project first", missing_style),
+            Span::styled("Select a project first", missing_style),
+        )
+    } else {
+        let build_summary = app.last_build.as_ref();
+        let ttf_status = match build_summary {
+            Some(s) => Span::styled(format!("built: {}", s.ttf_path.display()), ok_style),
+            None => Span::styled(
+                format!("pending: {}", expected_ttf_path(&app.config).display()),
+                missing_style,
+            ),
+        };
+        let bdf_status = match build_summary {
+            Some(s) => Span::styled(format!("built: {}", s.bdf_path.display()), ok_style),
+            None => Span::styled(
+                format!("pending: {}", expected_bdf_path(&app.config).display()),
+                missing_style,
+            ),
+        };
+        let installed_status = match &app.installed_font_path {
+            Some(path) => Span::styled(format!("installed: {}", path.display()), ok_style),
+            None => {
+                let target = expected_install_ttf_path(&app.manifest_path, &app.config.font_name)
+                    .map(|p| p.display().to_string())
+                    .unwrap_or_else(|_| "~/.local/share/fonts/petiglyph/<font>.ttf".to_string());
+                Span::styled(format!("pending: {target}"), missing_style)
+            }
+        };
+        (ttf_status, bdf_status, installed_status)
+    };
+    let status_lines = vec![
+        Line::from(vec![
+            Span::raw("  "),
+            Span::styled("TTF: ", Style::default().fg(muted)),
+            ttf_status,
+        ]),
+        Line::from(vec![
+            Span::raw("  "),
+            Span::styled("BDF: ", Style::default().fg(muted)),
+            bdf_status,
+        ]),
+        Line::from(vec![
+            Span::raw("  "),
+            Span::styled("Font:", Style::default().fg(muted)),
+            Span::raw(" "),
+            installed_status,
+        ]),
+    ];
+    frame.render_widget(
+        Paragraph::new(status_lines)
+            .block(status_block)
+            .wrap(Wrap { trim: true }),
+        top[1],
     );
 
     let middle = Layout::default()
         .direction(Direction::Horizontal)
-        .constraints([Constraint::Percentage(62), Constraint::Percentage(38)])
+        .constraints([Constraint::Percentage(54), Constraint::Percentage(46)])
         .split(body[1]);
 
     let projects_block = Block::default()
@@ -935,6 +1001,51 @@ fn draw_welcome_view(
         Style::default().fg(muted),
     ));
     projects_text.push(Line::from(new_project_line));
+    projects_text.push(Line::from(""));
+
+    let selected_button_style = Style::default()
+        .fg(Color::Black)
+        .bg(accent)
+        .add_modifier(Modifier::BOLD);
+    let idle_button_style = Style::default()
+        .fg(Color::White)
+        .bg(Color::DarkGray)
+        .add_modifier(Modifier::BOLD);
+    let disabled_button_style = Style::default()
+        .fg(Color::DarkGray)
+        .bg(Color::Black)
+        .add_modifier(Modifier::DIM);
+    let build_button_style = if app.active_project.is_none() {
+        disabled_button_style
+    } else if app.welcome_focus == WelcomeFocus::BuildButton {
+        selected_button_style
+    } else {
+        idle_button_style
+    };
+    let install_button_style = if app.active_project.is_none() && !app.install_in_progress() {
+        disabled_button_style
+    } else if app.install_in_progress() {
+        Style::default()
+            .fg(Color::Black)
+            .bg(Color::Yellow)
+            .add_modifier(Modifier::BOLD)
+    } else if app.welcome_focus == WelcomeFocus::InstallButton {
+        selected_button_style
+    } else {
+        idle_button_style
+    };
+    let install_label = if let Some(spinner) = app.install_spinner_frame() {
+        format!(" {spinner} Installing... ")
+    } else {
+        " Install Font ".to_string()
+    };
+    projects_text.push(Line::from(vec![
+        Span::raw("  "),
+        Span::styled("Actions: ", Style::default().fg(muted)),
+        Span::styled(" Build ", build_button_style),
+        Span::raw(" "),
+        Span::styled(install_label, install_button_style),
+    ]));
 
     frame.render_widget(
         Paragraph::new(projects_text)
@@ -943,11 +1054,22 @@ fn draw_welcome_view(
         middle[0],
     );
 
+    let right = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(9), // advanced tools
+            Constraint::Min(0),    // sample
+        ])
+        .split(middle[1]);
+
     let tools_block = Block::default()
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
         .border_style(Style::default().fg(muted))
-        .title(Span::styled(" Project Tools ", Style::default().fg(accent)));
+        .title(Span::styled(
+            " Advanced Tools ",
+            Style::default().fg(accent),
+        ));
 
     let tools_active = app.active_project.is_some();
     let section_style = Style::default().fg(muted);
@@ -971,7 +1093,7 @@ fn draw_welcome_view(
             Span::raw("  "),
             Span::styled(
                 if tools_active {
-                    "Run project-scoped actions from Home."
+                    "Optional generators for project-local extras."
                 } else {
                     "Select or create a project to enable tools."
                 },
@@ -1018,7 +1140,40 @@ fn draw_welcome_view(
         Paragraph::new(tools_lines)
             .block(tools_block)
             .wrap(Wrap { trim: true }),
-        middle[1],
+        right[0],
+    );
+
+    let sample_block = Block::default()
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(Style::default().fg(muted))
+        .title(Span::styled(" Sample ", Style::default().fg(accent)));
+    let sample_lines = if app.active_project.is_none() {
+        vec![Line::from(vec![
+            Span::raw("  "),
+            Span::styled(
+                "Select or create a project to preview its sample string.",
+                Style::default().fg(Color::Yellow),
+            ),
+        ])]
+    } else {
+        vec![
+            Line::from(vec![
+                Span::raw("  "),
+                Span::styled(
+                    "Latest build sample:",
+                    Style::default().fg(muted).add_modifier(Modifier::BOLD),
+                ),
+            ]),
+            Line::from(""),
+            Line::from(vec![Span::raw("  "), Span::raw(app.sample_string())]),
+        ]
+    };
+    frame.render_widget(
+        Paragraph::new(sample_lines)
+            .block(sample_block)
+            .wrap(Wrap { trim: false }),
+        right[1],
     );
 
     let fonts_block = Block::default()
@@ -1139,7 +1294,7 @@ impl App {
             welcome_input_editing: false,
             installed_fonts: Vec::new(),
             switch_notice: None,
-            selected_home_tool: HomeToolAction::Build,
+            selected_home_tool: HomeToolAction::ComposeGrid,
             selected: 0,
             glyphs: Vec::new(),
             quit: false,
@@ -1148,7 +1303,6 @@ impl App {
             last_build: None,
             last_sample: None,
             installed_font_path: None,
-            selected_font_action: FontAction::Build,
             launch_overrides,
             install_task: None,
         }
@@ -1180,7 +1334,7 @@ impl App {
             welcome_input_editing: false,
             installed_fonts: Vec::new(),
             switch_notice: None,
-            selected_home_tool: HomeToolAction::Build,
+            selected_home_tool: HomeToolAction::ComposeGrid,
             selected: 0,
             glyphs: Vec::new(),
             quit: false,
@@ -1189,7 +1343,6 @@ impl App {
             last_build,
             last_sample,
             installed_font_path,
-            selected_font_action: FontAction::Build,
             launch_overrides,
             install_task: None,
         }
@@ -1417,7 +1570,6 @@ impl App {
             if summary.glyph_count == 1 { "" } else { "s" },
             summary.out_dir().display()
         ));
-        self.view = AppView::Font;
         Ok(())
     }
 
@@ -1448,7 +1600,6 @@ impl App {
             receiver,
             spinner_index: 0,
         });
-        self.view = AppView::Font;
         self.status = None;
     }
 
@@ -1485,7 +1636,6 @@ impl App {
                     "installed font to {}",
                     output.installed_path.display()
                 ));
-                self.view = AppView::Font;
             }
             Err(err) => {
                 self.status = Some(err);
@@ -1806,7 +1956,7 @@ fn handle_key_event(app: &mut App, key: KeyEvent) -> Result<()> {
         format!("{} {}", key_debug(&key), app_debug_state(app)),
     );
     let is_global_panel_jump = matches!(code, KeyCode::Tab | KeyCode::BackTab)
-        || (matches!(code, KeyCode::Char('2') | KeyCode::Char('3')) && !app.welcome_input_editing);
+        || (matches!(code, KeyCode::Char('2')) && !app.welcome_input_editing);
 
     if app.view == AppView::Welcome && !is_global_panel_jump {
         tui_debug_log("handle_key_event.route_welcome", app_debug_state(app));
@@ -1846,16 +1996,11 @@ fn handle_key_event(app: &mut App, key: KeyEvent) -> Result<()> {
             app.welcome_input_editing = false;
             app.view = AppView::Glyphs;
         }
-        KeyCode::Char('3') => {
-            app.welcome_input_editing = false;
-            app.view = AppView::Font;
-        }
         KeyCode::Tab => {
             app.welcome_input_editing = false;
             app.view = match app.view {
                 AppView::Welcome => AppView::Glyphs,
-                AppView::Glyphs => AppView::Font,
-                AppView::Font => AppView::Welcome,
+                AppView::Glyphs => AppView::Welcome,
             }
         }
         KeyCode::Char('R') => {
@@ -1874,9 +2019,7 @@ fn handle_key_event(app: &mut App, key: KeyEvent) -> Result<()> {
             trigger_install_action(app);
         }
         KeyCode::Down => {
-            if app.view == AppView::Font {
-                app.selected_font_action = app.selected_font_action.next();
-            } else if app.view == AppView::Glyphs {
+            if app.view == AppView::Glyphs {
                 app.selected = (app.selected + 1).min(app.glyphs.len().saturating_sub(1));
             }
         }
@@ -1886,33 +2029,13 @@ fn handle_key_event(app: &mut App, key: KeyEvent) -> Result<()> {
             }
         }
         KeyCode::Up => {
-            if app.view == AppView::Font {
-                app.selected_font_action = app.selected_font_action.prev();
-            } else if app.view == AppView::Glyphs {
+            if app.view == AppView::Glyphs {
                 app.selected = app.selected.saturating_sub(1);
             }
         }
         KeyCode::Char('k') => {
             if app.view == AppView::Glyphs {
                 app.selected = app.selected.saturating_sub(1);
-            }
-        }
-        KeyCode::Right => {
-            if app.view == AppView::Font {
-                app.selected_font_action = app.selected_font_action.next();
-            }
-        }
-        KeyCode::Left => {
-            if app.view == AppView::Font {
-                app.selected_font_action = app.selected_font_action.prev();
-            }
-        }
-        KeyCode::Enter => {
-            if app.view == AppView::Font {
-                match app.selected_font_action {
-                    FontAction::Build => trigger_build_action(app)?,
-                    FontAction::Install => trigger_install_action(app),
-                }
             }
         }
         KeyCode::PageUp => {
@@ -1956,25 +2079,6 @@ fn trigger_build_action(app: &mut App) -> Result<()> {
 
 fn trigger_home_tool_action(app: &mut App) -> Result<()> {
     match app.selected_home_tool {
-        HomeToolAction::Build => trigger_build_action(app),
-        HomeToolAction::SamplePreview => {
-            if app.active_project.is_none() {
-                app.status = Some(
-                    "create a project in Home or relaunch with --manifest before previewing"
-                        .to_string(),
-                );
-                return Ok(());
-            }
-
-            app.view = AppView::Font;
-            app.selected_font_action = FontAction::Build;
-            app.status = Some("opened Font sample preview".to_string());
-            Ok(())
-        }
-        HomeToolAction::InstallFont => {
-            trigger_install_action(app);
-            Ok(())
-        }
         HomeToolAction::ComposeGrid => {
             if app.active_project.is_none() {
                 app.status =
@@ -2030,7 +2134,7 @@ fn draw_ui(frame: &mut Frame, app: &App) {
         .split(area);
 
     // Header
-    let titles = [" 1 Home ", " 2 Glyphs ", " 3 Font "];
+    let titles = [" 1 Home ", " 2 Glyphs "];
     let tabs = Tabs::new(titles.into_iter().map(Line::from).collect::<Vec<_>>())
         .block(
             Block::default()
@@ -2047,7 +2151,6 @@ fn draw_ui(frame: &mut Frame, app: &App) {
         .select(match app.view {
             AppView::Welcome => 0,
             AppView::Glyphs => 1,
-            AppView::Font => 2,
         })
         .style(Style::default().fg(Color::White))
         .highlight_style(
@@ -2093,7 +2196,6 @@ fn draw_ui(frame: &mut Frame, app: &App) {
     match app.view {
         AppView::Welcome => draw_welcome_view(frame, app, body_area, accent, muted),
         AppView::Glyphs => draw_glyphs_view(frame, app, body_area, accent, muted),
-        AppView::Font => draw_font_view(frame, app, body_area, accent, muted),
     }
 
     // Footer
@@ -2102,7 +2204,7 @@ fn draw_ui(frame: &mut Frame, app: &App) {
         Span::raw("quit  "),
         Span::styled(" tab ", Style::default().fg(accent)),
         Span::raw("next panel  "),
-        Span::styled(" 1-3 ", Style::default().fg(accent)),
+        Span::styled(" 1-2 ", Style::default().fg(accent)),
         Span::raw("jump panel  "),
         Span::styled(" R ", Style::default().fg(accent)),
         Span::raw("rescan  "),
@@ -2117,6 +2219,10 @@ fn draw_ui(frame: &mut Frame, app: &App) {
             "stop typing  "
         } else if app.welcome_focus == WelcomeFocus::ProjectList {
             "open project  "
+        } else if app.welcome_focus == WelcomeFocus::BuildButton {
+            "build  "
+        } else if app.welcome_focus == WelcomeFocus::InstallButton {
+            "install  "
         } else if app.welcome_focus == WelcomeFocus::ToolList {
             "run action  "
         } else {
@@ -2149,14 +2255,6 @@ fn draw_ui(frame: &mut Frame, app: &App) {
             Span::raw("thresh +/-10  "),
             Span::styled(" r ", Style::default().fg(accent)),
             Span::raw("reset  "),
-        ]);
-    }
-    if app.view == AppView::Font {
-        footer_spans.extend(vec![
-            Span::styled(" \u{2190}/\u{2192} ", Style::default().fg(accent)),
-            Span::raw("select action  "),
-            Span::styled(" Enter ", Style::default().fg(accent)),
-            Span::raw("run selected  "),
         ]);
     }
 
@@ -2392,172 +2490,6 @@ fn draw_glyphs_view(
         .block(preview_block)
         .wrap(Wrap { trim: false });
     frame.render_widget(p, chunks[1]);
-}
-
-fn draw_font_view(
-    frame: &mut Frame,
-    app: &App,
-    area: ratatui::layout::Rect,
-    accent: Color,
-    muted: Color,
-) {
-    if app.active_project.is_none() {
-        draw_blocked_project_view(frame, area, " Font ", accent, muted);
-        return;
-    }
-
-    let sections = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([Constraint::Length(10), Constraint::Min(0)])
-        .split(area);
-
-    let status_block = Block::default()
-        .borders(Borders::ALL)
-        .border_type(BorderType::Rounded)
-        .border_style(Style::default().fg(muted))
-        .title(Span::styled(" Font Status ", Style::default().fg(accent)));
-
-    let sample = app.sample_string();
-    let build_summary = app.last_build.as_ref();
-
-    let ok_style = Style::default().fg(Color::Green);
-    let missing_style = Style::default().fg(Color::Red);
-
-    let ttf_status = match build_summary {
-        Some(s) => Span::styled(format!("✓ installed: {}", s.ttf_path.display()), ok_style),
-        None => Span::styled(
-            format!(
-                "Not built yet (target: {})",
-                expected_ttf_path(&app.config).display()
-            ),
-            missing_style,
-        ),
-    };
-    let bdf_status = match build_summary {
-        Some(s) => Span::styled(format!("✓ installed: {}", s.bdf_path.display()), ok_style),
-        None => Span::styled(
-            format!(
-                "Not built yet (target: {})",
-                expected_bdf_path(&app.config).display()
-            ),
-            missing_style,
-        ),
-    };
-    let installed_status = match &app.installed_font_path {
-        Some(p) => Span::styled(format!("✓ installed: {}", p.display()), ok_style),
-        None => {
-            let target = expected_install_ttf_path(&app.manifest_path, &app.config.font_name)
-                .map(|p| p.display().to_string())
-                .unwrap_or_else(|_| "~/.local/share/fonts/petiglyph/<font>.ttf".to_string());
-            Span::styled(format!("Not installed (target: {})", target), missing_style)
-        }
-    };
-
-    let text = vec![
-        Line::from(""),
-        Line::from(vec![
-            Span::raw("  "),
-            Span::styled("Sample string:", Style::default().fg(accent)),
-        ]),
-        Line::from(vec![Span::raw("  "), Span::raw(sample)]),
-        Line::from(""),
-        Line::from(vec![
-            Span::raw("  "),
-            Span::styled("TTF Output: ", Style::default().fg(muted)),
-            ttf_status,
-        ]),
-        Line::from(vec![
-            Span::raw("  "),
-            Span::styled("BDF Output: ", Style::default().fg(muted)),
-            bdf_status,
-        ]),
-        Line::from(vec![
-            Span::raw("  "),
-            Span::styled("System:     ", Style::default().fg(muted)),
-            installed_status,
-        ]),
-    ];
-
-    let actions_block = Block::default()
-        .borders(Borders::ALL)
-        .border_type(BorderType::Rounded)
-        .border_style(Style::default().fg(muted))
-        .title(Span::styled(" Actions ", Style::default().fg(accent)));
-
-    let selected_button_style = Style::default()
-        .fg(Color::Black)
-        .bg(accent)
-        .add_modifier(Modifier::BOLD);
-    let idle_button_style = Style::default()
-        .fg(Color::White)
-        .bg(Color::DarkGray)
-        .add_modifier(Modifier::BOLD);
-
-    let build_button_style = if app.selected_font_action == FontAction::Build {
-        selected_button_style
-    } else {
-        idle_button_style
-    };
-
-    let install_label = if let Some(spinner) = app.install_spinner_frame() {
-        format!(" {spinner} Installing... ")
-    } else {
-        " Install (i) ".to_string()
-    };
-
-    let install_button_style = if app.install_in_progress() {
-        Style::default()
-            .fg(Color::Black)
-            .bg(Color::Yellow)
-            .add_modifier(Modifier::BOLD)
-    } else if app.selected_font_action == FontAction::Install {
-        selected_button_style
-    } else {
-        idle_button_style
-    };
-
-    let (desc_label, desc_text) = match app.selected_font_action {
-        FontAction::Build => (
-            "Build:",
-            " generate TTF/BDF, glyph map, and sample in build/",
-        ),
-        FontAction::Install => ("Install:", " copy built TTF to your user font directory"),
-    };
-    let desc_style = Style::default().fg(accent).add_modifier(Modifier::BOLD);
-
-    let action_lines = vec![
-        Line::from(""),
-        Line::from(vec![
-            Span::raw("  "),
-            Span::styled(
-                "Use \u{2190}/\u{2192} to select, Enter to run. Shortcuts: b / i",
-                Style::default().fg(muted),
-            ),
-        ]),
-        Line::from(""),
-        Line::from(vec![
-            Span::raw("  "),
-            Span::styled(" Build (b) ", build_button_style),
-            Span::raw("   "),
-            Span::styled(install_label, install_button_style),
-        ]),
-        Line::from(""),
-        Line::from(vec![
-            Span::raw("  "),
-            Span::styled(desc_label, desc_style),
-            Span::raw(desc_text),
-        ]),
-    ];
-
-    let actions_panel = Paragraph::new(action_lines)
-        .block(actions_block)
-        .wrap(Wrap { trim: false });
-    frame.render_widget(actions_panel, sections[0]);
-
-    let status_panel = Paragraph::new(text)
-        .block(status_block)
-        .wrap(Wrap { trim: false });
-    frame.render_widget(status_panel, sections[1]);
 }
 
 fn preview_lines(

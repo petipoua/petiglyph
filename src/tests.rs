@@ -20,7 +20,7 @@ use crate::project::{
     load_runtime_config, parse_codepoint, read_manifest, write_manifest,
 };
 use crate::tui::{
-    App, AppView, FontAction, HomeToolAction, InteractiveGlyph, TuiLaunchOverrides, WelcomeFocus,
+    App, AppView, HomeToolAction, InteractiveGlyph, TuiLaunchOverrides, WelcomeFocus,
     format_welcome_hint, format_welcome_input_field, handle_key, handle_key_event_for_test,
     persist_threshold_override, requested_keyboard_enhancement_flags,
     resolve_installed_font_path_with, sample_glyphs_from_ttf_bytes, should_dispatch_key_kind,
@@ -335,19 +335,33 @@ fn unified_tui_multiple_projects_can_be_selected_from_home() {
 
     handle_key(&mut app, KeyCode::Down).expect("down leaves project list after last project");
     assert_eq!(app.welcome_focus, WelcomeFocus::CreateInput);
-    handle_key(&mut app, KeyCode::Down).expect("down moves to create button");
+    handle_key(&mut app, KeyCode::Down).expect("down moves to build button");
+    assert_eq!(app.welcome_focus, WelcomeFocus::BuildButton);
+    handle_key(&mut app, KeyCode::Right).expect("right moves to install button");
+    assert_eq!(app.welcome_focus, WelcomeFocus::InstallButton);
+    handle_key(&mut app, KeyCode::Up).expect("up returns to create button");
+    assert_eq!(app.welcome_focus, WelcomeFocus::CreateButton);
+    handle_key(&mut app, KeyCode::Up).expect("up returns to project list");
+    assert_eq!(app.welcome_focus, WelcomeFocus::ProjectList);
+    assert_eq!(app.selected_project, 1);
+    handle_key(&mut app, KeyCode::Down).expect("down returns to create input");
+    assert_eq!(app.welcome_focus, WelcomeFocus::CreateInput);
+    handle_key(&mut app, KeyCode::Right).expect("right returns to create button");
+    assert_eq!(app.welcome_focus, WelcomeFocus::CreateButton);
+    handle_key(&mut app, KeyCode::Left).expect("left returns to create input");
+    assert_eq!(app.welcome_focus, WelcomeFocus::CreateInput);
+    handle_key(&mut app, KeyCode::Right).expect("right moves to create button");
     assert_eq!(app.welcome_focus, WelcomeFocus::CreateButton);
     handle_key(&mut app, KeyCode::Right).expect("right moves to project tools");
     assert_eq!(app.welcome_focus, WelcomeFocus::ToolList);
-    handle_key(&mut app, KeyCode::Left).expect("left returns to project list");
-    assert_eq!(app.welcome_focus, WelcomeFocus::ProjectList);
-    assert_eq!(app.selected_project, 1);
-    handle_key(&mut app, KeyCode::Up).expect("up returns to input");
-    assert_eq!(app.welcome_focus, WelcomeFocus::ProjectList);
-    assert_eq!(app.selected_project, 0);
-    handle_key(&mut app, KeyCode::Up).expect("up returns to project list");
-    assert_eq!(app.welcome_focus, WelcomeFocus::ProjectList);
-    assert_eq!(app.selected_project, 0);
+    handle_key(&mut app, KeyCode::Left).expect("left returns to install button");
+    assert_eq!(app.welcome_focus, WelcomeFocus::InstallButton);
+    handle_key(&mut app, KeyCode::Left).expect("left returns to build button");
+    assert_eq!(app.welcome_focus, WelcomeFocus::BuildButton);
+    handle_key(&mut app, KeyCode::Up).expect("up returns to create input");
+    assert_eq!(app.welcome_focus, WelcomeFocus::CreateInput);
+    handle_key(&mut app, KeyCode::Right).expect("right returns to create button");
+    assert_eq!(app.welcome_focus, WelcomeFocus::CreateButton);
 
     fs::remove_dir_all(workspace).expect("temp workspace is removed");
 }
@@ -362,6 +376,8 @@ fn welcome_input_edit_mode_types_hjkl_without_navigation() {
     assert_eq!(app.welcome_focus, WelcomeFocus::CreateInput);
     assert!(!app.welcome_input_editing);
 
+    handle_key(&mut app, KeyCode::Char('l')).expect("welcome navigation moves to create button");
+    assert_eq!(app.welcome_focus, WelcomeFocus::CreateButton);
     handle_key(&mut app, KeyCode::Char('l')).expect("welcome navigation moves to tools");
     assert_eq!(app.welcome_focus, WelcomeFocus::ToolList);
     assert!(app.create_input.value().is_empty());
@@ -409,7 +425,6 @@ fn project_actions_without_active_project_set_status_and_do_not_crash() {
     let mut app = App::new_workspace(workspace.clone(), None, TuiLaunchOverrides::default())
         .expect("workspace TUI app initializes");
 
-    app.view = AppView::Font;
     handle_key(&mut app, KeyCode::Char('b')).expect("build guard succeeds");
     assert!(
         app.status
@@ -479,20 +494,26 @@ fn welcome_hint_keeps_fixed_width_across_focus_states() {
     let input_hint = format_welcome_hint(WelcomeFocus::CreateInput, false);
     let typing_hint = format_welcome_hint(WelcomeFocus::CreateInput, true);
     let button_hint = format_welcome_hint(WelcomeFocus::CreateButton, false);
+    let build_hint = format_welcome_hint(WelcomeFocus::BuildButton, false);
+    let install_hint = format_welcome_hint(WelcomeFocus::InstallButton, false);
     let list_hint = format_welcome_hint(WelcomeFocus::ProjectList, false);
     let tool_hint = format_welcome_hint(WelcomeFocus::ToolList, false);
 
     assert_eq!(input_hint.chars().count(), typing_hint.chars().count());
     assert_eq!(input_hint.chars().count(), button_hint.chars().count());
+    assert_eq!(input_hint.chars().count(), build_hint.chars().count());
+    assert_eq!(input_hint.chars().count(), install_hint.chars().count());
     assert_eq!(input_hint.chars().count(), list_hint.chars().count());
     assert_eq!(input_hint.chars().count(), tool_hint.chars().count());
     assert!(input_hint.contains("press Enter to type"));
     assert!(button_hint.contains("press Enter to create"));
+    assert!(build_hint.contains("press Enter to build"));
+    assert!(install_hint.contains("press Enter to install"));
     assert!(tool_hint.contains("press Enter to run"));
 }
 
 #[test]
-fn home_tool_list_can_trigger_build_and_preview() {
+fn home_tool_list_runs_advanced_placeholder_action() {
     let project_dir = make_temp_dir("home-tools-build");
     let manifest_path = project_dir.join("petiglyph.toml");
     write_manifest(&manifest_path, &Manifest::default()).expect("manifest is written");
@@ -513,25 +534,20 @@ fn home_tool_list_can_trigger_build_and_preview() {
 
     let mut app = App::new(manifest_path, config);
     assert_eq!(app.welcome_focus, WelcomeFocus::CreateInput);
-    assert_eq!(app.selected_home_tool, HomeToolAction::Build);
+    assert_eq!(app.selected_home_tool, HomeToolAction::ComposeGrid);
 
+    handle_key(&mut app, KeyCode::Right).expect("right should move focus to create button");
+    assert_eq!(app.welcome_focus, WelcomeFocus::CreateButton);
     handle_key(&mut app, KeyCode::Right).expect("right should move focus to tools");
     assert_eq!(app.welcome_focus, WelcomeFocus::ToolList);
 
-    handle_key(&mut app, KeyCode::Enter).expect("enter on build should succeed");
-    let summary = app
-        .last_build
-        .as_ref()
-        .expect("home build action should build outputs");
-    assert!(summary.ttf_path.is_file(), "ttf output should exist");
-    assert!(summary.bdf_path.is_file(), "bdf output should exist");
-    assert_eq!(app.view, AppView::Font);
-
-    app.view = AppView::Welcome;
-    app.welcome_focus = WelcomeFocus::ToolList;
-    app.selected_home_tool = HomeToolAction::SamplePreview;
-    handle_key(&mut app, KeyCode::Enter).expect("sample preview should open font panel");
-    assert_eq!(app.view, AppView::Font);
+    handle_key(&mut app, KeyCode::Enter).expect("enter on compose grid should succeed");
+    assert!(
+        app.status
+            .as_deref()
+            .is_some_and(|status| status.contains("Compose Grid is planned"))
+    );
+    assert_eq!(app.view, AppView::Welcome);
 
     fs::remove_dir_all(project_dir).expect("temp project dir is removed");
 }
@@ -1128,8 +1144,6 @@ fn tab_cycles_panels_and_glyph_controls_stay_in_glyph_view() {
     handle_key(&mut app, KeyCode::Tab).expect("key handling should succeed");
     assert_eq!(app.view, AppView::Glyphs);
     handle_key(&mut app, KeyCode::Tab).expect("key handling should succeed");
-    assert_eq!(app.view, AppView::Font);
-    handle_key(&mut app, KeyCode::Tab).expect("key handling should succeed");
     assert_eq!(app.view, AppView::Welcome);
 
     // Threshold arrows still provide granular (+/-1) changes in Glyphs.
@@ -1184,7 +1198,7 @@ fn handle_key_w_is_not_a_navigation_path() {
 }
 
 #[test]
-fn font_action_buttons_switch_with_arrows_and_enter_builds() {
+fn build_shortcut_runs_from_home() {
     let project_dir = make_temp_dir("font-action-buttons");
     let manifest_path = project_dir.join("petiglyph.toml");
     write_manifest(&manifest_path, &Manifest::default()).expect("manifest is written");
@@ -1204,22 +1218,15 @@ fn font_action_buttons_switch_with_arrows_and_enter_builds() {
     };
 
     let mut app = App::new(manifest_path, config);
-    app.view = AppView::Font;
 
-    assert_eq!(app.selected_font_action, FontAction::Build);
-    handle_key(&mut app, KeyCode::Right).expect("key handling should succeed");
-    assert_eq!(app.selected_font_action, FontAction::Install);
-    handle_key(&mut app, KeyCode::Left).expect("key handling should succeed");
-    assert_eq!(app.selected_font_action, FontAction::Build);
-
-    handle_key(&mut app, KeyCode::Enter).expect("key handling should succeed");
+    handle_key(&mut app, KeyCode::Char('b')).expect("key handling should succeed");
     let summary = app
         .last_build
         .as_ref()
-        .expect("enter on build action should build");
+        .expect("build shortcut should build");
     assert!(summary.ttf_path.is_file(), "ttf output should exist");
     assert!(summary.bdf_path.is_file(), "bdf output should exist");
-    assert_eq!(app.view, AppView::Font);
+    assert_eq!(app.view, AppView::Welcome);
 
     fs::remove_dir_all(project_dir).expect("temp project dir is removed");
 }
@@ -1285,7 +1292,8 @@ fn tui_launch_overrides_persist_through_reload_and_build() {
     assert_eq!(app.glyphs.len(), 1);
     assert_eq!(app.glyphs[0].glyph.source_key, "override.png");
 
-    app.view = AppView::Font;
+    app.view = AppView::Welcome;
+    app.welcome_focus = WelcomeFocus::BuildButton;
     handle_key(&mut app, KeyCode::Enter).expect("enter should run build action");
     let summary = app
         .last_build

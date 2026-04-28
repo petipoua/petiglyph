@@ -40,7 +40,7 @@ enum CliCommand {
     },
     /// Launch the petiglyph TUI for a project.
     Tui {
-        /// Path to the manifest file. Defaults to ./petiglyph.toml.
+        /// Path to the manifest file. When omitted, auto-detect from the current directory or one level below.
         #[arg(short, long)]
         manifest: Option<PathBuf>,
         /// Override source image folder from manifest.
@@ -58,7 +58,7 @@ enum CliCommand {
     },
     /// Build monochrome glyph previews, mapping metadata, and a BDF/TTF font.
     Build {
-        /// Path to the manifest file. Defaults to ./petiglyph.toml.
+        /// Path to the manifest file. When omitted, auto-detect from the current directory or one level below.
         #[arg(short, long)]
         manifest: Option<PathBuf>,
         /// Override source image folder from manifest.
@@ -82,7 +82,7 @@ enum CliCommand {
     },
     /// Build the font and print the sample private-use string.
     Sample {
-        /// Path to the manifest file. Defaults to ./petiglyph.toml.
+        /// Path to the manifest file. When omitted, auto-detect from the current directory or one level below.
         #[arg(short, long)]
         manifest: Option<PathBuf>,
         /// Override source image folder from manifest.
@@ -106,7 +106,7 @@ enum CliCommand {
     },
     /// Build the font and install it into the user font directory using a project-prefixed name.
     InstallFont {
-        /// Path to the manifest file. Defaults to ./petiglyph.toml.
+        /// Path to the manifest file. When omitted, auto-detect from the current directory or one level below.
         #[arg(short, long)]
         manifest: Option<PathBuf>,
         /// Override source image folder from manifest.
@@ -130,7 +130,7 @@ enum CliCommand {
     },
     /// Uninstall this project's managed installed font variants.
     UninstallFont {
-        /// Path to the manifest file. Defaults to ./petiglyph.toml.
+        /// Path to the manifest file. When omitted, auto-detect from the current directory or one level below.
         #[arg(short, long)]
         manifest: Option<PathBuf>,
         /// Emit machine-readable JSON to stdout.

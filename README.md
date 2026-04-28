@@ -84,8 +84,7 @@ When `--json` is enabled, stdout is a single machine-readable envelope:
   "ok": true,
   "command": "build",
   "version": "0.0.1",
-  "data": {},
-  "error": null
+  "data": {}
 }
 ```
 
@@ -95,7 +94,7 @@ Top-level fields are stable:
 - `command` (`string`)
 - `version` (`string`)
 - `data` (`object`)
-- `error` (`object`, present on failures)
+- `error` (`object`, omitted on success and present on failures)
 
 Failure mode rules:
 
@@ -209,11 +208,11 @@ cargo test
 Quick manual smoke test with the bundled sample manifest:
 
 ```bash
-cargo run -- build --manifest test-font/petiglyph.toml
-cargo run -- sample --manifest test-font/petiglyph.toml
-cargo run -- tui --manifest test-font/petiglyph.toml
-cargo run -- install-font --manifest test-font/petiglyph.toml --json
-cargo run -- uninstall-font --manifest test-font/petiglyph.toml --json
+cargo run -- build --manifest ./petiglyph.toml
+cargo run -- sample --manifest ./petiglyph.toml
+cargo run -- tui --manifest ./petiglyph.toml
+cargo run -- install-font --manifest ./petiglyph.toml --json
+cargo run -- uninstall-font --manifest ./petiglyph.toml --json
 ```
 
 ## Local AUR-Style Test Scripts
@@ -254,15 +253,15 @@ codepoint_start = "U+100000"
 ## TUI Keys
 
 - TUI viewport is centered and capped at `128x40`; terminals smaller than `96x28` show a size warning screen
-- `Tab`: cycle Home -> Glyphs -> Font
-- `1` / `2` / `3`: switch between Home, Glyphs, and Font panels
-- Home shows detected project folders, project creation controls, and installed petiglyph font samples
-- `R`: rescan `icons/`
+- `Tab`: cycle Home -> Glyphs
+- `1` / `2`: switch between Home and Glyphs panels
+- Home shows detected project folders, project creation controls, build/install actions, advanced tools, build status, sample output, and installed petiglyph font samples
+- Home navigation: project list uses `↑` / `↓`; the create/build/install controls use a 2x2 grid with `←` / `→` moving within each row and `↑` / `↓` moving between rows; `→` from the right edge opens the advanced-tools column, and `Enter` opens the selected project or runs the focused Home action
+- `R`: rescan the workspace project list and the active project's `icons/`
 - `j` / `k` or `↑` / `↓`: select glyph (Glyphs view)
 - `←` / `→` or `+` / `-`: adjust threshold by 1 for selected glyph (Glyphs view)
 - `PgUp` / `PgDn`: adjust threshold by 10 for selected glyph (Glyphs view)
 - `r`: clear selected glyph override (Glyphs view)
-- Font Actions (Font view): use `←` / `→` to select `Build` or `Install`, then `Enter` to run
 - `b`: build font outputs directly
 - `i`: install font directly
 - `q` / `Esc`: quit
