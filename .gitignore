@@ -12,3 +12,6 @@
 # Generated makepkg extraction/output under src/
 /src/petiglyph/
 /src/petiglyph-*.tar.gz
+
+/build/
+
