@@ -43,7 +43,8 @@ use crate::project::{
 
 const CLI_VERSION: &str = env!("CARGO_PKG_VERSION");
 const INSTALL_SPINNER_FRAMES: [&str; 4] = ["-", "\\", "|", "/"];
-const UNINSTALL_SPINNER_FRAMES: [&str; 4] = ["[####]", "[### ]", "[##  ]", "[#   ]"];
+const UNINSTALL_SPINNER_FRAMES: [&str; 4] = ["/", "|", "\\", "-"];
+const FONT_TASK_SPINNER_FRAME_MS: u64 = 43;
 const WELCOME_SAMPLE_LIMIT: usize = 15;
 const WELCOME_INPUT_WIDTH: usize = 15;
 const SWITCH_NOTICE_MS: u64 = 2500;
@@ -243,6 +244,7 @@ struct InstallTask {
     kind: FontTaskKind,
     receiver: Receiver<Result<InstallTaskOutput, String>>,
     spinner_index: usize,
+    spinner_last_frame_at: Instant,
 }
 
 #[derive(Debug, Clone)]
@@ -275,6 +277,10 @@ impl FontTaskKind {
         } else {
             &INSTALL_SPINNER_FRAMES
         }
+    }
+
+    fn spinner_frame_duration(&self) -> Duration {
+        Duration::from_millis(FONT_TASK_SPINNER_FRAME_MS)
     }
 
     fn footer_label(&self) -> &'static str {
@@ -1710,6 +1716,7 @@ impl App {
             kind: FontTaskKind::Install,
             receiver,
             spinner_index: 0,
+            spinner_last_frame_at: Instant::now(),
         });
         self.status = None;
     }
@@ -1743,6 +1750,7 @@ impl App {
             kind: FontTaskKind::UninstallInstalled { path: font.path },
             receiver,
             spinner_index: 0,
+            spinner_last_frame_at: Instant::now(),
         });
         self.status = None;
         Ok(())
@@ -1776,6 +1784,7 @@ impl App {
             kind: FontTaskKind::UninstallProject,
             receiver,
             spinner_index: 0,
+            spinner_last_frame_at: Instant::now(),
         });
         self.status = None;
         Ok(())
@@ -1786,7 +1795,12 @@ impl App {
         let mut disconnected = false;
 
         if let Some(task) = self.install_task.as_mut() {
-            task.spinner_index = (task.spinner_index + 1) % task.kind.spinner_frames().len();
+            let frame_duration = task.kind.spinner_frame_duration();
+            let now = Instant::now();
+            while now.duration_since(task.spinner_last_frame_at) >= frame_duration {
+                task.spinner_index = (task.spinner_index + 1) % task.kind.spinner_frames().len();
+                task.spinner_last_frame_at += frame_duration;
+            }
             match task.receiver.try_recv() {
                 Ok(result) => task_result = Some(result),
                 Err(TryRecvError::Empty) => {}
