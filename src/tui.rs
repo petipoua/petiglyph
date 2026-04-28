@@ -82,6 +82,7 @@ pub(crate) enum WelcomeFocus {
     ProjectList,
     CreateInput,
     CreateButton,
+    ToolList,
 }
 
 #[derive(Debug, Clone)]
@@ -203,6 +204,68 @@ impl FontAction {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum HomeToolAction {
+    Build,
+    SamplePreview,
+    InstallFont,
+    ComposeGrid,
+    AnimateGlyph,
+}
+
+impl HomeToolAction {
+    const ALL: [Self; 5] = [
+        Self::Build,
+        Self::SamplePreview,
+        Self::InstallFont,
+        Self::ComposeGrid,
+        Self::AnimateGlyph,
+    ];
+
+    fn next(self) -> Self {
+        let idx = Self::ALL
+            .iter()
+            .position(|action| *action == self)
+            .unwrap_or(0);
+        Self::ALL[(idx + 1).min(Self::ALL.len() - 1)]
+    }
+
+    fn prev(self) -> Self {
+        let idx = Self::ALL
+            .iter()
+            .position(|action| *action == self)
+            .unwrap_or(0);
+        Self::ALL[idx.saturating_sub(1)]
+    }
+
+    fn label(self) -> &'static str {
+        match self {
+            Self::Build => "Build",
+            Self::SamplePreview => "Sample Preview",
+            Self::InstallFont => "Install Font",
+            Self::ComposeGrid => "Compose Grid...",
+            Self::AnimateGlyph => "Animate Glyph...",
+        }
+    }
+
+    fn description(self) -> &'static str {
+        match self {
+            Self::Build => "Generate TTF/BDF, glyph map, and sample in build/.",
+            Self::SamplePreview => "Open Font to inspect the current sample string and outputs.",
+            Self::InstallFont => "Build and copy the project font into your user font directory.",
+            Self::ComposeGrid => "Planned: build combined glyphs from tiled source layouts.",
+            Self::AnimateGlyph => "Planned: build frame-based animated glyph assets.",
+        }
+    }
+
+    fn section(self) -> &'static str {
+        match self {
+            Self::Build | Self::SamplePreview | Self::InstallFont => "Quick Actions",
+            Self::ComposeGrid | Self::AnimateGlyph => "Advanced Generators",
+        }
+    }
+}
+
 pub(crate) struct App {
     pub(crate) manifest_path: PathBuf,
     pub(crate) project_dir: PathBuf,
@@ -216,6 +279,7 @@ pub(crate) struct App {
     pub(crate) welcome_input_editing: bool,
     installed_fonts: Vec<InstalledFontSample>,
     pub(crate) switch_notice: Option<ProjectSwitchNotice>,
+    pub(crate) selected_home_tool: HomeToolAction,
     pub(crate) selected: usize,
     pub(crate) glyphs: Vec<InteractiveGlyph>,
     pub(crate) quit: bool,
@@ -471,6 +535,7 @@ fn format_welcome_hint_for_display(focus: WelcomeFocus, editing: bool) -> String
         (WelcomeFocus::CreateInput, true) => "typing (Enter/Esc to stop)",
         (WelcomeFocus::CreateInput, false) => "press Enter to type",
         (WelcomeFocus::CreateButton, _) => "press Enter to create",
+        (WelcomeFocus::ToolList, _) => "press Enter to run",
         (WelcomeFocus::ProjectList, _) => "",
     };
 
@@ -582,9 +647,7 @@ fn handle_welcome_key(app: &mut App, key: KeyEvent) -> Result<()> {
                 app.reload_glyphs()?;
             }
         }
-        KeyCode::Left | KeyCode::Up | KeyCode::Char('h') | KeyCode::Char('k')
-            if !app.welcome_input_editing =>
-        {
+        KeyCode::Up | KeyCode::Char('k') if !app.welcome_input_editing => {
             app.welcome_focus = match app.welcome_focus {
                 WelcomeFocus::ProjectList => {
                     app.selected_project = app.selected_project.saturating_sub(1);
@@ -595,12 +658,14 @@ fn handle_welcome_key(app: &mut App, key: KeyEvent) -> Result<()> {
                     WelcomeFocus::ProjectList
                 }
                 WelcomeFocus::CreateButton => WelcomeFocus::CreateInput,
+                WelcomeFocus::ToolList => {
+                    app.selected_home_tool = app.selected_home_tool.prev();
+                    WelcomeFocus::ToolList
+                }
                 other => other,
             };
         }
-        KeyCode::Right | KeyCode::Down | KeyCode::Char('l') | KeyCode::Char('j')
-            if !app.welcome_input_editing =>
-        {
+        KeyCode::Down | KeyCode::Char('j') if !app.welcome_input_editing => {
             app.welcome_focus = match app.welcome_focus {
                 WelcomeFocus::ProjectList => {
                     if app.selected_project + 1 < app.projects.len() {
@@ -611,6 +676,27 @@ fn handle_welcome_key(app: &mut App, key: KeyEvent) -> Result<()> {
                     }
                 }
                 WelcomeFocus::CreateInput => WelcomeFocus::CreateButton,
+                WelcomeFocus::ToolList => {
+                    app.selected_home_tool = app.selected_home_tool.next();
+                    WelcomeFocus::ToolList
+                }
+                other => other,
+            };
+        }
+        KeyCode::Left | KeyCode::Char('h') if !app.welcome_input_editing => {
+            if app.welcome_focus == WelcomeFocus::ToolList {
+                app.welcome_focus = if !app.projects.is_empty() {
+                    WelcomeFocus::ProjectList
+                } else {
+                    WelcomeFocus::CreateInput
+                };
+            }
+        }
+        KeyCode::Right | KeyCode::Char('l') if !app.welcome_input_editing => {
+            app.welcome_focus = match app.welcome_focus {
+                WelcomeFocus::ProjectList
+                | WelcomeFocus::CreateInput
+                | WelcomeFocus::CreateButton => WelcomeFocus::ToolList,
                 other => other,
             };
         }
@@ -634,6 +720,10 @@ fn handle_welcome_key(app: &mut App, key: KeyEvent) -> Result<()> {
             WelcomeFocus::CreateButton => {
                 app.welcome_input_editing = false;
                 app.submit_create()?;
+            }
+            WelcomeFocus::ToolList => {
+                app.welcome_input_editing = false;
+                trigger_home_tool_action(app)?;
             }
         },
         _ => {
@@ -663,7 +753,7 @@ fn draw_welcome_view(
         .direction(Direction::Vertical)
         .constraints([
             Constraint::Length(7),  // intro
-            Constraint::Length(11), // projects
+            Constraint::Length(14), // projects + tools
             Constraint::Min(0),     // installed fonts
         ])
         .split(area);
@@ -703,6 +793,11 @@ fn draw_welcome_view(
             .wrap(Wrap { trim: false }),
         body[0],
     );
+
+    let middle = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([Constraint::Percentage(62), Constraint::Percentage(38)])
+        .split(body[1]);
 
     let projects_block = Block::default()
         .borders(Borders::ALL)
@@ -845,7 +940,85 @@ fn draw_welcome_view(
         Paragraph::new(projects_text)
             .block(projects_block)
             .wrap(Wrap { trim: false }),
-        body[1],
+        middle[0],
+    );
+
+    let tools_block = Block::default()
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(Style::default().fg(muted))
+        .title(Span::styled(" Project Tools ", Style::default().fg(accent)));
+
+    let tools_active = app.active_project.is_some();
+    let section_style = Style::default().fg(muted);
+    let selected_style = Style::default()
+        .fg(Color::Black)
+        .bg(accent)
+        .add_modifier(Modifier::BOLD);
+    let idle_style = if tools_active {
+        Style::default().fg(Color::White)
+    } else {
+        Style::default().fg(Color::DarkGray)
+    };
+    let hint_style = if tools_active {
+        Style::default().fg(muted)
+    } else {
+        Style::default().fg(Color::Yellow)
+    };
+
+    let mut tools_lines = vec![
+        Line::from(vec![
+            Span::raw("  "),
+            Span::styled(
+                if tools_active {
+                    "Run project-scoped actions from Home."
+                } else {
+                    "Select or create a project to enable tools."
+                },
+                hint_style,
+            ),
+        ]),
+        Line::from(""),
+    ];
+
+    let mut last_section = "";
+    for action in HomeToolAction::ALL {
+        if action.section() != last_section {
+            tools_lines.push(Line::from(vec![
+                Span::raw("  "),
+                Span::styled(action.section(), section_style),
+            ]));
+            last_section = action.section();
+        }
+
+        let is_selected =
+            app.welcome_focus == WelcomeFocus::ToolList && app.selected_home_tool == action;
+        let marker = if is_selected { ">" } else { " " };
+        let row_style = if is_selected {
+            selected_style
+        } else {
+            idle_style
+        };
+        tools_lines.push(Line::from(vec![
+            Span::styled(format!(" {marker} "), row_style),
+            Span::styled(action.label(), row_style),
+        ]));
+    }
+
+    tools_lines.push(Line::from(""));
+    tools_lines.push(Line::from(vec![
+        Span::raw("  "),
+        Span::styled(
+            app.selected_home_tool.description(),
+            Style::default().fg(muted),
+        ),
+    ]));
+
+    frame.render_widget(
+        Paragraph::new(tools_lines)
+            .block(tools_block)
+            .wrap(Wrap { trim: true }),
+        middle[1],
     );
 
     let fonts_block = Block::default()
@@ -966,6 +1139,7 @@ impl App {
             welcome_input_editing: false,
             installed_fonts: Vec::new(),
             switch_notice: None,
+            selected_home_tool: HomeToolAction::Build,
             selected: 0,
             glyphs: Vec::new(),
             quit: false,
@@ -1006,6 +1180,7 @@ impl App {
             welcome_input_editing: false,
             installed_fonts: Vec::new(),
             switch_notice: None,
+            selected_home_tool: HomeToolAction::Build,
             selected: 0,
             glyphs: Vec::new(),
             quit: false,
@@ -1779,6 +1954,54 @@ fn trigger_build_action(app: &mut App) -> Result<()> {
     app.build_project()
 }
 
+fn trigger_home_tool_action(app: &mut App) -> Result<()> {
+    match app.selected_home_tool {
+        HomeToolAction::Build => trigger_build_action(app),
+        HomeToolAction::SamplePreview => {
+            if app.active_project.is_none() {
+                app.status = Some(
+                    "create a project in Home or relaunch with --manifest before previewing"
+                        .to_string(),
+                );
+                return Ok(());
+            }
+
+            app.view = AppView::Font;
+            app.selected_font_action = FontAction::Build;
+            app.status = Some("opened Font sample preview".to_string());
+            Ok(())
+        }
+        HomeToolAction::InstallFont => {
+            trigger_install_action(app);
+            Ok(())
+        }
+        HomeToolAction::ComposeGrid => {
+            if app.active_project.is_none() {
+                app.status =
+                    Some("select or create a project before composing combined glyphs".to_string());
+            } else {
+                app.status = Some(
+                    "Compose Grid is planned for Home project tools but is not implemented yet"
+                        .to_string(),
+                );
+            }
+            Ok(())
+        }
+        HomeToolAction::AnimateGlyph => {
+            if app.active_project.is_none() {
+                app.status =
+                    Some("select or create a project before preparing animated glyphs".to_string());
+            } else {
+                app.status = Some(
+                    "Animate Glyph is planned for Home project tools but is not implemented yet"
+                        .to_string(),
+                );
+            }
+            Ok(())
+        }
+    }
+}
+
 fn trigger_install_action(app: &mut App) {
     app.start_install_font();
 }
@@ -1894,12 +2117,16 @@ fn draw_ui(frame: &mut Frame, app: &App) {
             "stop typing  "
         } else if app.welcome_focus == WelcomeFocus::ProjectList {
             "open project  "
+        } else if app.welcome_focus == WelcomeFocus::ToolList {
+            "run action  "
         } else {
             "type/create  "
         };
         footer_spans.extend(vec![
             Span::styled(" \u{2191}/\u{2193} ", Style::default().fg(accent)),
             Span::raw("select  "),
+            Span::styled(" \u{2190}/\u{2192} ", Style::default().fg(accent)),
+            Span::raw("switch section  "),
             Span::styled(" Enter ", Style::default().fg(accent)),
             Span::raw(enter_help),
             Span::styled(" Backspace ", Style::default().fg(accent)),
