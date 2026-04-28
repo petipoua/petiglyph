@@ -21,9 +21,9 @@ use crate::project::{
 };
 use crate::tui::{
     App, AppView, HomeToolAction, InstalledFontSample, InteractiveGlyph, TuiLaunchOverrides,
-    WelcomeFocus, build_action_name, format_welcome_hint, format_welcome_input_field, handle_key,
-    handle_key_event_for_test, install_action_name, persist_threshold_override, render_ui_for_test,
-    requested_keyboard_enhancement_flags, resolve_installed_font_path_with,
+    WelcomeFocus, build_action_name, format_projects_card_hint, format_welcome_input_field,
+    handle_key, handle_key_event_for_test, install_action_name, persist_threshold_override,
+    render_ui_for_test, requested_keyboard_enhancement_flags, resolve_installed_font_path_with,
     sample_glyphs_from_ttf_bytes, should_dispatch_key_kind, spaced_sample, switch_notice_visible,
     wrap_sample_for_display,
 };
@@ -516,39 +516,30 @@ fn welcome_input_field_keeps_fixed_width_in_all_focus_states() {
 }
 
 #[test]
-fn welcome_hint_keeps_fixed_width_across_focus_states() {
-    let input_hint = format_welcome_hint(WelcomeFocus::CreateInput, false, false, false);
-    let typing_hint = format_welcome_hint(WelcomeFocus::CreateInput, true, false, false);
-    let button_hint = format_welcome_hint(WelcomeFocus::CreateButton, false, false, false);
-    let build_hint = format_welcome_hint(WelcomeFocus::BuildButton, false, false, false);
-    let rebuild_hint = format_welcome_hint(WelcomeFocus::BuildButton, false, true, false);
-    let install_hint = format_welcome_hint(WelcomeFocus::InstallButton, false, false, false);
-    let uninstall_project_hint =
-        format_welcome_hint(WelcomeFocus::InstallButton, false, false, true);
-    let uninstall_hint = format_welcome_hint(WelcomeFocus::InstalledFontList, false, false, false);
-    let list_hint = format_welcome_hint(WelcomeFocus::ProjectList, false, false, false);
-    let tool_hint = format_welcome_hint(WelcomeFocus::ToolList, false, false, false);
+fn projects_card_hint_keeps_fixed_width_and_stays_local() {
+    let input_hint = format_projects_card_hint(WelcomeFocus::CreateInput, false);
+    let typing_hint = format_projects_card_hint(WelcomeFocus::CreateInput, true);
+    let button_hint = format_projects_card_hint(WelcomeFocus::CreateButton, false);
+    let tool_hint = format_projects_card_hint(WelcomeFocus::ToolList, false);
+    let build_hint = format_projects_card_hint(WelcomeFocus::BuildButton, false);
+    let install_hint = format_projects_card_hint(WelcomeFocus::InstallButton, false);
+    let uninstall_hint = format_projects_card_hint(WelcomeFocus::InstalledFontList, false);
+    let list_hint = format_projects_card_hint(WelcomeFocus::ProjectList, false);
 
     assert_eq!(input_hint.chars().count(), typing_hint.chars().count());
     assert_eq!(input_hint.chars().count(), button_hint.chars().count());
+    assert_eq!(input_hint.chars().count(), tool_hint.chars().count());
     assert_eq!(input_hint.chars().count(), build_hint.chars().count());
-    assert_eq!(input_hint.chars().count(), rebuild_hint.chars().count());
     assert_eq!(input_hint.chars().count(), install_hint.chars().count());
-    assert_eq!(
-        input_hint.chars().count(),
-        uninstall_project_hint.chars().count()
-    );
     assert_eq!(input_hint.chars().count(), uninstall_hint.chars().count());
     assert_eq!(input_hint.chars().count(), list_hint.chars().count());
-    assert_eq!(input_hint.chars().count(), tool_hint.chars().count());
     assert!(input_hint.contains("press Enter to type"));
-    assert!(button_hint.contains("press Enter to create"));
-    assert!(build_hint.contains("press Enter to build"));
-    assert!(rebuild_hint.contains("press Enter to rebuild"));
-    assert!(install_hint.contains("press Enter to install"));
-    assert!(uninstall_project_hint.contains("press Enter to uninstall"));
-    assert!(uninstall_hint.contains("press Enter to uninstall"));
-    assert!(tool_hint.contains("press Enter to run"));
+    assert!(typing_hint.contains("typing (Enter/Esc to stop)"));
+    assert!(button_hint.trim().is_empty());
+    assert!(tool_hint.trim().is_empty());
+    assert!(build_hint.trim().is_empty());
+    assert!(install_hint.trim().is_empty());
+    assert!(uninstall_hint.trim().is_empty());
 }
 
 #[test]

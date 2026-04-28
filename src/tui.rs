@@ -43,6 +43,7 @@ use crate::project::{
 
 const CLI_VERSION: &str = env!("CARGO_PKG_VERSION");
 const INSTALL_SPINNER_FRAMES: [&str; 4] = ["-", "\\", "|", "/"];
+const UNINSTALL_SPINNER_FRAMES: [&str; 4] = ["[####]", "[### ]", "[##  ]", "[#   ]"];
 const WELCOME_SAMPLE_LIMIT: usize = 15;
 const WELCOME_INPUT_WIDTH: usize = 15;
 const SWITCH_NOTICE_MS: u64 = 2500;
@@ -136,7 +137,7 @@ pub(crate) fn tui_workspace(
     let mut session = TerminalSession::start()?;
     let mut log_next_draw_after_esc = false;
     while !app.quit {
-        app.poll_install_task();
+        app.poll_font_task();
         app.clear_expired_switch_notice();
         session.terminal.draw(|frame| draw_ui(frame, &app))?;
         if log_next_draw_after_esc {
@@ -239,14 +240,64 @@ struct TerminalSession {
 }
 
 struct InstallTask {
+    kind: FontTaskKind,
     receiver: Receiver<Result<InstallTaskOutput, String>>,
     spinner_index: usize,
 }
 
-struct InstallTaskOutput {
-    summary: BuildSummary,
-    sample: Option<String>,
-    installed_path: PathBuf,
+#[derive(Debug, Clone)]
+enum InstallTaskOutput {
+    Install {
+        summary: BuildSummary,
+        sample: Option<String>,
+        installed_path: PathBuf,
+    },
+    Uninstall {
+        status_message: String,
+    },
+}
+
+#[derive(Debug, Clone)]
+enum FontTaskKind {
+    Install,
+    UninstallProject,
+    UninstallInstalled { path: PathBuf },
+}
+
+impl FontTaskKind {
+    fn is_uninstall(&self) -> bool {
+        !matches!(self, Self::Install)
+    }
+
+    fn spinner_frames(&self) -> &'static [&'static str] {
+        if self.is_uninstall() {
+            &UNINSTALL_SPINNER_FRAMES
+        } else {
+            &INSTALL_SPINNER_FRAMES
+        }
+    }
+
+    fn footer_label(&self) -> &'static str {
+        if self.is_uninstall() {
+            "removing font..."
+        } else {
+            "installing font..."
+        }
+    }
+
+    fn progress_style(&self) -> Style {
+        if self.is_uninstall() {
+            Style::default()
+                .fg(Color::White)
+                .bg(Color::Red)
+                .add_modifier(Modifier::BOLD)
+        } else {
+            Style::default()
+                .fg(Color::Black)
+                .bg(Color::Yellow)
+                .add_modifier(Modifier::BOLD)
+        }
+    }
 }
 
 impl TerminalSession {
@@ -458,16 +509,6 @@ pub(crate) fn format_welcome_input_field(value: &str, focused: bool, width: usiz
     format_welcome_input_field_with_cursor(value.trim(), focused, value.chars().count(), width)
 }
 
-#[cfg(test)]
-pub(crate) fn format_welcome_hint(
-    focus: WelcomeFocus,
-    editing: bool,
-    project_is_built: bool,
-    project_is_installed: bool,
-) -> String {
-    format_welcome_hint_for_display(focus, editing, project_is_built, project_is_installed)
-}
-
 pub(crate) fn build_action_name(project_is_built: bool) -> &'static str {
     if project_is_built { "Rebuild" } else { "Build" }
 }
@@ -480,33 +521,16 @@ pub(crate) fn install_action_name(project_is_installed: bool) -> &'static str {
     }
 }
 
-fn format_welcome_hint_for_display(
-    focus: WelcomeFocus,
-    editing: bool,
-    project_is_built: bool,
-    project_is_installed: bool,
-) -> String {
+#[cfg(test)]
+pub(crate) fn format_projects_card_hint(focus: WelcomeFocus, editing: bool) -> String {
+    format_projects_card_hint_for_display(focus, editing)
+}
+
+fn format_projects_card_hint_for_display(focus: WelcomeFocus, editing: bool) -> String {
     let hint = match (focus, editing) {
         (WelcomeFocus::CreateInput, true) => "typing (Enter/Esc to stop)",
         (WelcomeFocus::CreateInput, false) => "press Enter to type",
-        (WelcomeFocus::CreateButton, _) => "press Enter to create",
-        (WelcomeFocus::BuildButton, _) => {
-            if project_is_built {
-                "press Enter to rebuild"
-            } else {
-                "press Enter to build"
-            }
-        }
-        (WelcomeFocus::InstallButton, _) => {
-            if project_is_installed {
-                "press Enter to uninstall"
-            } else {
-                "press Enter to install"
-            }
-        }
-        (WelcomeFocus::ToolList, _) => "press Enter to run",
-        (WelcomeFocus::InstalledFontList, _) => "press Enter to uninstall",
-        (WelcomeFocus::ProjectList, _) => "",
+        _ => "",
     };
 
     format!("  {hint:<WELCOME_HINT_WIDTH$}")
@@ -961,12 +985,7 @@ fn draw_welcome_view(
         Span::styled(" Create ", button_style),
     ];
     new_project_line.push(Span::styled(
-        format_welcome_hint_for_display(
-            app.welcome_focus,
-            app.welcome_input_editing,
-            app.current_project_is_built(),
-            app.current_project_is_installed(),
-        ),
+        format_projects_card_hint_for_display(app.welcome_focus, app.welcome_input_editing),
         Style::default().fg(muted),
     ));
     projects_text.push(Line::from(new_project_line));
@@ -994,23 +1013,27 @@ fn draw_welcome_view(
     };
     let install_button_style = if app.active_project.is_none() && !app.install_in_progress() {
         disabled_button_style
+    } else if let Some(FontTaskKind::Install | FontTaskKind::UninstallProject) =
+        app.font_task_kind()
+    {
+        app.font_task_button_style()
+            .unwrap_or(disabled_button_style)
     } else if app.install_in_progress() {
-        Style::default()
-            .fg(Color::Black)
-            .bg(Color::Yellow)
-            .add_modifier(Modifier::BOLD)
+        disabled_button_style
     } else if app.welcome_focus == WelcomeFocus::InstallButton {
         selected_button_style
     } else {
         idle_button_style
     };
-    let install_label = if let Some(spinner) = app.install_spinner_frame() {
-        format!(" {spinner} Installing... ")
-    } else {
-        format!(
+    let install_label = match (app.font_task_kind(), app.font_task_spinner_frame()) {
+        (Some(FontTaskKind::Install), Some(spinner)) => format!(" {spinner} Installing... "),
+        (Some(FontTaskKind::UninstallProject), Some(spinner)) => {
+            format!(" {spinner} Removing... ")
+        }
+        _ => format!(
             " {} ",
             install_action_name(app.current_project_is_installed())
-        )
+        ),
     };
     let compose_button_style = if app.active_project.is_none() {
         disabled_button_style
@@ -1225,7 +1248,10 @@ fn draw_welcome_view(
             } else {
                 spaced_sample(&font.sample)
             };
-            let uninstall_button_style = if app.install_in_progress() {
+            let uninstall_button_style = if app.is_selected_font_uninstall_in_progress(&font.path) {
+                app.font_task_button_style()
+                    .unwrap_or(disabled_button_style)
+            } else if app.install_in_progress() {
                 disabled_button_style
             } else if app.welcome_focus == WelcomeFocus::InstalledFontList
                 && app.selected_installed_font == idx
@@ -1233,6 +1259,15 @@ fn draw_welcome_view(
                 selected_button_style
             } else {
                 idle_button_style
+            };
+            let uninstall_label = if app.is_selected_font_uninstall_in_progress(&font.path) {
+                if let Some(spinner) = app.font_task_spinner_frame() {
+                    format!(" {spinner} Removing... ")
+                } else {
+                    " Uninstall ".to_string()
+                }
+            } else {
+                " Uninstall ".to_string()
             };
             fonts_text.push(Line::from(vec![
                 Span::raw("  "),
@@ -1243,7 +1278,7 @@ fn draw_welcome_view(
                         .add_modifier(Modifier::BOLD),
                 ),
                 Span::raw("  "),
-                Span::styled(" Uninstall ", uninstall_button_style),
+                Span::styled(uninstall_label, uninstall_button_style),
             ]));
             fonts_text.push(Line::from(vec![
                 Span::raw("    "),
@@ -1473,7 +1508,7 @@ impl App {
 
         if self.install_in_progress() {
             self.status =
-                Some("install is in progress; wait before switching projects".to_string());
+                Some("font operation is in progress; wait before switching projects".to_string());
             return Ok(());
         }
 
@@ -1489,7 +1524,7 @@ impl App {
     fn set_active_project(&mut self, manifest_path: PathBuf) -> Result<()> {
         if self.install_in_progress() {
             self.status =
-                Some("install is in progress; wait before switching projects".to_string());
+                Some("font operation is in progress; wait before switching projects".to_string());
             return Ok(());
         }
 
@@ -1658,7 +1693,7 @@ impl App {
         }
 
         if self.install_task.is_some() {
-            self.status = Some("install already in progress".to_string());
+            self.status = Some("font operation already in progress".to_string());
             return;
         }
 
@@ -1672,15 +1707,17 @@ impl App {
         });
 
         self.install_task = Some(InstallTask {
+            kind: FontTaskKind::Install,
             receiver,
             spinner_index: 0,
         });
         self.status = None;
     }
 
-    fn uninstall_selected_installed_font(&mut self) -> Result<()> {
+    fn start_uninstall_selected_installed_font(&mut self) -> Result<()> {
         if self.install_in_progress() {
-            self.status = Some("install is in progress; wait before uninstalling".to_string());
+            self.status =
+                Some("font operation is in progress; wait before uninstalling".to_string());
             return Ok(());
         }
 
@@ -1693,21 +1730,25 @@ impl App {
             return Ok(());
         };
 
-        let result = uninstall_installed_font_file(&font.path)?;
-        self.refresh_workspace_discovery()?;
-        if self.active_project.is_some() {
-            self.reload_config()?;
-        }
-        self.status = Some(match result.outcome {
-            crate::install::UninstallOutcome::Removed => format!("uninstalled {}", font.file_name),
-            crate::install::UninstallOutcome::AlreadyAbsent => {
-                format!("font already absent: {}", font.file_name)
-            }
+        let target_path = font.path.clone();
+        let file_name = font.file_name.clone();
+        let (sender, receiver) = mpsc::channel();
+        thread::spawn(move || {
+            let result = uninstall_installed_font_task(target_path.clone(), file_name)
+                .map_err(|err| err.to_string());
+            let _ = sender.send(result);
         });
+
+        self.install_task = Some(InstallTask {
+            kind: FontTaskKind::UninstallInstalled { path: font.path },
+            receiver,
+            spinner_index: 0,
+        });
+        self.status = None;
         Ok(())
     }
 
-    fn uninstall_active_project_font(&mut self) -> Result<()> {
+    fn start_uninstall_active_project_font(&mut self) -> Result<()> {
         if self.active_project.is_none() {
             self.status = Some(
                 "create a project in Home or relaunch with --manifest before uninstalling"
@@ -1717,29 +1758,35 @@ impl App {
         }
 
         if self.install_in_progress() {
-            self.status = Some("install is in progress; wait before uninstalling".to_string());
+            self.status =
+                Some("font operation is in progress; wait before uninstalling".to_string());
             return Ok(());
         }
 
+        let manifest_path = self.manifest_path.clone();
         let font_name = self.config.font_name.clone();
-        let result = uninstall_project_font(&self.manifest_path)?;
-        self.refresh_workspace_discovery()?;
-        self.reload_config()?;
-        self.status = Some(match result.outcome {
-            crate::install::UninstallOutcome::Removed => format!("uninstalled {font_name}"),
-            crate::install::UninstallOutcome::AlreadyAbsent => {
-                format!("font already absent: {font_name}")
-            }
+        let (sender, receiver) = mpsc::channel();
+        thread::spawn(move || {
+            let result = uninstall_project_font_task(manifest_path, font_name)
+                .map_err(|err| err.to_string());
+            let _ = sender.send(result);
         });
+
+        self.install_task = Some(InstallTask {
+            kind: FontTaskKind::UninstallProject,
+            receiver,
+            spinner_index: 0,
+        });
+        self.status = None;
         Ok(())
     }
 
-    fn poll_install_task(&mut self) {
+    fn poll_font_task(&mut self) {
         let mut task_result = None;
         let mut disconnected = false;
 
         if let Some(task) = self.install_task.as_mut() {
-            task.spinner_index = (task.spinner_index + 1) % INSTALL_SPINNER_FRAMES.len();
+            task.spinner_index = (task.spinner_index + 1) % task.kind.spinner_frames().len();
             match task.receiver.try_recv() {
                 Ok(result) => task_result = Some(result),
                 Err(TryRecvError::Empty) => {}
@@ -1748,8 +1795,19 @@ impl App {
         }
 
         if disconnected {
+            let operation = self
+                .install_task
+                .as_ref()
+                .map(|task| {
+                    if task.kind.is_uninstall() {
+                        "uninstall"
+                    } else {
+                        "install"
+                    }
+                })
+                .unwrap_or("font");
             self.install_task = None;
-            self.status = Some("install task terminated unexpectedly".to_string());
+            self.status = Some(format!("{operation} task terminated unexpectedly"));
             return;
         }
 
@@ -1759,27 +1817,41 @@ impl App {
 
         self.install_task = None;
         match result {
-            Ok(output) => {
-                self.last_build = Some(output.summary);
-                self.last_sample = output.sample;
-                self.installed_font_path = Some(output.installed_path.clone());
+            Ok(InstallTaskOutput::Install {
+                summary,
+                sample,
+                installed_path,
+            }) => {
+                self.last_build = Some(summary);
+                self.last_sample = sample;
+                self.installed_font_path = Some(installed_path.clone());
                 if let Err(err) = self.refresh_workspace_discovery() {
                     self.status = Some(format!(
                         "installed font to {}; refresh failed: {err}",
-                        output.installed_path.display()
+                        installed_path.display()
                     ));
                 } else {
                     if let Some(idx) = self
                         .installed_fonts
                         .iter()
-                        .position(|font| font.path == output.installed_path)
+                        .position(|font| font.path == installed_path)
                     {
                         self.selected_installed_font = idx;
                     }
-                    self.status = Some(format!(
-                        "installed font to {}",
-                        output.installed_path.display()
-                    ));
+                    self.status = Some(format!("installed font to {}", installed_path.display()));
+                }
+            }
+            Ok(InstallTaskOutput::Uninstall { status_message }) => {
+                if let Err(err) = self.refresh_workspace_discovery() {
+                    self.status = Some(format!("{status_message}; refresh failed: {err}"));
+                } else if self.active_project.is_some() {
+                    if let Err(err) = self.reload_config() {
+                        self.status = Some(format!("{status_message}; reload failed: {err}"));
+                    } else {
+                        self.status = Some(status_message);
+                    }
+                } else {
+                    self.status = Some(status_message);
                 }
             }
             Err(err) => {
@@ -1788,10 +1860,26 @@ impl App {
         }
     }
 
-    fn install_spinner_frame(&self) -> Option<&'static str> {
-        self.install_task
-            .as_ref()
-            .map(|task| INSTALL_SPINNER_FRAMES[task.spinner_index % INSTALL_SPINNER_FRAMES.len()])
+    fn font_task_kind(&self) -> Option<&FontTaskKind> {
+        self.install_task.as_ref().map(|task| &task.kind)
+    }
+
+    fn font_task_spinner_frame(&self) -> Option<&'static str> {
+        self.install_task.as_ref().map(|task| {
+            let frames = task.kind.spinner_frames();
+            frames[task.spinner_index % frames.len()]
+        })
+    }
+
+    fn font_task_button_style(&self) -> Option<Style> {
+        self.font_task_kind().map(FontTaskKind::progress_style)
+    }
+
+    fn is_selected_font_uninstall_in_progress(&self, font_path: &Path) -> bool {
+        matches!(
+            self.font_task_kind(),
+            Some(FontTaskKind::UninstallInstalled { path }) if path == font_path
+        )
     }
 
     fn install_in_progress(&self) -> bool {
@@ -1887,11 +1975,39 @@ fn build_and_install(
         Some(sample)
     };
 
-    Ok(InstallTaskOutput {
+    Ok(InstallTaskOutput::Install {
         summary,
         sample,
         installed_path: installed.install_path,
     })
+}
+
+fn uninstall_project_font_task(
+    manifest_path: PathBuf,
+    font_name: String,
+) -> Result<InstallTaskOutput> {
+    let result = uninstall_project_font(&manifest_path)?;
+    let status_message = match result.outcome {
+        crate::install::UninstallOutcome::Removed => format!("uninstalled {font_name}"),
+        crate::install::UninstallOutcome::AlreadyAbsent => {
+            format!("font already absent: {font_name}")
+        }
+    };
+    Ok(InstallTaskOutput::Uninstall { status_message })
+}
+
+fn uninstall_installed_font_task(
+    installed_ttf: PathBuf,
+    file_name: String,
+) -> Result<InstallTaskOutput> {
+    let result = uninstall_installed_font_file(&installed_ttf)?;
+    let status_message = match result.outcome {
+        crate::install::UninstallOutcome::Removed => format!("uninstalled {file_name}"),
+        crate::install::UninstallOutcome::AlreadyAbsent => {
+            format!("font already absent: {file_name}")
+        }
+    };
+    Ok(InstallTaskOutput::Uninstall { status_message })
 }
 
 fn clear_existing_build_dir(out_dir: &Path) -> Result<()> {
@@ -2241,7 +2357,7 @@ fn handle_key_event(app: &mut App, key: KeyEvent) -> Result<()> {
 
 fn trigger_build_action(app: &mut App) -> Result<()> {
     if app.install_in_progress() {
-        app.status = Some("install is in progress; wait for it to finish".to_string());
+        app.status = Some("font operation is in progress; wait for it to finish".to_string());
         return Ok(());
     }
     app.build_project()
@@ -2278,7 +2394,7 @@ fn trigger_home_tool_action(app: &mut App) -> Result<()> {
 
 fn trigger_install_action(app: &mut App) -> Result<()> {
     if app.current_project_is_installed() {
-        app.uninstall_active_project_font()
+        app.start_uninstall_active_project_font()
     } else {
         app.start_install_font();
         Ok(())
@@ -2286,7 +2402,7 @@ fn trigger_install_action(app: &mut App) -> Result<()> {
 }
 
 fn trigger_uninstall_action(app: &mut App) -> Result<()> {
-    app.uninstall_selected_installed_font()
+    app.start_uninstall_selected_installed_font()
 }
 
 fn draw_ui(frame: &mut Frame, app: &App) {
@@ -2454,11 +2570,15 @@ fn draw_ui(frame: &mut Frame, app: &App) {
         ));
     }
 
-    if let Some(spinner) = app.install_spinner_frame() {
+    if let (Some(spinner), Some(kind)) = (app.font_task_spinner_frame(), app.font_task_kind()) {
         footer_spans.push(Span::styled(" | ", Style::default().fg(muted)));
         footer_spans.push(Span::styled(
-            format!("{spinner} installing font..."),
-            Style::default().fg(Color::Yellow),
+            format!("{spinner} {}", kind.footer_label()),
+            if kind.is_uninstall() {
+                Style::default().fg(Color::LightRed)
+            } else {
+                Style::default().fg(Color::Yellow)
+            },
         ));
     }
 
