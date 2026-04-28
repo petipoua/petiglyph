@@ -38,6 +38,20 @@ fn make_temp_dir(name: &str) -> PathBuf {
     dir
 }
 
+fn wait_for_background_tasks(app: &mut App) {
+    let deadline = Instant::now() + Duration::from_secs(3);
+    while app.background_task_in_progress() && Instant::now() < deadline {
+        app.poll_background_tasks_for_test();
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    app.poll_background_tasks_for_test();
+    assert!(
+        !app.background_task_in_progress(),
+        "background tasks did not finish before timeout; status={:?}",
+        app.status
+    );
+}
+
 fn write_test_png(path: &Path) {
     let mut img = RgbaImage::from_pixel(8, 8, Rgba([255, 255, 255, 0]));
     img.put_pixel(2, 2, Rgba([0, 0, 0, 255]));
@@ -1337,6 +1351,11 @@ fn build_shortcut_rebuilds_and_clears_previous_outputs() {
     let mut app = App::new(manifest_path, config);
 
     handle_key(&mut app, KeyCode::Char('b')).expect("key handling should succeed");
+    assert!(
+        app.background_task_in_progress(),
+        "build should remain visible as a background task briefly"
+    );
+    wait_for_background_tasks(&mut app);
     let summary = app
         .last_build
         .as_ref()
@@ -1347,6 +1366,11 @@ fn build_shortcut_rebuilds_and_clears_previous_outputs() {
     fs::write(&stale_preview, b"stale").expect("stale preview is written");
 
     handle_key(&mut app, KeyCode::Char('b')).expect("rebuild shortcut should succeed");
+    assert!(
+        app.background_task_in_progress(),
+        "rebuild should remain visible as a background task briefly"
+    );
+    wait_for_background_tasks(&mut app);
     let rebuilt = app
         .last_build
         .as_ref()
@@ -1439,6 +1463,7 @@ fn tui_launch_overrides_persist_through_reload_and_build() {
     app.view = AppView::Welcome;
     app.welcome_focus = WelcomeFocus::BuildButton;
     handle_key(&mut app, KeyCode::Enter).expect("enter should run build action");
+    wait_for_background_tasks(&mut app);
     let summary = app
         .last_build
         .as_ref()
