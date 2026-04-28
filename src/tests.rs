@@ -339,6 +339,11 @@ fn unified_tui_multiple_projects_can_be_selected_from_home() {
     assert_eq!(app.welcome_focus, WelcomeFocus::BuildButton);
     handle_key(&mut app, KeyCode::Right).expect("right moves to install button");
     assert_eq!(app.welcome_focus, WelcomeFocus::InstallButton);
+    handle_key(&mut app, KeyCode::Down).expect("down moves to animate glyph button");
+    assert_eq!(app.welcome_focus, WelcomeFocus::ToolList);
+    assert_eq!(app.selected_home_tool, HomeToolAction::AnimateGlyph);
+    handle_key(&mut app, KeyCode::Up).expect("up returns to install button");
+    assert_eq!(app.welcome_focus, WelcomeFocus::InstallButton);
     handle_key(&mut app, KeyCode::Up).expect("up returns to create button");
     assert_eq!(app.welcome_focus, WelcomeFocus::CreateButton);
     handle_key(&mut app, KeyCode::Up).expect("up returns to project list");
@@ -352,16 +357,18 @@ fn unified_tui_multiple_projects_can_be_selected_from_home() {
     assert_eq!(app.welcome_focus, WelcomeFocus::CreateInput);
     handle_key(&mut app, KeyCode::Right).expect("right moves to create button");
     assert_eq!(app.welcome_focus, WelcomeFocus::CreateButton);
-    handle_key(&mut app, KeyCode::Right).expect("right moves to project tools");
-    assert_eq!(app.welcome_focus, WelcomeFocus::ToolList);
-    handle_key(&mut app, KeyCode::Left).expect("left returns to install button");
+    handle_key(&mut app, KeyCode::Down).expect("down moves to install button");
     assert_eq!(app.welcome_focus, WelcomeFocus::InstallButton);
-    handle_key(&mut app, KeyCode::Left).expect("left returns to build button");
+    handle_key(&mut app, KeyCode::Down).expect("down moves to animate glyph button");
+    assert_eq!(app.welcome_focus, WelcomeFocus::ToolList);
+    assert_eq!(app.selected_home_tool, HomeToolAction::AnimateGlyph);
+    handle_key(&mut app, KeyCode::Left).expect("left returns to compose grid button");
+    assert_eq!(app.welcome_focus, WelcomeFocus::ToolList);
+    assert_eq!(app.selected_home_tool, HomeToolAction::ComposeGrid);
+    handle_key(&mut app, KeyCode::Up).expect("up returns to build button");
     assert_eq!(app.welcome_focus, WelcomeFocus::BuildButton);
     handle_key(&mut app, KeyCode::Up).expect("up returns to create input");
     assert_eq!(app.welcome_focus, WelcomeFocus::CreateInput);
-    handle_key(&mut app, KeyCode::Right).expect("right returns to create button");
-    assert_eq!(app.welcome_focus, WelcomeFocus::CreateButton);
 
     fs::remove_dir_all(workspace).expect("temp workspace is removed");
 }
@@ -378,10 +385,16 @@ fn welcome_input_edit_mode_types_hjkl_without_navigation() {
 
     handle_key(&mut app, KeyCode::Char('l')).expect("welcome navigation moves to create button");
     assert_eq!(app.welcome_focus, WelcomeFocus::CreateButton);
-    handle_key(&mut app, KeyCode::Char('l')).expect("welcome navigation moves to tools");
+    handle_key(&mut app, KeyCode::Char('j')).expect("welcome navigation moves to install button");
+    assert_eq!(app.welcome_focus, WelcomeFocus::InstallButton);
+    handle_key(&mut app, KeyCode::Char('j')).expect("welcome navigation moves to tools");
     assert_eq!(app.welcome_focus, WelcomeFocus::ToolList);
     assert!(app.create_input.value().is_empty());
 
+    handle_key(&mut app, KeyCode::Up).expect("up arrow returns focus to install button");
+    assert_eq!(app.welcome_focus, WelcomeFocus::InstallButton);
+    handle_key(&mut app, KeyCode::Up).expect("up arrow returns focus to create button");
+    assert_eq!(app.welcome_focus, WelcomeFocus::CreateButton);
     handle_key(&mut app, KeyCode::Left).expect("left arrow returns focus to input");
     assert_eq!(app.welcome_focus, WelcomeFocus::CreateInput);
 
@@ -536,9 +549,9 @@ fn home_tool_list_runs_advanced_placeholder_action() {
     assert_eq!(app.welcome_focus, WelcomeFocus::CreateInput);
     assert_eq!(app.selected_home_tool, HomeToolAction::ComposeGrid);
 
-    handle_key(&mut app, KeyCode::Right).expect("right should move focus to create button");
-    assert_eq!(app.welcome_focus, WelcomeFocus::CreateButton);
-    handle_key(&mut app, KeyCode::Right).expect("right should move focus to tools");
+    handle_key(&mut app, KeyCode::Down).expect("down should move focus to build button");
+    assert_eq!(app.welcome_focus, WelcomeFocus::BuildButton);
+    handle_key(&mut app, KeyCode::Down).expect("down should move focus to tools");
     assert_eq!(app.welcome_focus, WelcomeFocus::ToolList);
 
     handle_key(&mut app, KeyCode::Enter).expect("enter on compose grid should succeed");

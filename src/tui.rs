@@ -208,23 +208,10 @@ impl HomeToolAction {
         Self::ALL[idx.saturating_sub(1)]
     }
 
-    fn label(self) -> &'static str {
-        match self {
-            Self::ComposeGrid => "Compose Grid...",
-            Self::AnimateGlyph => "Animate Glyph...",
-        }
-    }
-
     fn description(self) -> &'static str {
         match self {
             Self::ComposeGrid => "Planned: build combined glyphs from tiled source layouts.",
             Self::AnimateGlyph => "Planned: build frame-based animated glyph assets.",
-        }
-    }
-
-    fn section(self) -> &'static str {
-        match self {
-            Self::ComposeGrid | Self::AnimateGlyph => "Advanced Generators",
         }
     }
 }
@@ -634,10 +621,10 @@ fn handle_welcome_key(app: &mut App, key: KeyEvent) -> Result<()> {
                 WelcomeFocus::CreateButton => WelcomeFocus::CreateButton,
                 WelcomeFocus::BuildButton => WelcomeFocus::CreateInput,
                 WelcomeFocus::InstallButton => WelcomeFocus::CreateButton,
-                WelcomeFocus::ToolList => {
-                    app.selected_home_tool = app.selected_home_tool.prev();
-                    WelcomeFocus::ToolList
-                }
+                WelcomeFocus::ToolList => match app.selected_home_tool {
+                    HomeToolAction::ComposeGrid => WelcomeFocus::BuildButton,
+                    HomeToolAction::AnimateGlyph => WelcomeFocus::InstallButton,
+                },
                 other => other,
             };
         }
@@ -653,24 +640,22 @@ fn handle_welcome_key(app: &mut App, key: KeyEvent) -> Result<()> {
                 }
                 WelcomeFocus::CreateInput => WelcomeFocus::BuildButton,
                 WelcomeFocus::CreateButton => WelcomeFocus::InstallButton,
-                WelcomeFocus::BuildButton => WelcomeFocus::BuildButton,
-                WelcomeFocus::InstallButton => WelcomeFocus::InstallButton,
-                WelcomeFocus::ToolList => {
-                    app.selected_home_tool = app.selected_home_tool.next();
+                WelcomeFocus::BuildButton => {
+                    app.selected_home_tool = HomeToolAction::ComposeGrid;
                     WelcomeFocus::ToolList
                 }
+                WelcomeFocus::InstallButton => {
+                    app.selected_home_tool = HomeToolAction::AnimateGlyph;
+                    WelcomeFocus::ToolList
+                }
+                WelcomeFocus::ToolList => WelcomeFocus::ToolList,
             };
         }
         KeyCode::Left | KeyCode::Char('h') if !app.welcome_input_editing => {
             app.welcome_focus = match app.welcome_focus {
                 WelcomeFocus::ToolList => {
-                    if app.active_project.is_some() {
-                        WelcomeFocus::InstallButton
-                    } else if !app.projects.is_empty() {
-                        WelcomeFocus::CreateButton
-                    } else {
-                        WelcomeFocus::CreateInput
-                    }
+                    app.selected_home_tool = app.selected_home_tool.prev();
+                    WelcomeFocus::ToolList
                 }
                 WelcomeFocus::CreateButton => WelcomeFocus::CreateInput,
                 WelcomeFocus::InstallButton => WelcomeFocus::BuildButton,
@@ -681,9 +666,10 @@ fn handle_welcome_key(app: &mut App, key: KeyEvent) -> Result<()> {
             app.welcome_focus = match app.welcome_focus {
                 WelcomeFocus::CreateInput => WelcomeFocus::CreateButton,
                 WelcomeFocus::BuildButton => WelcomeFocus::InstallButton,
-                WelcomeFocus::ProjectList
-                | WelcomeFocus::CreateButton
-                | WelcomeFocus::InstallButton => WelcomeFocus::ToolList,
+                WelcomeFocus::ToolList => {
+                    app.selected_home_tool = app.selected_home_tool.next();
+                    WelcomeFocus::ToolList
+                }
                 other => other,
             };
         }
@@ -748,7 +734,7 @@ fn draw_welcome_view(
         .direction(Direction::Vertical)
         .constraints([
             Constraint::Length(26), // workspace + projects + current project
-            Constraint::Min(0),     // installed petiglyph fonts
+            Constraint::Min(0),     // installed petiglyph fonts + advanced tools
         ])
         .split(area);
 
@@ -982,6 +968,42 @@ fn draw_welcome_view(
         Span::raw(" "),
         Span::styled(install_label, install_button_style),
     ]));
+    projects_text.push(Line::from(""));
+
+    let compose_button_style = if app.active_project.is_none() {
+        disabled_button_style
+    } else if app.welcome_focus == WelcomeFocus::ToolList
+        && app.selected_home_tool == HomeToolAction::ComposeGrid
+    {
+        selected_button_style
+    } else {
+        idle_button_style
+    };
+    let animate_button_style = if app.active_project.is_none() {
+        disabled_button_style
+    } else if app.welcome_focus == WelcomeFocus::ToolList
+        && app.selected_home_tool == HomeToolAction::AnimateGlyph
+    {
+        selected_button_style
+    } else {
+        idle_button_style
+    };
+    let tools_hint = if app.active_project.is_some() {
+        app.selected_home_tool.description().to_string()
+    } else {
+        "Select or create a project to enable generators.".to_string()
+    };
+    projects_text.push(Line::from(vec![
+        Span::raw("  "),
+        Span::styled("Advanced: ", Style::default().fg(muted)),
+        Span::styled(" Compose Grid ", compose_button_style),
+        Span::raw(" "),
+        Span::styled(" Animate Glyph ", animate_button_style),
+    ]));
+    projects_text.push(Line::from(vec![
+        Span::raw("  "),
+        Span::styled(tools_hint, Style::default().fg(muted)),
+    ]));
 
     frame.render_widget(
         Paragraph::new(projects_text)
@@ -1003,15 +1025,6 @@ fn draw_welcome_view(
     let missing_style = Style::default().fg(Color::Red);
     let tools_active = app.active_project.is_some();
     let section_style = Style::default().fg(muted);
-    let selected_style = Style::default()
-        .fg(Color::Black)
-        .bg(accent)
-        .add_modifier(Modifier::BOLD);
-    let idle_style = if tools_active {
-        Style::default().fg(Color::White)
-    } else {
-        Style::default().fg(Color::DarkGray)
-    };
     let hint_style = if tools_active {
         Style::default().fg(muted)
     } else {
@@ -1078,45 +1091,7 @@ fn draw_welcome_view(
             Span::styled("Install: ", Style::default().fg(muted)),
             installed_status,
         ]),
-        Line::from(""),
-        Line::from(vec![
-            Span::raw("  "),
-            Span::styled("Advanced Tools", section_style.add_modifier(Modifier::BOLD)),
-        ]),
     ];
-
-    let mut last_section = "";
-    for action in HomeToolAction::ALL {
-        if action.section() != last_section {
-            current_project_lines.push(Line::from(vec![
-                Span::raw("    "),
-                Span::styled(action.section(), section_style),
-            ]));
-            last_section = action.section();
-        }
-
-        let is_selected =
-            app.welcome_focus == WelcomeFocus::ToolList && app.selected_home_tool == action;
-        let marker = if is_selected { ">" } else { " " };
-        let row_style = if is_selected {
-            selected_style
-        } else {
-            idle_style
-        };
-        current_project_lines.push(Line::from(vec![
-            Span::styled(format!("   {marker} "), row_style),
-            Span::styled(action.label(), row_style),
-        ]));
-    }
-
-    current_project_lines.push(Line::from(""));
-    current_project_lines.push(Line::from(vec![
-        Span::raw("    "),
-        Span::styled(
-            app.selected_home_tool.description(),
-            Style::default().fg(muted),
-        ),
-    ]));
     current_project_lines.push(Line::from(""));
     current_project_lines.push(Line::from(vec![
         Span::raw("  "),
@@ -1191,6 +1166,7 @@ fn draw_welcome_view(
             ),
         ]));
     } else {
+        let sample_wrap_width = usize::from(body[1].width.saturating_sub(8).max(16));
         for font in &app.installed_fonts {
             let sample = if font.sample.is_empty() {
                 "[sample unavailable]".to_string()
@@ -1217,7 +1193,7 @@ fn draw_welcome_view(
                 Span::raw("    "),
                 Span::styled("sample:", Style::default().fg(muted)),
             ]));
-            for line in wrap_sample_for_display(&sample, 48) {
+            for line in wrap_sample_for_display(&sample, sample_wrap_width) {
                 fonts_text.push(Line::from(vec![
                     Span::raw("    "),
                     Span::styled(
