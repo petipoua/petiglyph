@@ -273,9 +273,7 @@ impl TerminalSession {
         );
         let keyboard_enhancements_enabled = stdout
             .execute(PushKeyboardEnhancementFlags(
-                KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES
-                    | KeyboardEnhancementFlags::REPORT_EVENT_TYPES
-                    | KeyboardEnhancementFlags::REPORT_ALL_KEYS_AS_ESCAPE_CODES,
+                requested_keyboard_enhancement_flags(),
             ))
             .is_ok();
         tui_debug_log(
@@ -419,6 +417,10 @@ pub(crate) fn sample_glyphs_from_ttf_bytes(bytes: &[u8], limit: usize) -> Option
     } else {
         Some((sample, truncated))
     }
+}
+
+pub(crate) fn requested_keyboard_enhancement_flags() -> KeyboardEnhancementFlags {
+    KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES
 }
 
 fn is_valid_project_name_char(ch: char) -> bool {

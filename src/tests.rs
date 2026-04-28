@@ -1,4 +1,6 @@
-use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyEventState, KeyModifiers};
+use crossterm::event::{
+    KeyCode, KeyEvent, KeyEventKind, KeyEventState, KeyModifiers, KeyboardEnhancementFlags,
+};
 use image::{Rgba, RgbaImage};
 use std::collections::BTreeMap;
 use std::fs;
@@ -20,8 +22,9 @@ use crate::project::{
 use crate::tui::{
     App, AppView, FontAction, InteractiveGlyph, TuiLaunchOverrides, WelcomeFocus,
     format_welcome_hint, format_welcome_input_field, handle_key, handle_key_event_for_test,
-    persist_threshold_override, resolve_installed_font_path_with, sample_glyphs_from_ttf_bytes,
-    should_dispatch_key_kind, spaced_sample, switch_notice_visible, wrap_sample_for_display,
+    persist_threshold_override, requested_keyboard_enhancement_flags,
+    resolve_installed_font_path_with, sample_glyphs_from_ttf_bytes, should_dispatch_key_kind,
+    spaced_sample, switch_notice_visible, wrap_sample_for_display,
 };
 
 fn make_temp_dir(name: &str) -> PathBuf {
@@ -956,6 +959,22 @@ fn dispatches_press_and_repeat_key_kinds() {
     assert!(should_dispatch_key_kind(KeyEventKind::Press));
     assert!(should_dispatch_key_kind(KeyEventKind::Repeat));
     assert!(!should_dispatch_key_kind(KeyEventKind::Release));
+}
+
+#[test]
+fn tui_requests_only_escape_disambiguation_keyboard_enhancement() {
+    assert_eq!(
+        requested_keyboard_enhancement_flags(),
+        KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES
+    );
+    assert!(
+        !requested_keyboard_enhancement_flags()
+            .contains(KeyboardEnhancementFlags::REPORT_EVENT_TYPES)
+    );
+    assert!(
+        !requested_keyboard_enhancement_flags()
+            .contains(KeyboardEnhancementFlags::REPORT_ALL_KEYS_AS_ESCAPE_CODES)
+    );
 }
 
 #[test]
