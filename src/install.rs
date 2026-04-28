@@ -210,6 +210,68 @@ fn metadata_path_for_font(install_dir: &Path, font_name: &str) -> PathBuf {
     install_dir.join(metadata_file_name(font_name))
 }
 
+fn metadata_matches_installed_ttf(
+    metadata: &InstalledFontMetadata,
+    installed_ttf: &Path,
+    installed_ttf_canonical: Option<&Path>,
+) -> bool {
+    let metadata_path = Path::new(&metadata.installed_ttf);
+    if metadata_path == installed_ttf {
+        return true;
+    }
+
+    let Some(installed_ttf_canonical) = installed_ttf_canonical else {
+        return false;
+    };
+
+    metadata_path
+        .canonicalize()
+        .ok()
+        .as_deref()
+        .is_some_and(|path| path == installed_ttf_canonical)
+}
+
+fn matching_metadata_paths_for_installed_ttf(
+    install_dir: &Path,
+    installed_ttf: &Path,
+) -> Result<Vec<PathBuf>> {
+    let installed_ttf_canonical = installed_ttf.canonicalize().ok();
+    let mut matches = Vec::new();
+
+    for entry in fs::read_dir(install_dir)
+        .with_context(|| format!("failed to read {}", install_dir.display()))?
+    {
+        let entry =
+            entry.with_context(|| format!("failed to read entry in {}", install_dir.display()))?;
+        let path = entry.path();
+        let file_name = path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or("");
+        let is_metadata = file_name.starts_with(INSTALL_METADATA_PREFIX)
+            && file_name.ends_with(INSTALL_METADATA_SUFFIX);
+        if !path.is_file() || !is_metadata {
+            continue;
+        }
+
+        let Ok(raw) = fs::read_to_string(&path) else {
+            continue;
+        };
+        let Ok(metadata) = serde_json::from_str::<InstalledFontMetadata>(&raw) else {
+            continue;
+        };
+        if metadata_matches_installed_ttf(
+            &metadata,
+            installed_ttf,
+            installed_ttf_canonical.as_deref(),
+        ) {
+            matches.push(path);
+        }
+    }
+
+    Ok(matches)
+}
+
 pub(crate) fn install_built_font(
     manifest_path: &Path,
     font_name: &str,
@@ -316,6 +378,86 @@ pub(crate) fn uninstall_project_font(manifest_path: &Path) -> Result<FontUninsta
         }
 
         let metadata_path = metadata_path_for_font(&install_dir, name);
+        if metadata_path.is_file() {
+            fs::remove_file(&metadata_path)
+                .with_context(|| format!("failed to remove {}", metadata_path.display()))?;
+        } else if metadata_path.exists() {
+            bail!(
+                "blocked uninstall for {}: expected file but found non-file at {}",
+                install_dir.display(),
+                metadata_path.display()
+            );
+        }
+    }
+
+    let outcome = if removed_ttf_count == 0 {
+        UninstallOutcome::AlreadyAbsent
+    } else {
+        refresh_font_cache(&font_root, platform)?;
+        UninstallOutcome::Removed
+    };
+
+    if fs::read_dir(&install_dir)
+        .with_context(|| format!("failed to read {}", install_dir.display()))?
+        .next()
+        .is_none()
+    {
+        fs::remove_dir(&install_dir)
+            .with_context(|| format!("failed to remove {}", install_dir.display()))?;
+    }
+
+    Ok(FontUninstallResult {
+        platform,
+        install_dir,
+        outcome,
+        removed_ttf_count,
+    })
+}
+
+pub(crate) fn uninstall_installed_font_file(installed_ttf: &Path) -> Result<FontUninstallResult> {
+    let platform = current_platform()?;
+    let font_root = user_font_root()?;
+    let install_dir = install_dir_for_project(&font_root);
+
+    if !install_dir.exists() {
+        return Ok(FontUninstallResult {
+            platform,
+            install_dir,
+            outcome: UninstallOutcome::AlreadyAbsent,
+            removed_ttf_count: 0,
+        });
+    }
+
+    if installed_ttf.exists() && !installed_ttf.is_file() {
+        bail!(
+            "blocked uninstall for {}: expected file but found non-file at {}",
+            install_dir.display(),
+            installed_ttf.display()
+        );
+    }
+
+    let install_dir_canonical = install_dir
+        .canonicalize()
+        .with_context(|| format!("failed to resolve {}", install_dir.display()))?;
+    if let Ok(installed_ttf_canonical) = installed_ttf.canonicalize()
+        && !installed_ttf_canonical.starts_with(&install_dir_canonical)
+    {
+        bail!(
+            "blocked uninstall outside {}: {}",
+            install_dir.display(),
+            installed_ttf.display()
+        );
+    }
+
+    let metadata_paths = matching_metadata_paths_for_installed_ttf(&install_dir, installed_ttf)?;
+    let mut removed_ttf_count = 0usize;
+    if installed_ttf.is_file() {
+        fs::remove_file(installed_ttf)
+            .with_context(|| format!("failed to remove {}", installed_ttf.display()))?;
+        removed_ttf_count = 1;
+    }
+
+    for metadata_path in metadata_paths {
         if metadata_path.is_file() {
             fs::remove_file(&metadata_path)
                 .with_context(|| format!("failed to remove {}", metadata_path.display()))?;

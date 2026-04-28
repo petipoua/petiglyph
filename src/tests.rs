@@ -20,11 +20,12 @@ use crate::project::{
     load_runtime_config, parse_codepoint, read_manifest, write_manifest,
 };
 use crate::tui::{
-    App, AppView, HomeToolAction, InteractiveGlyph, TuiLaunchOverrides, WelcomeFocus,
-    format_welcome_hint, format_welcome_input_field, handle_key, handle_key_event_for_test,
-    persist_threshold_override, render_ui_for_test, requested_keyboard_enhancement_flags,
-    resolve_installed_font_path_with, sample_glyphs_from_ttf_bytes, should_dispatch_key_kind,
-    spaced_sample, switch_notice_visible, wrap_sample_for_display,
+    App, AppView, HomeToolAction, InstalledFontSample, InteractiveGlyph, TuiLaunchOverrides,
+    WelcomeFocus, build_action_name, format_welcome_hint, format_welcome_input_field, handle_key,
+    handle_key_event_for_test, install_action_name, persist_threshold_override, render_ui_for_test,
+    requested_keyboard_enhancement_flags, resolve_installed_font_path_with,
+    sample_glyphs_from_ttf_bytes, should_dispatch_key_kind, spaced_sample, switch_notice_visible,
+    wrap_sample_for_display,
 };
 
 fn make_temp_dir(name: &str) -> PathBuf {
@@ -335,38 +336,49 @@ fn unified_tui_multiple_projects_can_be_selected_from_home() {
 
     handle_key(&mut app, KeyCode::Down).expect("down leaves project list after last project");
     assert_eq!(app.welcome_focus, WelcomeFocus::CreateInput);
-    handle_key(&mut app, KeyCode::Down).expect("down moves to build button");
-    assert_eq!(app.welcome_focus, WelcomeFocus::BuildButton);
-    handle_key(&mut app, KeyCode::Right).expect("right moves to install button");
-    assert_eq!(app.welcome_focus, WelcomeFocus::InstallButton);
-    handle_key(&mut app, KeyCode::Down).expect("down moves to animate glyph button");
+    handle_key(&mut app, KeyCode::Down).expect("down moves to compose grid button");
+    assert_eq!(app.welcome_focus, WelcomeFocus::ToolList);
+    assert_eq!(app.selected_home_tool, HomeToolAction::ComposeGrid);
+    handle_key(&mut app, KeyCode::Right).expect("right moves to animate glyph button");
     assert_eq!(app.welcome_focus, WelcomeFocus::ToolList);
     assert_eq!(app.selected_home_tool, HomeToolAction::AnimateGlyph);
-    handle_key(&mut app, KeyCode::Up).expect("up returns to install button");
+    handle_key(&mut app, KeyCode::Right).expect("right moves to build button");
+    assert_eq!(app.welcome_focus, WelcomeFocus::BuildButton);
+    handle_key(&mut app, KeyCode::Right).expect("right moves to install button");
     assert_eq!(app.welcome_focus, WelcomeFocus::InstallButton);
     handle_key(&mut app, KeyCode::Up).expect("up returns to create button");
     assert_eq!(app.welcome_focus, WelcomeFocus::CreateButton);
     handle_key(&mut app, KeyCode::Up).expect("up returns to project list");
     assert_eq!(app.welcome_focus, WelcomeFocus::ProjectList);
     assert_eq!(app.selected_project, 1);
-    handle_key(&mut app, KeyCode::Down).expect("down returns to create input");
+    handle_key(&mut app, KeyCode::Right).expect("right jumps from project list to build");
+    assert_eq!(app.welcome_focus, WelcomeFocus::BuildButton);
+    handle_key(&mut app, KeyCode::Up).expect("up returns to create input");
     assert_eq!(app.welcome_focus, WelcomeFocus::CreateInput);
     handle_key(&mut app, KeyCode::Right).expect("right returns to create button");
+    assert_eq!(app.welcome_focus, WelcomeFocus::CreateButton);
+    handle_key(&mut app, KeyCode::Right).expect("right jumps from create button to build");
+    assert_eq!(app.welcome_focus, WelcomeFocus::BuildButton);
+    handle_key(&mut app, KeyCode::Left).expect("left returns to animate glyph button");
+    assert_eq!(app.welcome_focus, WelcomeFocus::ToolList);
+    assert_eq!(app.selected_home_tool, HomeToolAction::AnimateGlyph);
+    handle_key(&mut app, KeyCode::Up).expect("up returns to create button");
     assert_eq!(app.welcome_focus, WelcomeFocus::CreateButton);
     handle_key(&mut app, KeyCode::Left).expect("left returns to create input");
     assert_eq!(app.welcome_focus, WelcomeFocus::CreateInput);
     handle_key(&mut app, KeyCode::Right).expect("right moves to create button");
     assert_eq!(app.welcome_focus, WelcomeFocus::CreateButton);
-    handle_key(&mut app, KeyCode::Down).expect("down moves to install button");
-    assert_eq!(app.welcome_focus, WelcomeFocus::InstallButton);
     handle_key(&mut app, KeyCode::Down).expect("down moves to animate glyph button");
+    assert_eq!(app.welcome_focus, WelcomeFocus::ToolList);
+    assert_eq!(app.selected_home_tool, HomeToolAction::AnimateGlyph);
+    handle_key(&mut app, KeyCode::Right).expect("right moves to build button");
+    assert_eq!(app.welcome_focus, WelcomeFocus::BuildButton);
+    handle_key(&mut app, KeyCode::Left).expect("left returns to animate glyph button");
     assert_eq!(app.welcome_focus, WelcomeFocus::ToolList);
     assert_eq!(app.selected_home_tool, HomeToolAction::AnimateGlyph);
     handle_key(&mut app, KeyCode::Left).expect("left returns to compose grid button");
     assert_eq!(app.welcome_focus, WelcomeFocus::ToolList);
     assert_eq!(app.selected_home_tool, HomeToolAction::ComposeGrid);
-    handle_key(&mut app, KeyCode::Up).expect("up returns to build button");
-    assert_eq!(app.welcome_focus, WelcomeFocus::BuildButton);
     handle_key(&mut app, KeyCode::Up).expect("up returns to create input");
     assert_eq!(app.welcome_focus, WelcomeFocus::CreateInput);
 
@@ -378,6 +390,8 @@ fn welcome_input_edit_mode_types_hjkl_without_navigation() {
     let workspace = make_temp_dir("welcome-input-edit-mode");
     let mut app = App::new_workspace(workspace.clone(), None, TuiLaunchOverrides::default())
         .expect("workspace TUI app initializes");
+    app.installed_fonts.clear();
+    app.selected_installed_font = 0;
 
     assert_eq!(app.view, AppView::Welcome);
     assert_eq!(app.welcome_focus, WelcomeFocus::CreateInput);
@@ -385,14 +399,13 @@ fn welcome_input_edit_mode_types_hjkl_without_navigation() {
 
     handle_key(&mut app, KeyCode::Char('l')).expect("welcome navigation moves to create button");
     assert_eq!(app.welcome_focus, WelcomeFocus::CreateButton);
-    handle_key(&mut app, KeyCode::Char('j')).expect("welcome navigation moves to install button");
-    assert_eq!(app.welcome_focus, WelcomeFocus::InstallButton);
+    handle_key(&mut app, KeyCode::Char('j')).expect("welcome navigation moves to tools");
+    assert_eq!(app.welcome_focus, WelcomeFocus::ToolList);
+    assert_eq!(app.selected_home_tool, HomeToolAction::AnimateGlyph);
     handle_key(&mut app, KeyCode::Char('j')).expect("welcome navigation moves to tools");
     assert_eq!(app.welcome_focus, WelcomeFocus::ToolList);
     assert!(app.create_input.value().is_empty());
 
-    handle_key(&mut app, KeyCode::Up).expect("up arrow returns focus to install button");
-    assert_eq!(app.welcome_focus, WelcomeFocus::InstallButton);
     handle_key(&mut app, KeyCode::Up).expect("up arrow returns focus to create button");
     assert_eq!(app.welcome_focus, WelcomeFocus::CreateButton);
     handle_key(&mut app, KeyCode::Left).expect("left arrow returns focus to input");
@@ -504,25 +517,46 @@ fn welcome_input_field_keeps_fixed_width_in_all_focus_states() {
 
 #[test]
 fn welcome_hint_keeps_fixed_width_across_focus_states() {
-    let input_hint = format_welcome_hint(WelcomeFocus::CreateInput, false);
-    let typing_hint = format_welcome_hint(WelcomeFocus::CreateInput, true);
-    let button_hint = format_welcome_hint(WelcomeFocus::CreateButton, false);
-    let build_hint = format_welcome_hint(WelcomeFocus::BuildButton, false);
-    let install_hint = format_welcome_hint(WelcomeFocus::InstallButton, false);
-    let list_hint = format_welcome_hint(WelcomeFocus::ProjectList, false);
-    let tool_hint = format_welcome_hint(WelcomeFocus::ToolList, false);
+    let input_hint = format_welcome_hint(WelcomeFocus::CreateInput, false, false, false);
+    let typing_hint = format_welcome_hint(WelcomeFocus::CreateInput, true, false, false);
+    let button_hint = format_welcome_hint(WelcomeFocus::CreateButton, false, false, false);
+    let build_hint = format_welcome_hint(WelcomeFocus::BuildButton, false, false, false);
+    let rebuild_hint = format_welcome_hint(WelcomeFocus::BuildButton, false, true, false);
+    let install_hint = format_welcome_hint(WelcomeFocus::InstallButton, false, false, false);
+    let uninstall_project_hint =
+        format_welcome_hint(WelcomeFocus::InstallButton, false, false, true);
+    let uninstall_hint = format_welcome_hint(WelcomeFocus::InstalledFontList, false, false, false);
+    let list_hint = format_welcome_hint(WelcomeFocus::ProjectList, false, false, false);
+    let tool_hint = format_welcome_hint(WelcomeFocus::ToolList, false, false, false);
 
     assert_eq!(input_hint.chars().count(), typing_hint.chars().count());
     assert_eq!(input_hint.chars().count(), button_hint.chars().count());
     assert_eq!(input_hint.chars().count(), build_hint.chars().count());
+    assert_eq!(input_hint.chars().count(), rebuild_hint.chars().count());
     assert_eq!(input_hint.chars().count(), install_hint.chars().count());
+    assert_eq!(
+        input_hint.chars().count(),
+        uninstall_project_hint.chars().count()
+    );
+    assert_eq!(input_hint.chars().count(), uninstall_hint.chars().count());
     assert_eq!(input_hint.chars().count(), list_hint.chars().count());
     assert_eq!(input_hint.chars().count(), tool_hint.chars().count());
     assert!(input_hint.contains("press Enter to type"));
     assert!(button_hint.contains("press Enter to create"));
     assert!(build_hint.contains("press Enter to build"));
+    assert!(rebuild_hint.contains("press Enter to rebuild"));
     assert!(install_hint.contains("press Enter to install"));
+    assert!(uninstall_project_hint.contains("press Enter to uninstall"));
+    assert!(uninstall_hint.contains("press Enter to uninstall"));
     assert!(tool_hint.contains("press Enter to run"));
+}
+
+#[test]
+fn project_action_labels_switch_with_current_project_state() {
+    assert_eq!(build_action_name(false), "Build");
+    assert_eq!(build_action_name(true), "Rebuild");
+    assert_eq!(install_action_name(false), "Install Font");
+    assert_eq!(install_action_name(true), "Uninstall Font");
 }
 
 #[test]
@@ -549,8 +583,6 @@ fn home_tool_list_runs_advanced_placeholder_action() {
     assert_eq!(app.welcome_focus, WelcomeFocus::CreateInput);
     assert_eq!(app.selected_home_tool, HomeToolAction::ComposeGrid);
 
-    handle_key(&mut app, KeyCode::Down).expect("down should move focus to build button");
-    assert_eq!(app.welcome_focus, WelcomeFocus::BuildButton);
     handle_key(&mut app, KeyCode::Down).expect("down should move focus to tools");
     assert_eq!(app.welcome_focus, WelcomeFocus::ToolList);
 
@@ -561,6 +593,61 @@ fn home_tool_list_runs_advanced_placeholder_action() {
             .is_some_and(|status| status.contains("Compose Grid is planned"))
     );
     assert_eq!(app.view, AppView::Welcome);
+
+    fs::remove_dir_all(project_dir).expect("temp project dir is removed");
+}
+
+#[test]
+fn home_installed_font_buttons_can_be_navigated() {
+    let project_dir = make_temp_dir("home-installed-font-nav");
+    let manifest_path = project_dir.join("petiglyph.toml");
+    write_manifest(&manifest_path, &Manifest::default()).expect("manifest is written");
+
+    let icons_dir = project_dir.join("icons");
+    fs::create_dir_all(&icons_dir).expect("icons dir is created");
+    write_test_png(&icons_dir.join("icon.png"));
+
+    let config = RuntimeConfig {
+        input_dir: icons_dir,
+        out_dir: project_dir.join("build"),
+        font_name: "Petiglyph".to_string(),
+        glyph_size: 8,
+        base_threshold: 64,
+        threshold_overrides: BTreeMap::new(),
+        codepoint_start: 0x10_0000,
+    };
+
+    let mut app = App::new(manifest_path, config);
+    app.installed_fonts = vec![
+        InstalledFontSample {
+            file_name: "alpha.ttf".to_string(),
+            path: PathBuf::from("/tmp/alpha.ttf"),
+            sample: "AB".to_string(),
+            truncated: false,
+        },
+        InstalledFontSample {
+            file_name: "beta.ttf".to_string(),
+            path: PathBuf::from("/tmp/beta.ttf"),
+            sample: "CD".to_string(),
+            truncated: false,
+        },
+    ];
+
+    app.welcome_focus = WelcomeFocus::BuildButton;
+    handle_key(&mut app, KeyCode::Down).expect("down should move to installed fonts");
+    assert_eq!(app.welcome_focus, WelcomeFocus::InstalledFontList);
+    assert_eq!(app.selected_installed_font, 0);
+
+    handle_key(&mut app, KeyCode::Down).expect("down should move to next installed font");
+    assert_eq!(app.welcome_focus, WelcomeFocus::InstalledFontList);
+    assert_eq!(app.selected_installed_font, 1);
+
+    handle_key(&mut app, KeyCode::Up).expect("up should move to previous installed font");
+    assert_eq!(app.welcome_focus, WelcomeFocus::InstalledFontList);
+    assert_eq!(app.selected_installed_font, 0);
+
+    handle_key(&mut app, KeyCode::Up).expect("up from first installed font returns to build");
+    assert_eq!(app.welcome_focus, WelcomeFocus::BuildButton);
 
     fs::remove_dir_all(project_dir).expect("temp project dir is removed");
 }
@@ -1237,7 +1324,7 @@ fn handle_key_w_is_not_a_navigation_path() {
 }
 
 #[test]
-fn build_shortcut_runs_from_home() {
+fn build_shortcut_rebuilds_and_clears_previous_outputs() {
     let project_dir = make_temp_dir("font-action-buttons");
     let manifest_path = project_dir.join("petiglyph.toml");
     write_manifest(&manifest_path, &Manifest::default()).expect("manifest is written");
@@ -1265,6 +1352,33 @@ fn build_shortcut_runs_from_home() {
         .expect("build shortcut should build");
     assert!(summary.ttf_path.is_file(), "ttf output should exist");
     assert!(summary.bdf_path.is_file(), "bdf output should exist");
+    let stale_preview = summary.previews_dir.join("stale.png");
+    fs::write(&stale_preview, b"stale").expect("stale preview is written");
+
+    handle_key(&mut app, KeyCode::Char('b')).expect("rebuild shortcut should succeed");
+    let rebuilt = app
+        .last_build
+        .as_ref()
+        .expect("rebuild should refresh build state");
+    assert!(
+        rebuilt.ttf_path.is_file(),
+        "rebuilt ttf output should exist"
+    );
+    assert!(
+        rebuilt.bdf_path.is_file(),
+        "rebuilt bdf output should exist"
+    );
+    assert!(
+        !stale_preview.exists(),
+        "rebuild should clear stale files from the previous build output"
+    );
+    assert!(
+        app.status
+            .as_deref()
+            .is_some_and(|status| status.contains("rebuild complete")),
+        "status should reflect rebuild, got {:?}",
+        app.status
+    );
     assert_eq!(app.view, AppView::Welcome);
 
     fs::remove_dir_all(project_dir).expect("temp project dir is removed");

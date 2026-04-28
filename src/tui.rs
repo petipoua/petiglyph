@@ -34,7 +34,7 @@ use crate::build::{
 };
 use crate::install::{
     FontInstallNameMode, expected_install_ttf_path_for_mode, install_built_font,
-    install_dir_for_manifest,
+    install_dir_for_manifest, uninstall_installed_font_file, uninstall_project_font,
 };
 use crate::project::{
     RuntimeConfig, create_project_in_dir, discover_project_manifests, load_runtime_config,
@@ -71,10 +71,10 @@ pub(crate) struct WelcomeProject {
 
 #[derive(Debug, Clone)]
 pub(crate) struct InstalledFontSample {
-    file_name: String,
-    path: PathBuf,
-    sample: String,
-    truncated: bool,
+    pub(crate) file_name: String,
+    pub(crate) path: PathBuf,
+    pub(crate) sample: String,
+    pub(crate) truncated: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -85,6 +85,7 @@ pub(crate) enum WelcomeFocus {
     BuildButton,
     InstallButton,
     ToolList,
+    InstalledFontList,
 }
 
 #[derive(Debug, Clone)]
@@ -190,24 +191,6 @@ pub(crate) enum HomeToolAction {
 }
 
 impl HomeToolAction {
-    const ALL: [Self; 2] = [Self::ComposeGrid, Self::AnimateGlyph];
-
-    fn next(self) -> Self {
-        let idx = Self::ALL
-            .iter()
-            .position(|action| *action == self)
-            .unwrap_or(0);
-        Self::ALL[(idx + 1).min(Self::ALL.len() - 1)]
-    }
-
-    fn prev(self) -> Self {
-        let idx = Self::ALL
-            .iter()
-            .position(|action| *action == self)
-            .unwrap_or(0);
-        Self::ALL[idx.saturating_sub(1)]
-    }
-
     fn description(self) -> &'static str {
         match self {
             Self::ComposeGrid => "Planned: build combined glyphs from tiled source layouts.",
@@ -227,7 +210,8 @@ pub(crate) struct App {
     pub(crate) create_input: Input,
     pub(crate) welcome_focus: WelcomeFocus,
     pub(crate) welcome_input_editing: bool,
-    installed_fonts: Vec<InstalledFontSample>,
+    pub(crate) installed_fonts: Vec<InstalledFontSample>,
+    pub(crate) selected_installed_font: usize,
     pub(crate) switch_notice: Option<ProjectSwitchNotice>,
     pub(crate) selected_home_tool: HomeToolAction,
     pub(crate) selected: usize,
@@ -475,18 +459,53 @@ pub(crate) fn format_welcome_input_field(value: &str, focused: bool, width: usiz
 }
 
 #[cfg(test)]
-pub(crate) fn format_welcome_hint(focus: WelcomeFocus, editing: bool) -> String {
-    format_welcome_hint_for_display(focus, editing)
+pub(crate) fn format_welcome_hint(
+    focus: WelcomeFocus,
+    editing: bool,
+    project_is_built: bool,
+    project_is_installed: bool,
+) -> String {
+    format_welcome_hint_for_display(focus, editing, project_is_built, project_is_installed)
 }
 
-fn format_welcome_hint_for_display(focus: WelcomeFocus, editing: bool) -> String {
+pub(crate) fn build_action_name(project_is_built: bool) -> &'static str {
+    if project_is_built { "Rebuild" } else { "Build" }
+}
+
+pub(crate) fn install_action_name(project_is_installed: bool) -> &'static str {
+    if project_is_installed {
+        "Uninstall Font"
+    } else {
+        "Install Font"
+    }
+}
+
+fn format_welcome_hint_for_display(
+    focus: WelcomeFocus,
+    editing: bool,
+    project_is_built: bool,
+    project_is_installed: bool,
+) -> String {
     let hint = match (focus, editing) {
         (WelcomeFocus::CreateInput, true) => "typing (Enter/Esc to stop)",
         (WelcomeFocus::CreateInput, false) => "press Enter to type",
         (WelcomeFocus::CreateButton, _) => "press Enter to create",
-        (WelcomeFocus::BuildButton, _) => "press Enter to build",
-        (WelcomeFocus::InstallButton, _) => "press Enter to install",
+        (WelcomeFocus::BuildButton, _) => {
+            if project_is_built {
+                "press Enter to rebuild"
+            } else {
+                "press Enter to build"
+            }
+        }
+        (WelcomeFocus::InstallButton, _) => {
+            if project_is_installed {
+                "press Enter to uninstall"
+            } else {
+                "press Enter to install"
+            }
+        }
         (WelcomeFocus::ToolList, _) => "press Enter to run",
+        (WelcomeFocus::InstalledFontList, _) => "press Enter to uninstall",
         (WelcomeFocus::ProjectList, _) => "",
     };
 
@@ -602,7 +621,7 @@ fn handle_welcome_key(app: &mut App, key: KeyEvent) -> Result<()> {
             trigger_build_action(app)?;
         }
         KeyCode::Char('i') if !app.welcome_input_editing => {
-            trigger_install_action(app);
+            trigger_install_action(app)?;
         }
         KeyCode::Up | KeyCode::Char('k') if !app.welcome_input_editing => {
             app.welcome_focus = match app.welcome_focus {
@@ -618,14 +637,26 @@ fn handle_welcome_key(app: &mut App, key: KeyEvent) -> Result<()> {
                     app.selected_project = app.projects.len() - 1;
                     WelcomeFocus::ProjectList
                 }
+                WelcomeFocus::CreateInput => WelcomeFocus::CreateInput,
                 WelcomeFocus::CreateButton => WelcomeFocus::CreateButton,
                 WelcomeFocus::BuildButton => WelcomeFocus::CreateInput,
                 WelcomeFocus::InstallButton => WelcomeFocus::CreateButton,
                 WelcomeFocus::ToolList => match app.selected_home_tool {
-                    HomeToolAction::ComposeGrid => WelcomeFocus::BuildButton,
-                    HomeToolAction::AnimateGlyph => WelcomeFocus::InstallButton,
+                    HomeToolAction::ComposeGrid => WelcomeFocus::CreateInput,
+                    HomeToolAction::AnimateGlyph => WelcomeFocus::CreateButton,
                 },
-                other => other,
+                WelcomeFocus::InstalledFontList => {
+                    if app.selected_installed_font > 0 {
+                        app.selected_installed_font -= 1;
+                        WelcomeFocus::InstalledFontList
+                    } else if app.active_project.is_some() {
+                        WelcomeFocus::BuildButton
+                    } else if !app.projects.is_empty() {
+                        WelcomeFocus::ProjectList
+                    } else {
+                        WelcomeFocus::CreateInput
+                    }
+                }
             };
         }
         KeyCode::Down | KeyCode::Char('j') if !app.welcome_input_editing => {
@@ -638,38 +669,76 @@ fn handle_welcome_key(app: &mut App, key: KeyEvent) -> Result<()> {
                         WelcomeFocus::CreateInput
                     }
                 }
-                WelcomeFocus::CreateInput => WelcomeFocus::BuildButton,
-                WelcomeFocus::CreateButton => WelcomeFocus::InstallButton,
-                WelcomeFocus::BuildButton => {
+                WelcomeFocus::CreateInput => {
                     app.selected_home_tool = HomeToolAction::ComposeGrid;
                     WelcomeFocus::ToolList
                 }
-                WelcomeFocus::InstallButton => {
+                WelcomeFocus::CreateButton => {
                     app.selected_home_tool = HomeToolAction::AnimateGlyph;
                     WelcomeFocus::ToolList
                 }
-                WelcomeFocus::ToolList => WelcomeFocus::ToolList,
+                WelcomeFocus::BuildButton => {
+                    if app.installed_fonts.is_empty() {
+                        WelcomeFocus::BuildButton
+                    } else {
+                        WelcomeFocus::InstalledFontList
+                    }
+                }
+                WelcomeFocus::InstallButton => {
+                    if app.installed_fonts.is_empty() {
+                        WelcomeFocus::InstallButton
+                    } else {
+                        WelcomeFocus::InstalledFontList
+                    }
+                }
+                WelcomeFocus::ToolList => {
+                    if app.installed_fonts.is_empty() {
+                        WelcomeFocus::ToolList
+                    } else {
+                        WelcomeFocus::InstalledFontList
+                    }
+                }
+                WelcomeFocus::InstalledFontList => {
+                    if app.selected_installed_font + 1 < app.installed_fonts.len() {
+                        app.selected_installed_font += 1;
+                    }
+                    WelcomeFocus::InstalledFontList
+                }
             };
         }
         KeyCode::Left | KeyCode::Char('h') if !app.welcome_input_editing => {
             app.welcome_focus = match app.welcome_focus {
-                WelcomeFocus::ToolList => {
-                    app.selected_home_tool = app.selected_home_tool.prev();
+                WelcomeFocus::ToolList => match app.selected_home_tool {
+                    HomeToolAction::ComposeGrid => WelcomeFocus::ToolList,
+                    HomeToolAction::AnimateGlyph => {
+                        app.selected_home_tool = HomeToolAction::ComposeGrid;
+                        WelcomeFocus::ToolList
+                    }
+                },
+                WelcomeFocus::CreateButton => WelcomeFocus::CreateInput,
+                WelcomeFocus::BuildButton => {
+                    app.selected_home_tool = HomeToolAction::AnimateGlyph;
                     WelcomeFocus::ToolList
                 }
-                WelcomeFocus::CreateButton => WelcomeFocus::CreateInput,
                 WelcomeFocus::InstallButton => WelcomeFocus::BuildButton,
+                WelcomeFocus::InstalledFontList => WelcomeFocus::InstalledFontList,
                 other => other,
             };
         }
         KeyCode::Right | KeyCode::Char('l') if !app.welcome_input_editing => {
             app.welcome_focus = match app.welcome_focus {
                 WelcomeFocus::CreateInput => WelcomeFocus::CreateButton,
+                WelcomeFocus::ProjectList => WelcomeFocus::BuildButton,
+                WelcomeFocus::CreateButton => WelcomeFocus::BuildButton,
                 WelcomeFocus::BuildButton => WelcomeFocus::InstallButton,
-                WelcomeFocus::ToolList => {
-                    app.selected_home_tool = app.selected_home_tool.next();
-                    WelcomeFocus::ToolList
-                }
+                WelcomeFocus::ToolList => match app.selected_home_tool {
+                    HomeToolAction::ComposeGrid => {
+                        app.selected_home_tool = HomeToolAction::AnimateGlyph;
+                        WelcomeFocus::ToolList
+                    }
+                    HomeToolAction::AnimateGlyph => WelcomeFocus::BuildButton,
+                },
+                WelcomeFocus::InstalledFontList => WelcomeFocus::InstalledFontList,
                 other => other,
             };
         }
@@ -700,11 +769,15 @@ fn handle_welcome_key(app: &mut App, key: KeyEvent) -> Result<()> {
             }
             WelcomeFocus::InstallButton => {
                 app.welcome_input_editing = false;
-                trigger_install_action(app);
+                trigger_install_action(app)?;
             }
             WelcomeFocus::ToolList => {
                 app.welcome_input_editing = false;
                 trigger_home_tool_action(app)?;
+            }
+            WelcomeFocus::InstalledFontList => {
+                app.welcome_input_editing = false;
+                trigger_uninstall_action(app)?;
             }
         },
         _ => {
@@ -733,59 +806,28 @@ fn draw_welcome_view(
     let body = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(26), // workspace + projects + current project
-            Constraint::Min(0),     // installed petiglyph fonts + advanced tools
+            Constraint::Length(3),  // scan scope hint
+            Constraint::Length(21), // projects + current project
+            Constraint::Min(0),     // installed petiglyph fonts
         ])
         .split(area);
+
+    let tip_lines = vec![
+        Line::from(""),
+        Line::from(vec![
+            Span::raw("  "),
+            Span::styled(
+                "Local scan scope: petiglyph checks the current folder and one level below for local projects/builds.",
+                Style::default().fg(muted),
+            ),
+        ]),
+    ];
+    frame.render_widget(Paragraph::new(tip_lines).wrap(Wrap { trim: true }), body[0]);
 
     let main = Layout::default()
         .direction(Direction::Horizontal)
         .constraints([Constraint::Percentage(54), Constraint::Percentage(46)])
-        .split(body[0]);
-
-    let left = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Length(8), // workspace scan
-            Constraint::Min(0),    // projects
-        ])
-        .split(main[0]);
-
-    let intro_block = Block::default()
-        .borders(Borders::ALL)
-        .border_type(BorderType::Rounded)
-        .border_style(Style::default().fg(muted))
-        .title(Span::styled(
-            " Workspace scan ",
-            Style::default().fg(accent),
-        ));
-
-    let intro_lines = vec![
-        Line::from(""),
-        Line::from(vec![
-            Span::raw("  "),
-            Span::styled("Current folder: ", Style::default().fg(muted)),
-            Span::raw(app.workspace_root.display().to_string()),
-        ]),
-        Line::from(vec![
-            Span::raw("  "),
-            Span::styled("Project scan: ", Style::default().fg(muted)),
-            Span::raw("current folder + one level below"),
-        ]),
-        Line::from(vec![
-            Span::raw("  "),
-            Span::styled(
-                "Use Home to review detected folders or create a project folder.",
-                Style::default().fg(Color::White),
-            ),
-        ]),
-    ];
-    frame.render_widget(
-        Paragraph::new(intro_lines)
-            .block(intro_block)
-            .wrap(Wrap { trim: false }),
-        left[0],
-    );
+        .split(body[1]);
 
     let projects_block = Block::default()
         .borders(Borders::ALL)
@@ -919,7 +961,12 @@ fn draw_welcome_view(
         Span::styled(" Create ", button_style),
     ];
     new_project_line.push(Span::styled(
-        format_welcome_hint_for_display(app.welcome_focus, app.welcome_input_editing),
+        format_welcome_hint_for_display(
+            app.welcome_focus,
+            app.welcome_input_editing,
+            app.current_project_is_built(),
+            app.current_project_is_installed(),
+        ),
         Style::default().fg(muted),
     ));
     projects_text.push(Line::from(new_project_line));
@@ -937,6 +984,7 @@ fn draw_welcome_view(
         .fg(Color::DarkGray)
         .bg(Color::Black)
         .add_modifier(Modifier::DIM);
+    let build_label = format!(" {} ", build_action_name(app.current_project_is_built()));
     let build_button_style = if app.active_project.is_none() {
         disabled_button_style
     } else if app.welcome_focus == WelcomeFocus::BuildButton {
@@ -959,17 +1007,11 @@ fn draw_welcome_view(
     let install_label = if let Some(spinner) = app.install_spinner_frame() {
         format!(" {spinner} Installing... ")
     } else {
-        " Install Font ".to_string()
+        format!(
+            " {} ",
+            install_action_name(app.current_project_is_installed())
+        )
     };
-    projects_text.push(Line::from(vec![
-        Span::raw("  "),
-        Span::styled("Actions: ", Style::default().fg(muted)),
-        Span::styled(" Build ", build_button_style),
-        Span::raw(" "),
-        Span::styled(install_label, install_button_style),
-    ]));
-    projects_text.push(Line::from(""));
-
     let compose_button_style = if app.active_project.is_none() {
         disabled_button_style
     } else if app.welcome_focus == WelcomeFocus::ToolList
@@ -1009,7 +1051,7 @@ fn draw_welcome_view(
         Paragraph::new(projects_text)
             .block(projects_block)
             .wrap(Wrap { trim: false }),
-        left[1],
+        main[0],
     );
 
     let current_project_block = Block::default()
@@ -1116,6 +1158,14 @@ fn draw_welcome_view(
             Span::raw(app.sample_string()),
         ]));
     }
+    current_project_lines.push(Line::from(""));
+    current_project_lines.push(Line::from(vec![
+        Span::raw("  "),
+        Span::styled("Actions: ", Style::default().fg(muted)),
+        Span::styled(build_label, build_button_style),
+        Span::raw(" "),
+        Span::styled(install_label, install_button_style),
+    ]));
 
     frame.render_widget(
         Paragraph::new(current_project_lines)
@@ -1166,14 +1216,23 @@ fn draw_welcome_view(
             ),
         ]));
     } else {
-        let sample_wrap_width = usize::from(body[1].width.saturating_sub(8).max(16));
-        for font in &app.installed_fonts {
+        let sample_wrap_width = usize::from(body[2].width.saturating_sub(8).max(16));
+        for (idx, font) in app.installed_fonts.iter().enumerate() {
             let sample = if font.sample.is_empty() {
                 "[sample unavailable]".to_string()
             } else if font.truncated {
                 format!("{}...", spaced_sample(&font.sample))
             } else {
                 spaced_sample(&font.sample)
+            };
+            let uninstall_button_style = if app.install_in_progress() {
+                disabled_button_style
+            } else if app.welcome_focus == WelcomeFocus::InstalledFontList
+                && app.selected_installed_font == idx
+            {
+                selected_button_style
+            } else {
+                idle_button_style
             };
             fonts_text.push(Line::from(vec![
                 Span::raw("  "),
@@ -1183,6 +1242,8 @@ fn draw_welcome_view(
                         .fg(Color::White)
                         .add_modifier(Modifier::BOLD),
                 ),
+                Span::raw("  "),
+                Span::styled(" Uninstall ", uninstall_button_style),
             ]));
             fonts_text.push(Line::from(vec![
                 Span::raw("    "),
@@ -1202,6 +1263,7 @@ fn draw_welcome_view(
                     ),
                 ]));
             }
+            fonts_text.push(Line::from(""));
         }
     }
 
@@ -1209,11 +1271,19 @@ fn draw_welcome_view(
         Paragraph::new(fonts_text)
             .block(fonts_block)
             .wrap(Wrap { trim: false }),
-        body[1],
+        body[2],
     );
 }
 
 impl App {
+    fn current_project_is_built(&self) -> bool {
+        self.active_project.is_some() && self.last_build.is_some()
+    }
+
+    fn current_project_is_installed(&self) -> bool {
+        self.active_project.is_some() && self.installed_font_path.is_some()
+    }
+
     #[cfg(test)]
     pub(crate) fn new(manifest_path: PathBuf, config: RuntimeConfig) -> Self {
         Self::new_with_overrides(manifest_path, config, TuiLaunchOverrides::default(), None)
@@ -1265,6 +1335,7 @@ impl App {
             welcome_focus: WelcomeFocus::CreateInput,
             welcome_input_editing: false,
             installed_fonts: Vec::new(),
+            selected_installed_font: 0,
             switch_notice: None,
             selected_home_tool: HomeToolAction::ComposeGrid,
             selected: 0,
@@ -1305,6 +1376,7 @@ impl App {
             welcome_focus: WelcomeFocus::CreateInput,
             welcome_input_editing: false,
             installed_fonts: Vec::new(),
+            selected_installed_font: 0,
             switch_notice: None,
             selected_home_tool: HomeToolAction::ComposeGrid,
             selected: 0,
@@ -1331,6 +1403,7 @@ impl App {
                 self.status = Some(format!("font scan warning: {err}"));
             }
         }
+        self.sync_selected_installed_font();
 
         if self.projects.is_empty() {
             self.welcome_focus = WelcomeFocus::CreateInput;
@@ -1343,6 +1416,17 @@ impl App {
             }
         } else if self.active_project.is_none() && self.welcome_focus == WelcomeFocus::CreateInput {
             self.welcome_focus = WelcomeFocus::ProjectList;
+        }
+
+        if self.welcome_focus == WelcomeFocus::InstalledFontList && self.installed_fonts.is_empty()
+        {
+            self.welcome_focus = if self.active_project.is_some() {
+                WelcomeFocus::BuildButton
+            } else if !self.projects.is_empty() {
+                WelcomeFocus::ProjectList
+            } else {
+                WelcomeFocus::CreateInput
+            };
         }
 
         Ok(())
@@ -1365,6 +1449,17 @@ impl App {
         }
 
         self.selected_project = self.selected_project.min(self.projects.len() - 1);
+    }
+
+    fn sync_selected_installed_font(&mut self) {
+        if self.installed_fonts.is_empty() {
+            self.selected_installed_font = 0;
+            return;
+        }
+
+        self.selected_installed_font = self
+            .selected_installed_font
+            .min(self.installed_fonts.len() - 1);
     }
 
     fn submit_create(&mut self) -> Result<()> {
@@ -1530,6 +1625,13 @@ impl App {
             bail!("glyph_size must be > 0");
         }
 
+        let rebuilding = self.current_project_is_built();
+        if rebuilding {
+            clear_existing_build_dir(&self.config.out_dir)?;
+            self.last_build = None;
+            self.last_sample = None;
+        }
+
         let summary = build_outputs(&self.config)?;
         let sample = fs::read_to_string(&summary.sample_path)
             .with_context(|| format!("failed to read {}", summary.sample_path.display()))?;
@@ -1537,7 +1639,8 @@ impl App {
         self.last_sample = Some(sample.trim_end().to_string());
         self.last_build = Some(summary.clone());
         self.status = Some(format!(
-            "build complete: {} glyph{} into {}",
+            "{} complete: {} glyph{} into {}",
+            if rebuilding { "rebuild" } else { "build" },
             summary.glyph_count,
             if summary.glyph_count == 1 { "" } else { "s" },
             summary.out_dir().display()
@@ -1575,6 +1678,62 @@ impl App {
         self.status = None;
     }
 
+    fn uninstall_selected_installed_font(&mut self) -> Result<()> {
+        if self.install_in_progress() {
+            self.status = Some("install is in progress; wait before uninstalling".to_string());
+            return Ok(());
+        }
+
+        let Some(font) = self
+            .installed_fonts
+            .get(self.selected_installed_font)
+            .cloned()
+        else {
+            self.status = Some("no installed font selected".to_string());
+            return Ok(());
+        };
+
+        let result = uninstall_installed_font_file(&font.path)?;
+        self.refresh_workspace_discovery()?;
+        if self.active_project.is_some() {
+            self.reload_config()?;
+        }
+        self.status = Some(match result.outcome {
+            crate::install::UninstallOutcome::Removed => format!("uninstalled {}", font.file_name),
+            crate::install::UninstallOutcome::AlreadyAbsent => {
+                format!("font already absent: {}", font.file_name)
+            }
+        });
+        Ok(())
+    }
+
+    fn uninstall_active_project_font(&mut self) -> Result<()> {
+        if self.active_project.is_none() {
+            self.status = Some(
+                "create a project in Home or relaunch with --manifest before uninstalling"
+                    .to_string(),
+            );
+            return Ok(());
+        }
+
+        if self.install_in_progress() {
+            self.status = Some("install is in progress; wait before uninstalling".to_string());
+            return Ok(());
+        }
+
+        let font_name = self.config.font_name.clone();
+        let result = uninstall_project_font(&self.manifest_path)?;
+        self.refresh_workspace_discovery()?;
+        self.reload_config()?;
+        self.status = Some(match result.outcome {
+            crate::install::UninstallOutcome::Removed => format!("uninstalled {font_name}"),
+            crate::install::UninstallOutcome::AlreadyAbsent => {
+                format!("font already absent: {font_name}")
+            }
+        });
+        Ok(())
+    }
+
     fn poll_install_task(&mut self) {
         let mut task_result = None;
         let mut disconnected = false;
@@ -1604,10 +1763,24 @@ impl App {
                 self.last_build = Some(output.summary);
                 self.last_sample = output.sample;
                 self.installed_font_path = Some(output.installed_path.clone());
-                self.status = Some(format!(
-                    "installed font to {}",
-                    output.installed_path.display()
-                ));
+                if let Err(err) = self.refresh_workspace_discovery() {
+                    self.status = Some(format!(
+                        "installed font to {}; refresh failed: {err}",
+                        output.installed_path.display()
+                    ));
+                } else {
+                    if let Some(idx) = self
+                        .installed_fonts
+                        .iter()
+                        .position(|font| font.path == output.installed_path)
+                    {
+                        self.selected_installed_font = idx;
+                    }
+                    self.status = Some(format!(
+                        "installed font to {}",
+                        output.installed_path.display()
+                    ));
+                }
             }
             Err(err) => {
                 self.status = Some(err);
@@ -1719,6 +1892,23 @@ fn build_and_install(
         sample,
         installed_path: installed.install_path,
     })
+}
+
+fn clear_existing_build_dir(out_dir: &Path) -> Result<()> {
+    if !out_dir.exists() {
+        return Ok(());
+    }
+
+    if !out_dir.is_dir() {
+        bail!(
+            "build output path is not a directory: {}",
+            out_dir.display()
+        );
+    }
+
+    fs::remove_dir_all(out_dir)
+        .with_context(|| format!("failed to remove {}", out_dir.display()))?;
+    Ok(())
 }
 
 fn cached_build_state(config: &RuntimeConfig) -> (Option<BuildSummary>, Option<String>) {
@@ -1996,7 +2186,7 @@ fn handle_key_event(app: &mut App, key: KeyEvent) -> Result<()> {
             trigger_build_action(app)?;
         }
         KeyCode::Char('i') => {
-            trigger_install_action(app);
+            trigger_install_action(app)?;
         }
         KeyCode::Down => {
             if app.view == AppView::Glyphs {
@@ -2086,8 +2276,17 @@ fn trigger_home_tool_action(app: &mut App) -> Result<()> {
     }
 }
 
-fn trigger_install_action(app: &mut App) {
-    app.start_install_font();
+fn trigger_install_action(app: &mut App) -> Result<()> {
+    if app.current_project_is_installed() {
+        app.uninstall_active_project_font()
+    } else {
+        app.start_install_font();
+        Ok(())
+    }
+}
+
+fn trigger_uninstall_action(app: &mut App) -> Result<()> {
+    app.uninstall_selected_installed_font()
 }
 
 fn draw_ui(frame: &mut Frame, app: &App) {
@@ -2103,13 +2302,14 @@ fn draw_ui(frame: &mut Frame, app: &App) {
     }
     let area = centered_bounded_viewport(area);
 
+    let status_height = if app.switch_notice.is_some() { 1 } else { 0 };
     let root = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(3), // Header
-            Constraint::Length(1), // Active project / switch notice
-            Constraint::Min(0),    // Body
-            Constraint::Length(1), // Footer keys
+            Constraint::Length(3),             // Header
+            Constraint::Length(status_height), // Switch notice
+            Constraint::Min(0),                // Body
+            Constraint::Length(1),             // Footer keys
         ])
         .split(area);
 
@@ -2143,18 +2343,8 @@ fn draw_ui(frame: &mut Frame, app: &App) {
 
     frame.render_widget(tabs, root[0]);
 
-    let mut active_spans = vec![
-        Span::styled(" Active: ", Style::default().fg(muted)),
-        Span::styled(
-            app.active_project_label(),
-            Style::default()
-                .fg(Color::White)
-                .add_modifier(Modifier::BOLD),
-        ),
-    ];
     if let Some(notice) = &app.switch_notice {
-        active_spans.push(Span::raw("  "));
-        active_spans.push(Span::styled(
+        let notice_line = Line::from(vec![Span::styled(
             format!(
                 " Switched project: {} -> {} ",
                 notice.from_label, notice.to_label
@@ -2163,12 +2353,12 @@ fn draw_ui(frame: &mut Frame, app: &App) {
                 .fg(Color::Black)
                 .bg(Color::Yellow)
                 .add_modifier(Modifier::BOLD),
-        ));
+        )]);
+        frame.render_widget(
+            Paragraph::new(notice_line).alignment(Alignment::Center),
+            root[1],
+        );
     }
-    frame.render_widget(
-        Paragraph::new(Line::from(active_spans)).alignment(Alignment::Center),
-        root[1],
-    );
 
     // Body
     let body_area = root[2];
@@ -2189,9 +2379,17 @@ fn draw_ui(frame: &mut Frame, app: &App) {
         Span::styled(" R ", Style::default().fg(accent)),
         Span::raw("rescan  "),
         Span::styled(" b ", Style::default().fg(accent)),
-        Span::raw("build  "),
+        Span::raw(if app.current_project_is_built() {
+            "rebuild  "
+        } else {
+            "build  "
+        }),
         Span::styled(" i ", Style::default().fg(accent)),
-        Span::raw("install  "),
+        Span::raw(if app.current_project_is_installed() {
+            "uninstall  "
+        } else {
+            "install  "
+        }),
     ];
 
     if app.view == AppView::Welcome {
@@ -2200,9 +2398,19 @@ fn draw_ui(frame: &mut Frame, app: &App) {
         } else if app.welcome_focus == WelcomeFocus::ProjectList {
             "open project  "
         } else if app.welcome_focus == WelcomeFocus::BuildButton {
-            "build  "
+            if app.current_project_is_built() {
+                "rebuild  "
+            } else {
+                "build  "
+            }
         } else if app.welcome_focus == WelcomeFocus::InstallButton {
-            "install  "
+            if app.current_project_is_installed() {
+                "uninstall  "
+            } else {
+                "install  "
+            }
+        } else if app.welcome_focus == WelcomeFocus::InstalledFontList {
+            "uninstall  "
         } else if app.welcome_focus == WelcomeFocus::ToolList {
             "run action  "
         } else {
