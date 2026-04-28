@@ -756,7 +756,7 @@ fn draw_welcome_view(
         .border_type(BorderType::Rounded)
         .border_style(Style::default().fg(muted))
         .title(Span::styled(
-            " Workspace Scan ",
+            " Workspace scan ",
             Style::default().fg(accent),
         ));
 
@@ -792,7 +792,7 @@ fn draw_welcome_view(
         .border_type(BorderType::Rounded)
         .border_style(Style::default().fg(muted))
         .title(Span::styled(
-            " Petiglyph Projects ",
+            " Petiglyph projects ",
             Style::default().fg(accent),
         ));
 
@@ -1017,7 +1017,7 @@ fn draw_welcome_view(
         .border_type(BorderType::Rounded)
         .border_style(Style::default().fg(muted))
         .title(Span::styled(
-            " Current Project ",
+            " Current project ",
             Style::default().fg(accent),
         ));
 
@@ -1054,8 +1054,8 @@ fn draw_welcome_view(
             ),
         };
         let installed_status = match &app.installed_font_path {
-            Some(_) => Span::styled("installed for this project", ok_style),
-            None => Span::styled("not installed", missing_style),
+            Some(_) => Span::styled("✓", ok_style),
+            None => Span::styled("✗", missing_style),
         };
         (ttf_status, bdf_status, installed_status)
     };
@@ -1088,7 +1088,7 @@ fn draw_welcome_view(
         ]),
         Line::from(vec![
             Span::raw("    "),
-            Span::styled("Install: ", Style::default().fg(muted)),
+            Span::styled("Installed: ", Style::default().fg(muted)),
             installed_status,
         ]),
     ];
@@ -1129,7 +1129,7 @@ fn draw_welcome_view(
         .border_type(BorderType::Rounded)
         .border_style(Style::default().fg(muted))
         .title(Span::styled(
-            " Installed Petiglyph Fonts on This Machine (sample first glyphs) ",
+            " Installed petiglyph fonts ",
             Style::default().fg(accent),
         ));
 
