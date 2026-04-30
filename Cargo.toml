@@ -21,4 +21,5 @@ serde_json = "1.0"
 toml = "0.8"
 tui-input = "0.15"
 ttf-parser = "0.25"
+uuid = { version = "1.18", features = ["v4"] }
 walkdir = "2.5"

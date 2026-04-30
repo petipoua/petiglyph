@@ -5,6 +5,7 @@ use std::env;
 use std::fs;
 use std::io::{self, IsTerminal, Write};
 use std::path::{Path, PathBuf};
+use uuid::Uuid;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub(crate) struct Manifest {
@@ -14,6 +15,8 @@ pub(crate) struct Manifest {
     pub(crate) glyph_size: u32,
     pub(crate) threshold: u8,
     pub(crate) codepoint_start: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) project_id: Option<String>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub(crate) threshold_overrides: BTreeMap<String, u8>,
 }
@@ -27,6 +30,7 @@ impl Default for Manifest {
             glyph_size: 64,
             threshold: 64,
             codepoint_start: "U+100000".to_string(),
+            project_id: None,
             threshold_overrides: BTreeMap::new(),
         }
     }
@@ -34,6 +38,8 @@ impl Default for Manifest {
 
 #[derive(Debug, Clone)]
 pub(crate) struct RuntimeConfig {
+    pub(crate) project_dir: PathBuf,
+    pub(crate) project_id: String,
     pub(crate) input_dir: PathBuf,
     pub(crate) out_dir: PathBuf,
     pub(crate) font_name: String,
@@ -45,6 +51,10 @@ pub(crate) struct RuntimeConfig {
 
 pub(crate) fn format_codepoint(codepoint: u32) -> String {
     format!("U+{:04X}", codepoint)
+}
+
+pub(crate) fn generate_project_id() -> String {
+    Uuid::new_v4().simple().to_string()
 }
 
 pub(crate) fn manifest_path_from_option(manifest: Option<PathBuf>) -> Result<PathBuf> {
@@ -143,6 +153,7 @@ pub(crate) fn create_project_in_dir(base_dir: &Path, project_name: &str) -> Resu
         .unwrap_or_else(|| "Petiglyph".to_string());
     let manifest = Manifest {
         font_name: display_name,
+        project_id: Some(generate_project_id()),
         ..Manifest::default()
     };
     write_manifest(&manifest_path, &manifest)?;
@@ -215,7 +226,7 @@ pub(crate) fn load_runtime_config(
     glyph_size_override: Option<u32>,
     codepoint_start_override: Option<String>,
 ) -> Result<RuntimeConfig> {
-    let manifest = read_manifest(manifest_path)?;
+    let mut manifest = read_manifest(manifest_path)?;
 
     let base = manifest_path.parent().unwrap_or_else(|| Path::new("."));
 
@@ -231,7 +242,31 @@ pub(crate) fn load_runtime_config(
             .unwrap_or(&manifest.codepoint_start),
     )?;
 
+    let mut manifest_changed = false;
+    let project_id = match manifest.project_id.as_deref().map(str::trim) {
+        Some(trimmed) if !trimmed.is_empty() => {
+            let normalized = trimmed.to_string();
+            if manifest.project_id.as_deref() != Some(normalized.as_str()) {
+                manifest.project_id = Some(normalized.clone());
+                manifest_changed = true;
+            }
+            normalized
+        }
+        _ => {
+            let generated = generate_project_id();
+            manifest.project_id = Some(generated.clone());
+            manifest_changed = true;
+            generated
+        }
+    };
+
+    if manifest_changed {
+        write_manifest(manifest_path, &manifest)?;
+    }
+
     Ok(RuntimeConfig {
+        project_dir: base.to_path_buf(),
+        project_id,
         input_dir,
         out_dir,
         font_name: manifest.font_name,

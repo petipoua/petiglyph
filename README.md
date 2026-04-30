@@ -276,6 +276,10 @@ codepoint_start = "U+100000"
 - `glyph-sample.txt`
 - `previews/*.png`
 
+Project root also contains:
+
+- `petiglyph.lock` (stable source-file to codepoint allocations; keeps removed entries tombstoned to avoid unsafe reuse)
+
 ## Notes
 
 - supported inputs: `png`, `jpg`, `jpeg`, `webp`, `avif`, `bmp`, `gif`, `svg`

@@ -1395,6 +1395,7 @@ dependencies = [
  "toml",
  "ttf-parser",
  "tui-input",
+ "uuid",
  "walkdir",
 ]
 

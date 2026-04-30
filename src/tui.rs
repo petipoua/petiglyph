@@ -2126,6 +2126,8 @@ impl BuildSummary {
 
 fn inactive_runtime_config(workspace_root: &Path) -> RuntimeConfig {
     RuntimeConfig {
+        project_dir: workspace_root.to_path_buf(),
+        project_id: "inactive-workspace".to_string(),
         input_dir: workspace_root.join("icons"),
         out_dir: workspace_root.join("build"),
         font_name: "No active project".to_string(),

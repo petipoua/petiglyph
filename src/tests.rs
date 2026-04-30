@@ -575,6 +575,8 @@ fn home_tool_list_runs_advanced_placeholder_action() {
     write_test_png(&icons_dir.join("icon.png"));
 
     let config = RuntimeConfig {
+        project_dir: project_dir.clone(),
+        project_id: "test-home-tool-enter".to_string(),
         input_dir: icons_dir,
         out_dir: project_dir.join("build"),
         font_name: "Petiglyph".to_string(),
@@ -613,6 +615,8 @@ fn home_installed_font_buttons_can_be_navigated() {
     write_test_png(&icons_dir.join("icon.png"));
 
     let config = RuntimeConfig {
+        project_dir: project_dir.clone(),
+        project_id: "test-home-installed-font-nav".to_string(),
         input_dir: icons_dir,
         out_dir: project_dir.join("build"),
         font_name: "Petiglyph".to_string(),
@@ -668,6 +672,8 @@ fn home_view_renders_without_panicking() {
     write_test_png(&icons_dir.join("icon.png"));
 
     let config = RuntimeConfig {
+        project_dir: project_dir.clone(),
+        project_id: "test-render-home".to_string(),
         input_dir: icons_dir,
         out_dir: project_dir.join("build"),
         font_name: "Petiglyph".to_string(),
@@ -800,6 +806,8 @@ fn supported_source_extensions_include_avif() {
 fn build_outputs_generates_non_empty_repo_icon_font() {
     let out_dir = make_temp_dir("icons-e2e");
     let config = RuntimeConfig {
+        project_dir: out_dir.clone(),
+        project_id: "test-icons-e2e".to_string(),
         input_dir: PathBuf::from("icons"),
         out_dir: out_dir.clone(),
         font_name: "Petiglyph".to_string(),
@@ -865,6 +873,8 @@ fn build_outputs_centers_non_square_glyphs_in_ttf_line_box() {
     write_transparent_rect_png(&input_dir.join("tall.png"), 77, 100);
 
     let config = RuntimeConfig {
+        project_dir: project_dir.clone(),
+        project_id: "test-non-square-centering".to_string(),
         input_dir: input_dir.clone(),
         out_dir,
         font_name: "Petiglyph".to_string(),
@@ -928,6 +938,8 @@ fn sample_glyphs_from_ttf_bytes_limits_preview_to_requested_count() {
     }
 
     let config = RuntimeConfig {
+        project_dir: project_dir.clone(),
+        project_id: "test-ttf-sample-limit".to_string(),
         input_dir,
         out_dir,
         font_name: "SampleLimit".to_string(),
@@ -958,6 +970,8 @@ fn build_outputs_supports_upper_unicode_edge() {
     write_test_png(&input_dir.join("b.png"));
 
     let config = RuntimeConfig {
+        project_dir: project_dir.clone(),
+        project_id: "test-unicode-edge".to_string(),
         input_dir,
         out_dir: out_dir.clone(),
         font_name: "Edge".to_string(),
@@ -996,6 +1010,8 @@ fn build_outputs_rejects_codepoint_range_above_unicode_max() {
     write_test_png(&input_dir.join("b.png"));
 
     let config = RuntimeConfig {
+        project_dir: project_dir.clone(),
+        project_id: "test-unicode-overflow".to_string(),
         input_dir,
         out_dir,
         font_name: "Overflow".to_string(),
@@ -1026,6 +1042,8 @@ fn build_outputs_rejects_codepoint_range_crossing_surrogates() {
     write_test_png(&input_dir.join("b.png"));
 
     let config = RuntimeConfig {
+        project_dir: project_dir.clone(),
+        project_id: "test-unicode-surrogate".to_string(),
         input_dir,
         out_dir,
         font_name: "Surrogate".to_string(),
@@ -1040,6 +1058,184 @@ fn build_outputs_rejects_codepoint_range_crossing_surrogates() {
     assert!(
         message.contains("surrogate range"),
         "unexpected error: {message}"
+    );
+
+    fs::remove_dir_all(project_dir).expect("temp project dir is removed");
+}
+
+#[test]
+fn load_runtime_config_generates_and_persists_project_id() {
+    let project_dir = make_temp_dir("project-id-migration");
+    let manifest_path = project_dir.join("petiglyph.toml");
+    write_manifest(&manifest_path, &Manifest::default()).expect("manifest is written");
+
+    let config = load_runtime_config(&manifest_path, None, None, None, None, None)
+        .expect("runtime config should load");
+    assert!(
+        !config.project_id.trim().is_empty(),
+        "project_id should be generated"
+    );
+
+    let manifest = read_manifest(&manifest_path).expect("manifest is readable");
+    assert_eq!(
+        manifest.project_id.as_deref(),
+        Some(config.project_id.as_str()),
+        "generated project_id should be persisted"
+    );
+
+    fs::remove_dir_all(project_dir).expect("temp project dir is removed");
+}
+
+#[test]
+fn build_outputs_preserves_existing_codepoints_when_new_sorted_source_is_added() {
+    let project_dir = make_temp_dir("stable-codepoints-on-insert");
+    let input_dir = project_dir.join("icons");
+    let out_dir = project_dir.join("build");
+    fs::create_dir_all(&input_dir).expect("icons dir is created");
+    fs::create_dir_all(&out_dir).expect("build dir is created");
+
+    write_test_png(&input_dir.join("b.png"));
+    write_test_png(&input_dir.join("c.png"));
+
+    let config = RuntimeConfig {
+        project_dir: project_dir.clone(),
+        project_id: "test-stable-insert".to_string(),
+        input_dir: input_dir.clone(),
+        out_dir: out_dir.clone(),
+        font_name: "StableInsert".to_string(),
+        glyph_size: 16,
+        base_threshold: 64,
+        threshold_overrides: BTreeMap::new(),
+        codepoint_start: 0x10_0000,
+    };
+
+    let first = build_outputs(&config).expect("first build should succeed");
+    let first_map: Vec<MappingEntry> =
+        serde_json::from_str(&fs::read_to_string(&first.mapping_path).expect("map is readable"))
+            .expect("map parses");
+    let first_b = first_map
+        .iter()
+        .find(|entry| entry.source_file == "b.png")
+        .expect("b.png should be mapped")
+        .codepoint
+        .clone();
+    let first_c = first_map
+        .iter()
+        .find(|entry| entry.source_file == "c.png")
+        .expect("c.png should be mapped")
+        .codepoint
+        .clone();
+
+    write_test_png(&input_dir.join("a.png"));
+
+    let second = build_outputs(&config).expect("second build should succeed");
+    let second_map: Vec<MappingEntry> =
+        serde_json::from_str(&fs::read_to_string(&second.mapping_path).expect("map is readable"))
+            .expect("map parses");
+    let second_b = second_map
+        .iter()
+        .find(|entry| entry.source_file == "b.png")
+        .expect("b.png should be mapped")
+        .codepoint
+        .clone();
+    let second_c = second_map
+        .iter()
+        .find(|entry| entry.source_file == "c.png")
+        .expect("c.png should be mapped")
+        .codepoint
+        .clone();
+    let second_a = second_map
+        .iter()
+        .find(|entry| entry.source_file == "a.png")
+        .expect("a.png should be mapped")
+        .codepoint
+        .clone();
+
+    assert_eq!(
+        first_b, second_b,
+        "existing b.png codepoint should remain stable"
+    );
+    assert_eq!(
+        first_c, second_c,
+        "existing c.png codepoint should remain stable"
+    );
+    assert!(
+        parse_codepoint(&second_a).expect("new codepoint parses")
+            > parse_codepoint(&first_c).expect("existing codepoint parses"),
+        "new sorted file should get a newly allocated codepoint instead of shifting old mappings"
+    );
+
+    fs::remove_dir_all(project_dir).expect("temp project dir is removed");
+}
+
+#[test]
+fn build_outputs_tombstones_removed_sources_and_does_not_reuse_their_codepoints() {
+    let project_dir = make_temp_dir("stable-codepoints-tombstone");
+    let input_dir = project_dir.join("icons");
+    let out_dir = project_dir.join("build");
+    fs::create_dir_all(&input_dir).expect("icons dir is created");
+    fs::create_dir_all(&out_dir).expect("build dir is created");
+
+    write_test_png(&input_dir.join("a.png"));
+    write_test_png(&input_dir.join("b.png"));
+
+    let config = RuntimeConfig {
+        project_dir: project_dir.clone(),
+        project_id: "test-tombstone".to_string(),
+        input_dir: input_dir.clone(),
+        out_dir: out_dir.clone(),
+        font_name: "Tombstone".to_string(),
+        glyph_size: 16,
+        base_threshold: 64,
+        threshold_overrides: BTreeMap::new(),
+        codepoint_start: 0x10_0000,
+    };
+
+    let first = build_outputs(&config).expect("first build should succeed");
+    let first_map: Vec<MappingEntry> =
+        serde_json::from_str(&fs::read_to_string(&first.mapping_path).expect("map is readable"))
+            .expect("map parses");
+    let removed_codepoint = first_map
+        .iter()
+        .find(|entry| entry.source_file == "b.png")
+        .expect("b.png should be mapped")
+        .codepoint
+        .clone();
+
+    fs::remove_file(input_dir.join("b.png")).expect("old file is removed");
+    write_test_png(&input_dir.join("c.png"));
+
+    let second = build_outputs(&config).expect("second build should succeed");
+    let second_map: Vec<MappingEntry> =
+        serde_json::from_str(&fs::read_to_string(&second.mapping_path).expect("map is readable"))
+            .expect("map parses");
+    let new_codepoint = second_map
+        .iter()
+        .find(|entry| entry.source_file == "c.png")
+        .expect("c.png should be mapped")
+        .codepoint
+        .clone();
+
+    assert_ne!(
+        new_codepoint, removed_codepoint,
+        "removed glyph codepoint should not be reused"
+    );
+
+    let lock_path = project_dir.join("petiglyph.lock");
+    let lock_raw = fs::read_to_string(lock_path).expect("lock file should be written");
+    let lock_json: serde_json::Value = serde_json::from_str(&lock_raw).expect("lock parses");
+    let entries = lock_json
+        .get("entries")
+        .and_then(|value| value.as_array())
+        .expect("lock entries should be an array");
+
+    let tombstone_entry = entries
+        .iter()
+        .find(|entry| entry.get("source_file").and_then(|v| v.as_str()) == Some("b.png"))
+        .expect("removed file should remain as tombstone");
+    assert_eq!(
+        tombstone_entry.get("active").and_then(|v| v.as_bool()),
+        Some(false)
     );
 
     fs::remove_dir_all(project_dir).expect("temp project dir is removed");
@@ -1085,6 +1281,8 @@ fn app_new_hydrates_previous_build_outputs_from_disk() {
     fs::write(build_dir.join("glyph-sample.txt"), "sample\n").expect("sample is written");
 
     let config = RuntimeConfig {
+        project_dir: project_dir.clone(),
+        project_id: "test-hydrate-last-build".to_string(),
         input_dir: project_dir.join("icons"),
         out_dir: build_dir.clone(),
         font_name: "Petiglyph".to_string(),
@@ -1114,6 +1312,8 @@ fn handle_key_updates_and_clears_selected_threshold_override() {
     write_manifest(&manifest_path, &Manifest::default()).expect("manifest is written");
 
     let config = RuntimeConfig {
+        project_dir: project_dir.clone(),
+        project_id: "test-threshold-override".to_string(),
         input_dir: project_dir.join("icons"),
         out_dir: project_dir.join("build"),
         font_name: "Petiglyph".to_string(),
@@ -1185,6 +1385,8 @@ fn handle_key_supports_keypad_plus_minus_aliases_for_threshold() {
     write_manifest(&manifest_path, &Manifest::default()).expect("manifest is written");
 
     let config = RuntimeConfig {
+        project_dir: project_dir.clone(),
+        project_id: "test-keypad-threshold".to_string(),
         input_dir: project_dir.join("icons"),
         out_dir: project_dir.join("build"),
         font_name: "Petiglyph".to_string(),
@@ -1243,6 +1445,8 @@ fn tab_cycles_panels_and_glyph_controls_stay_in_glyph_view() {
     write_manifest(&manifest_path, &Manifest::default()).expect("manifest is written");
 
     let config = RuntimeConfig {
+        project_dir: project_dir.clone(),
+        project_id: "test-tab-cycle".to_string(),
         input_dir: project_dir.join("icons"),
         out_dir: project_dir.join("build"),
         font_name: "Petiglyph".to_string(),
@@ -1301,6 +1505,8 @@ fn handle_key_w_is_not_a_navigation_path() {
         .expect("manifest-b is written");
 
     let config = RuntimeConfig {
+        project_dir: project_a.clone(),
+        project_id: "test-workspace-switch".to_string(),
         input_dir: project_a.join("icons"),
         out_dir: project_a.join("build"),
         font_name: "Petiglyph".to_string(),
@@ -1339,6 +1545,8 @@ fn build_shortcut_rebuilds_and_clears_previous_outputs() {
     write_test_png(&icons_dir.join("icon.png"));
 
     let config = RuntimeConfig {
+        project_dir: project_dir.clone(),
+        project_id: "test-build-task-visible".to_string(),
         input_dir: icons_dir,
         out_dir: project_dir.join("build"),
         font_name: "Petiglyph".to_string(),
@@ -1420,6 +1628,7 @@ fn tui_launch_overrides_persist_through_reload_and_build() {
         glyph_size: 8,
         threshold: 10,
         codepoint_start: "U+100000".to_string(),
+        project_id: Some("test-tui-overrides".to_string()),
         threshold_overrides: BTreeMap::new(),
     };
     write_manifest(&manifest_path, &manifest).expect("manifest is written");

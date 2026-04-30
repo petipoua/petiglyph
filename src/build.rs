@@ -4,12 +4,12 @@ use image::{ImageBuffer, Rgba, RgbaImage};
 use resvg::tiny_skia::{Pixmap, Transform};
 use resvg::usvg;
 use serde::{Deserialize, Serialize};
-use std::collections::{BTreeMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 use walkdir::WalkDir;
 
-use crate::project::RuntimeConfig;
+use crate::project::{RuntimeConfig, format_codepoint, parse_codepoint};
 
 #[derive(Debug, Clone)]
 pub(crate) struct PreprocessedGlyph {
@@ -43,10 +43,36 @@ pub(crate) struct BuildSummary {
     pub(crate) previews_dir: PathBuf,
 }
 
+const GLYPH_LOCK_FILE_NAME: &str = "petiglyph.lock";
+const GLYPH_LOCK_VERSION: u32 = 1;
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct GlyphLockEntry {
+    source_file: String,
+    codepoint: String,
+    image_fingerprint: String,
+    #[serde(default = "default_lock_entry_active")]
+    active: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct GlyphLockFile {
+    version: u32,
+    project_id: String,
+    codepoint_start: String,
+    #[serde(default)]
+    entries: Vec<GlyphLockEntry>,
+}
+
+fn default_lock_entry_active() -> bool {
+    true
+}
+
 pub(crate) fn build_outputs(config: &RuntimeConfig) -> Result<BuildSummary> {
     let sources = collect_source_files(&config.input_dir)?;
     let glyphs = preprocess_sources(&sources, &config.input_dir, config.glyph_size)?;
     validate_codepoint_range(config.codepoint_start, glyphs.len())?;
+    let assigned_codepoints = assign_codepoints_for_build(config, &glyphs)?;
 
     let previews_dir = config.out_dir.join("previews");
     fs::create_dir_all(&previews_dir)
@@ -56,8 +82,7 @@ pub(crate) fn build_outputs(config: &RuntimeConfig) -> Result<BuildSummary> {
     let mut bdf_glyphs = Vec::with_capacity(glyphs.len());
 
     for (idx, glyph) in glyphs.iter().enumerate() {
-        let idx_u32 = u32::try_from(idx).context("too many glyphs to assign Unicode codepoints")?;
-        let codepoint = config.codepoint_start + idx_u32;
+        let codepoint = assigned_codepoints[idx];
         let threshold = effective_threshold(
             config.base_threshold,
             &config.threshold_overrides,
@@ -95,7 +120,7 @@ pub(crate) fn build_outputs(config: &RuntimeConfig) -> Result<BuildSummary> {
     write_ttf(&ttf_path, &config.font_name, config.glyph_size, &bdf_glyphs)?;
 
     let sample_path = config.out_dir.join("glyph-sample.txt");
-    let sample = glyph_sample_string(config.codepoint_start, bdf_glyphs.len());
+    let sample = glyph_sample_string_for_codepoints(&assigned_codepoints);
     fs::write(&sample_path, format!("{sample}\n"))
         .with_context(|| format!("failed to write {}", sample_path.display()))?;
 
@@ -107,6 +132,176 @@ pub(crate) fn build_outputs(config: &RuntimeConfig) -> Result<BuildSummary> {
         sample_path,
         previews_dir,
     })
+}
+
+fn glyph_lock_path(config: &RuntimeConfig) -> PathBuf {
+    config.project_dir.join(GLYPH_LOCK_FILE_NAME)
+}
+
+fn load_glyph_lock(config: &RuntimeConfig) -> Result<GlyphLockFile> {
+    let path = glyph_lock_path(config);
+    if !path.exists() {
+        return Ok(GlyphLockFile {
+            version: GLYPH_LOCK_VERSION,
+            project_id: config.project_id.clone(),
+            codepoint_start: format_codepoint(config.codepoint_start),
+            entries: Vec::new(),
+        });
+    }
+
+    let raw =
+        fs::read_to_string(&path).with_context(|| format!("failed to read {}", path.display()))?;
+    let mut lock: GlyphLockFile = serde_json::from_str(&raw)
+        .with_context(|| format!("failed to parse {}", path.display()))?;
+
+    if lock.version != GLYPH_LOCK_VERSION {
+        bail!(
+            "unsupported glyph lock version in {}: expected {}, got {}",
+            path.display(),
+            GLYPH_LOCK_VERSION,
+            lock.version
+        );
+    }
+
+    if lock.project_id.trim().is_empty() {
+        bail!("glyph lock project_id is empty in {}", path.display());
+    }
+
+    if lock.project_id != config.project_id {
+        bail!(
+            "glyph lock project_id mismatch in {} (manifest project_id={}, lock project_id={})",
+            path.display(),
+            config.project_id,
+            lock.project_id
+        );
+    }
+
+    for entry in &lock.entries {
+        if entry.source_file.trim().is_empty() {
+            bail!(
+                "glyph lock contains an empty source_file in {}",
+                path.display()
+            );
+        }
+        parse_codepoint(&entry.codepoint).with_context(|| {
+            format!(
+                "invalid codepoint {} for {} in {}",
+                entry.codepoint,
+                entry.source_file,
+                path.display()
+            )
+        })?;
+    }
+
+    lock.codepoint_start = format_codepoint(config.codepoint_start);
+    Ok(lock)
+}
+
+fn save_glyph_lock(config: &RuntimeConfig, lock: &GlyphLockFile) -> Result<()> {
+    let path = glyph_lock_path(config);
+    let raw = serde_json::to_string_pretty(lock).context("failed to serialize glyph lock")?;
+    fs::write(&path, raw).with_context(|| format!("failed to write {}", path.display()))
+}
+
+fn fingerprint_source(path: &Path) -> Result<String> {
+    let data = fs::read(path).with_context(|| format!("failed to read {}", path.display()))?;
+    let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
+    for byte in data {
+        hash ^= u64::from(byte);
+        hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    Ok(format!("fnv1a64:{hash:016x}"))
+}
+
+fn next_available_codepoint(start: u32, used: &BTreeSet<u32>) -> Result<u32> {
+    let mut candidate = start;
+    loop {
+        if candidate > 0x10_FFFF {
+            bail!(
+                "no available Unicode codepoint left from U+{:04X} to U+10FFFF",
+                start
+            );
+        }
+
+        if is_valid_unicode_scalar(candidate) && !used.contains(&candidate) {
+            return Ok(candidate);
+        }
+
+        candidate = candidate
+            .checked_add(1)
+            .ok_or_else(|| anyhow::anyhow!("no available Unicode codepoint left"))?;
+    }
+}
+
+fn assign_codepoints_for_build(
+    config: &RuntimeConfig,
+    glyphs: &[PreprocessedGlyph],
+) -> Result<Vec<u32>> {
+    let mut lock = load_glyph_lock(config)?;
+    let mut entries_by_source: BTreeMap<String, GlyphLockEntry> = BTreeMap::new();
+    let mut used_codepoints = BTreeSet::new();
+
+    for entry in lock.entries.drain(..) {
+        if entries_by_source
+            .insert(entry.source_file.clone(), entry.clone())
+            .is_some()
+        {
+            bail!(
+                "duplicate source_file in glyph lock {}: {}",
+                glyph_lock_path(config).display(),
+                entry.source_file
+            );
+        }
+
+        let parsed = parse_codepoint(&entry.codepoint)?;
+        if !used_codepoints.insert(parsed) {
+            bail!(
+                "duplicate codepoint in glyph lock {}: {}",
+                glyph_lock_path(config).display(),
+                entry.codepoint
+            );
+        }
+    }
+
+    let mut assigned = Vec::with_capacity(glyphs.len());
+    let mut active_sources = BTreeSet::new();
+
+    for glyph in glyphs {
+        active_sources.insert(glyph.source_key.clone());
+        let fingerprint = fingerprint_source(&glyph.source_path)?;
+
+        if let Some(entry) = entries_by_source.get_mut(&glyph.source_key) {
+            entry.active = true;
+            entry.image_fingerprint = fingerprint;
+            assigned.push(parse_codepoint(&entry.codepoint)?);
+            continue;
+        }
+
+        let codepoint = next_available_codepoint(config.codepoint_start, &used_codepoints)?;
+        used_codepoints.insert(codepoint);
+
+        entries_by_source.insert(
+            glyph.source_key.clone(),
+            GlyphLockEntry {
+                source_file: glyph.source_key.clone(),
+                codepoint: format_codepoint(codepoint),
+                image_fingerprint: fingerprint,
+                active: true,
+            },
+        );
+        assigned.push(codepoint);
+    }
+
+    for (source_key, entry) in &mut entries_by_source {
+        if !active_sources.contains(source_key) {
+            entry.active = false;
+        }
+    }
+
+    lock.entries = entries_by_source.into_values().collect();
+    save_glyph_lock(config, &lock)?;
+
+    Ok(assigned)
 }
 
 fn is_valid_unicode_scalar(codepoint: u32) -> bool {
@@ -1440,13 +1635,21 @@ fn bdf_font_name(font_name: &str, glyph_size: u32) -> String {
     }
 }
 
-pub(crate) fn glyph_sample_string(codepoint_start: u32, glyph_count: usize) -> String {
+pub(crate) fn glyph_sample_string_for_codepoints(codepoints: &[u32]) -> String {
     let mut out = String::new();
-    for idx in 0..glyph_count {
-        if let Some(ch) = char::from_u32(codepoint_start + idx as u32) {
+    for codepoint in codepoints {
+        if let Some(ch) = char::from_u32(*codepoint) {
             out.push(ch);
             out.push(' ');
         }
     }
     out.trim_end().to_string()
+}
+
+pub(crate) fn glyph_sample_string(codepoint_start: u32, glyph_count: usize) -> String {
+    let mut codepoints = Vec::with_capacity(glyph_count);
+    for idx in 0..glyph_count {
+        codepoints.push(codepoint_start + idx as u32);
+    }
+    glyph_sample_string_for_codepoints(&codepoints)
 }
