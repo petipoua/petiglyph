@@ -1,0 +1,13 @@
+{
+  "version": 1,
+  "project_id": "e85cf9656ccf49d899f510b48014373f",
+  "codepoint_start": "U+100025",
+  "entries": [
+    {
+      "source_file": "claude.png",
+      "codepoint": "U+100025",
+      "image_fingerprint": "fnv1a64:69d31d1af6642813",
+      "active": true
+    }
+  ]
+}

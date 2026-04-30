@@ -1,11 +1,11 @@
 {
   "version": 1,
-  "project_id": "643dcde1e28d41b8a1e4aaaaa616f920",
-  "codepoint_start": "U+10001A",
+  "project_id": "a247124e571a44e7b106ccb8329bbfa5",
+  "codepoint_start": "U+100026",
   "entries": [
     {
       "source_file": "cursor.svg",
-      "codepoint": "U+10001A",
+      "codepoint": "U+100026",
       "image_fingerprint": "fnv1a64:385cc1b232951b24",
       "active": true
     }
