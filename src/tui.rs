@@ -29,6 +29,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tui_input::{Input, backend::crossterm::EventHandler};
 use walkdir::WalkDir;
 
+use crate::artifact_warning::incompatible_artifact_warning;
 use crate::build::{
     BuildSummary, MappingEntry, PreprocessedGlyph, build_outputs, expected_bdf_path,
     expected_ttf_path, is_supported_source, preprocess_sources,
@@ -159,7 +160,8 @@ pub(crate) fn tui_workspace(
                     if should_dispatch_key_kind(key.kind) {
                         tui_debug_log("event.dispatch.before", app_debug_state(&app));
                         if let Err(err) = handle_key_event(&mut app, key) {
-                            app.status = Some(err.to_string());
+                            app.status =
+                                Some(format_status_from_error(&app.manifest_path, &err.to_string()));
                             tui_debug_log("event.dispatch.error", app_debug_state(&app));
                         } else {
                             tui_debug_log("event.dispatch.after", app_debug_state(&app));
@@ -1931,7 +1933,7 @@ impl App {
                 ));
             }
             Err(err) => {
-                self.status = Some(err);
+                self.status = Some(format_status_from_error(&self.manifest_path, &err));
             }
         }
     }
@@ -2015,7 +2017,7 @@ impl App {
                 }
             }
             Err(err) => {
-                self.status = Some(err);
+                self.status = Some(format_status_from_error(&self.manifest_path, &err));
             }
         }
     }
@@ -2823,6 +2825,13 @@ fn draw_ui(frame: &mut Frame, app: &App) {
         .alignment(Alignment::Center)
         .style(Style::default().fg(muted));
     frame.render_widget(footer, root[3]);
+}
+
+fn format_status_from_error(manifest_path: &Path, error_text: &str) -> String {
+    if let Some(warning) = incompatible_artifact_warning(error_text, Some(manifest_path)) {
+        return warning;
+    }
+    error_text.to_string()
 }
 
 fn terminal_size_supported(area: Rect) -> bool {

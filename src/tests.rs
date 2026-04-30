@@ -7,6 +7,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
+use crate::artifact_warning::{INCOMPATIBLE_ARTIFACT_PREFIX, incompatible_artifact_warning};
 use crate::build::{
     BuildOptions, GlyphBitmap, MappingEntry, PreprocessedGlyph, bitmap_to_bdf_rows, build_outputs,
     build_outputs_with_options, collect_source_files, coverage_map, glyph_sample_string,
@@ -120,6 +121,35 @@ fn parse_codepoint_rejects_empty_and_out_of_range_values() {
     assert!(parse_codepoint("").is_err());
     assert!(parse_codepoint(" ").is_err());
     assert!(parse_codepoint("110000").is_err());
+}
+
+#[test]
+fn incompatible_artifact_warning_flags_legacy_lock_mismatch() {
+    let warning = incompatible_artifact_warning(
+        "glyph lock project_id mismatch in /tmp/x/petiglyph.lock",
+        Some(Path::new("/tmp/x/petiglyph.toml")),
+    )
+    .expect("legacy lock mismatch should be flagged");
+    assert!(
+        warning.starts_with(INCOMPATIBLE_ARTIFACT_PREFIX),
+        "warning prefix should be explicit: {warning}"
+    );
+    assert!(
+        warning.contains("doctor --repair"),
+        "warning should include repair command: {warning}"
+    );
+}
+
+#[test]
+fn incompatible_artifact_warning_ignores_standard_runtime_errors() {
+    let warning = incompatible_artifact_warning(
+        "no source images found in /tmp/x/icons",
+        Some(Path::new("/tmp/x/petiglyph.toml")),
+    );
+    assert!(
+        warning.is_none(),
+        "normal runtime errors should not be reclassified as incompatible artifacts"
+    );
 }
 
 #[test]

@@ -4,6 +4,7 @@ use serde::Serialize;
 use std::io::{self, IsTerminal};
 use std::path::{Path, PathBuf};
 
+use crate::artifact_warning::incompatible_artifact_warning;
 use crate::build::{BuildOptions, BuildSummary, build_outputs_with_options};
 use crate::doctor::{DoctorReport, doctor};
 use crate::install::{
@@ -241,7 +242,15 @@ pub(crate) fn run() {
     let exit_code = match run_cli(cli) {
         Ok(()) => 0,
         Err(CliRunError::Plain(error)) => {
-            eprintln!("{error:#}");
+            let rendered = format!("{error:#}");
+            if let Some(warning) = incompatible_artifact_warning(&rendered, None) {
+                if io::stderr().is_terminal() {
+                    eprintln!("\x1b[31m{warning}\x1b[0m");
+                } else {
+                    eprintln!("{warning}");
+                }
+            }
+            eprintln!("{rendered}");
             1
         }
         Err(CliRunError::Json { command, error }) => {

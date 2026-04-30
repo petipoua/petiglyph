@@ -1,3 +1,4 @@
+mod artifact_warning;
 mod build;
 mod cli;
 mod doctor;
