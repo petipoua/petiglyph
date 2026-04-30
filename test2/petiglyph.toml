@@ -1,7 +1,0 @@
-input_dir = "icons"
-out_dir = "build"
-font_name = "Test2"
-glyph_size = 64
-threshold = 64
-codepoint_start = "U+100000"
-project_id = "a247124e571a44e7b106ccb8329bbfa5"

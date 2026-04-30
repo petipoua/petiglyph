@@ -15,3 +15,6 @@
 
 /build/
 
+# Local throwaway petiglyph projects (kept out of git by naming convention)
+/test[0-9]*/
+/pp-*/
