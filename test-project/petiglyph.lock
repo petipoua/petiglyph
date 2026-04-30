@@ -1,0 +1,13 @@
+{
+  "version": 1,
+  "project_id": "34aad95db10342448a77653309c37529",
+  "codepoint_start": "U+100019",
+  "entries": [
+    {
+      "source_file": "codex.png",
+      "codepoint": "U+100019",
+      "image_fingerprint": "fnv1a64:effb46ae6b1aa3cd",
+      "active": true
+    }
+  ]
+}

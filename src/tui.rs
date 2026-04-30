@@ -16,6 +16,7 @@ use ratatui::widgets::{
 };
 use ratatui::{Frame, Terminal};
 use std::collections::BTreeSet;
+use std::env;
 use std::fs::{self, OpenOptions};
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
@@ -30,11 +31,13 @@ use walkdir::WalkDir;
 
 use crate::build::{
     BuildSummary, MappingEntry, PreprocessedGlyph, build_outputs, expected_bdf_path,
-    expected_ttf_path, glyph_sample_string, is_supported_source, preprocess_sources,
+    expected_ttf_path, is_supported_source, preprocess_sources,
 };
 use crate::install::{
-    FontInstallNameMode, expected_install_ttf_path_for_mode, install_built_font,
-    install_dir_for_manifest, uninstall_installed_font_file, uninstall_project_font,
+    DEFAULT_INSTALL_NAME_MODE, FontInstallNameMode, effective_font_name,
+    expected_install_ttf_path_for_mode, install_built_font, install_dir_for_manifest,
+    installed_ttf_candidates_for_manifest_font, uninstall_installed_font_file,
+    uninstall_project_font,
 };
 use crate::project::{
     RuntimeConfig, create_project_in_dir, discover_project_manifests, load_runtime_config,
@@ -1228,30 +1231,6 @@ fn draw_welcome_view(
     current_project_lines.push(Line::from(""));
     current_project_lines.push(Line::from(vec![
         Span::raw("  "),
-        Span::styled("Sample", section_style.add_modifier(Modifier::BOLD)),
-    ]));
-    if app.active_project.is_none() {
-        current_project_lines.push(Line::from(vec![
-            Span::raw("    "),
-            Span::styled(
-                "Select or create a project to preview its sample string.",
-                Style::default().fg(Color::Yellow),
-            ),
-        ]));
-    } else {
-        current_project_lines.push(Line::from(vec![
-            Span::raw("    "),
-            Span::styled("Latest build sample:", Style::default().fg(muted)),
-        ]));
-        current_project_lines.push(Line::from(""));
-        current_project_lines.push(Line::from(vec![
-            Span::raw("    "),
-            Span::raw(app.sample_string()),
-        ]));
-    }
-    current_project_lines.push(Line::from(""));
-    current_project_lines.push(Line::from(vec![
-        Span::raw("  "),
         Span::styled("Actions: ", Style::default().fg(muted)),
         Span::styled(build_label, build_button_style),
         Span::raw(" "),
@@ -1294,6 +1273,15 @@ fn draw_welcome_view(
             Span::styled(
                 "Machine-wide inventory of petiglyph-managed fonts.",
                 Style::default().fg(muted),
+            ),
+        ]),
+        Line::from(vec![
+            Span::raw("  "),
+            Span::styled(
+                installed_fonts_restart_warning(),
+                Style::default()
+                    .fg(Color::Yellow)
+                    .add_modifier(Modifier::BOLD),
             ),
         ]),
         Line::from(""),
@@ -2083,18 +2071,6 @@ impl App {
         self.poll_font_task();
     }
 
-    fn sample_string(&self) -> String {
-        if self.active_project.is_none() {
-            return String::new();
-        }
-
-        if let Some(sample) = &self.last_sample {
-            sample.clone()
-        } else {
-            glyph_sample_string(self.config.codepoint_start, self.glyphs.len())
-        }
-    }
-
     fn active_project_label(&self) -> String {
         let Some(active_project) = &self.active_project else {
             return "none".to_string();
@@ -2177,7 +2153,7 @@ fn build_and_install(
     manifest_path: PathBuf,
     launch_overrides: TuiLaunchOverrides,
 ) -> Result<InstallTaskOutput> {
-    let config = load_runtime_config(
+    let mut config = load_runtime_config(
         &manifest_path,
         launch_overrides.input_dir,
         None,
@@ -2188,6 +2164,8 @@ fn build_and_install(
     if config.glyph_size == 0 {
         bail!("glyph_size must be > 0");
     }
+    config.font_name =
+        effective_font_name(&manifest_path, &config.font_name, DEFAULT_INSTALL_NAME_MODE)?;
 
     let summary = build_outputs(&config)?;
     let sample = fs::read_to_string(&summary.sample_path)
@@ -2195,6 +2173,7 @@ fn build_and_install(
     let installed = install_built_font(
         &manifest_path,
         &config.font_name,
+        &config.project_id,
         &summary.ttf_path,
         summary.glyph_count,
     )?;
@@ -2304,16 +2283,22 @@ where
     F: FnMut(&Path) -> bool,
 {
     let mut candidates = Vec::new();
+    if let Ok(paths) = installed_ttf_candidates_for_manifest_font(manifest_path, font_name) {
+        for path in paths {
+            if !candidates.contains(&path) {
+                candidates.push(path);
+            }
+        }
+    }
     if let Ok(path) =
-        expected_install_ttf_path_for_mode(manifest_path, font_name, FontInstallNameMode::Plain)
+        expected_install_ttf_path_for_mode(manifest_path, font_name, DEFAULT_INSTALL_NAME_MODE)
+        && !candidates.contains(&path)
     {
         candidates.push(path);
     }
-    if let Ok(path) = expected_install_ttf_path_for_mode(
-        manifest_path,
-        font_name,
-        FontInstallNameMode::ProjectPrefixed,
-    ) && !candidates.contains(&path)
+    if let Ok(path) =
+        expected_install_ttf_path_for_mode(manifest_path, font_name, FontInstallNameMode::Plain)
+        && !candidates.contains(&path)
     {
         candidates.push(path);
     }
@@ -3128,6 +3113,44 @@ fn preview_lines(
     }
 
     rows.into_iter().map(Line::from).collect()
+}
+
+fn detected_terminal_name() -> Option<&'static str> {
+    let term_program = env::var("TERM_PROGRAM")
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    let term = env::var("TERM").unwrap_or_default().to_ascii_lowercase();
+
+    if term_program.contains("ghostty")
+        || term.contains("ghostty")
+        || env::var_os("GHOSTTY_RESOURCES_DIR").is_some()
+    {
+        return Some("Ghostty");
+    }
+
+    if term_program.contains("alacritty") || env::var_os("ALACRITTY_SOCKET").is_some() {
+        return Some("Alacritty");
+    }
+
+    if term_program.contains("wezterm") || env::var_os("WEZTERM_PANE").is_some() {
+        return Some("WezTerm");
+    }
+
+    if term_program.contains("kitty")
+        || term.contains("kitty")
+        || env::var_os("KITTY_PID").is_some()
+    {
+        return Some("Kitty");
+    }
+
+    None
+}
+
+fn installed_fonts_restart_warning() -> String {
+    if let Some(name) = detected_terminal_name() {
+        return format!("restart all {name} terminals to render newly installed glyphs");
+    }
+    "restart all terminals to render newly installed glyphs".to_string()
 }
 
 pub(crate) fn wrap_sample_for_display(sample: &str, max_chars: usize) -> Vec<String> {

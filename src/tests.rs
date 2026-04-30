@@ -2,22 +2,24 @@ use crossterm::event::{
     KeyCode, KeyEvent, KeyEventKind, KeyEventState, KeyModifiers, KeyboardEnhancementFlags,
 };
 use image::{Rgba, RgbaImage};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use crate::build::{
-    GlyphBitmap, MappingEntry, PreprocessedGlyph, bitmap_to_bdf_rows, build_outputs,
-    collect_source_files, coverage_map, glyph_sample_string, is_supported_source,
+    BuildOptions, GlyphBitmap, MappingEntry, PreprocessedGlyph, bitmap_to_bdf_rows, build_outputs,
+    build_outputs_with_options, collect_source_files, coverage_map, glyph_sample_string,
+    is_supported_source,
 };
 use crate::cli::{DefaultTuiTarget, resolve_default_tui_target_for};
 use crate::install::{
-    FontInstallNameMode, effective_font_name, expected_install_ttf_path_for_mode,
+    DEFAULT_INSTALL_NAME_MODE, FontInstallNameMode, effective_font_name,
+    expected_install_ttf_path_for_mode, reserve_project_unicode_range,
 };
 use crate::project::{
     Manifest, RuntimeConfig, auto_detect_manifest_path, discover_project_manifests,
-    load_runtime_config, parse_codepoint, read_manifest, write_manifest,
+    format_codepoint, load_runtime_config, parse_codepoint, read_manifest, write_manifest,
 };
 use crate::tui::{
     App, AppView, HomeToolAction, InstalledFontSample, InteractiveGlyph, TuiLaunchOverrides,
@@ -165,6 +167,27 @@ fn resolve_installed_font_path_detects_cli_project_prefixed_name() {
 
     assert_ne!(plain_path, prefixed_path);
     assert_eq!(resolved.as_deref(), Some(prefixed_path.as_path()));
+
+    fs::remove_dir_all(project_dir).expect("temp project dir is removed");
+}
+
+#[test]
+fn resolve_installed_font_path_prefers_project_scoped_candidate_over_legacy_plain() {
+    let project_dir = make_temp_dir("installed-path-prefers-default");
+    let manifest_path = project_dir.join("petiglyph.toml");
+
+    let plain_path =
+        expected_install_ttf_path_for_mode(&manifest_path, "My Font", FontInstallNameMode::Plain)
+            .expect("plain install path resolves");
+    let project_scoped_path =
+        expected_install_ttf_path_for_mode(&manifest_path, "My Font", DEFAULT_INSTALL_NAME_MODE)
+            .expect("project-scoped install path resolves");
+
+    let resolved = resolve_installed_font_path_with(&manifest_path, "My Font", |path| {
+        path == plain_path.as_path() || path == project_scoped_path.as_path()
+    });
+
+    assert_eq!(resolved.as_deref(), Some(project_scoped_path.as_path()));
 
     fs::remove_dir_all(project_dir).expect("temp project dir is removed");
 }
@@ -927,6 +950,49 @@ fn build_outputs_centers_non_square_glyphs_in_ttf_line_box() {
 }
 
 #[test]
+fn build_outputs_embeds_project_identity_in_ttf_unique_name() {
+    let project_dir = make_temp_dir("ttf-unique-identity");
+    let input_dir = project_dir.join("icons");
+    let out_dir = project_dir.join("build");
+    fs::create_dir_all(&input_dir).expect("icons dir is created");
+    fs::create_dir_all(&out_dir).expect("build dir is created");
+    write_test_png(&input_dir.join("alpha.png"));
+
+    let config = RuntimeConfig {
+        project_dir: project_dir.clone(),
+        project_id: "phase2_project_identity_abc123".to_string(),
+        input_dir,
+        out_dir,
+        font_name: "UniqueName".to_string(),
+        glyph_size: 16,
+        base_threshold: 64,
+        threshold_overrides: BTreeMap::new(),
+        codepoint_start: 0x10_0000,
+    };
+
+    let summary = build_outputs(&config).expect("build succeeds");
+    let ttf = fs::read(&summary.ttf_path).expect("ttf is readable");
+    let face = ttf_parser::Face::parse(&ttf, 0).expect("ttf parses");
+
+    let unique_ids = face
+        .names()
+        .into_iter()
+        .filter(|name| name.name_id == ttf_parser::name_id::UNIQUE_ID && name.is_unicode())
+        .filter_map(|name| name.to_string())
+        .collect::<Vec<_>>();
+
+    assert!(
+        unique_ids
+            .iter()
+            .any(|value| value.contains(&config.project_id)
+                && value.contains(env!("CARGO_PKG_VERSION"))),
+        "unique name ID should contain project identity and CLI version; got {unique_ids:?}"
+    );
+
+    fs::remove_dir_all(project_dir).expect("temp project dir is removed");
+}
+
+#[test]
 fn sample_glyphs_from_ttf_bytes_limits_preview_to_requested_count() {
     let project_dir = make_temp_dir("ttf-sample-limit");
     let input_dir = project_dir.join("icons");
@@ -1237,6 +1303,128 @@ fn build_outputs_tombstones_removed_sources_and_does_not_reuse_their_codepoints(
         tombstone_entry.get("active").and_then(|v| v.as_bool()),
         Some(false)
     );
+
+    fs::remove_dir_all(project_dir).expect("temp project dir is removed");
+}
+
+#[test]
+fn unicode_registry_allocates_disjoint_ranges_for_different_projects() {
+    let registry_root = make_temp_dir("unicode-registry-disjoint");
+    let locked = BTreeSet::new();
+
+    let a = reserve_project_unicode_range(Some(&registry_root), "project-a", 0x10_0000, 4, &locked)
+        .expect("project-a reservation should succeed");
+    let b = reserve_project_unicode_range(Some(&registry_root), "project-b", 0x10_0000, 4, &locked)
+        .expect("project-b reservation should succeed");
+
+    assert_eq!(a.range_start, 0x10_0000);
+    assert!(
+        b.range_start > a.range_end || a.range_start > b.range_end,
+        "project ranges must not overlap: a=U+{:X}..U+{:X}, b=U+{:X}..U+{:X}",
+        a.range_start,
+        a.range_end,
+        b.range_start,
+        b.range_end
+    );
+
+    let lock_path = registry_root.join("petiglyph/.unicode-registry.lock");
+    assert!(
+        !lock_path.exists(),
+        "registry lock should be released after reservation"
+    );
+
+    fs::remove_dir_all(registry_root).expect("temp registry root is removed");
+}
+
+#[test]
+fn unicode_registry_rejects_locked_codepoint_conflicts_with_foreign_project() {
+    let registry_root = make_temp_dir("unicode-registry-conflict");
+    let locked = BTreeSet::new();
+
+    let _a =
+        reserve_project_unicode_range(Some(&registry_root), "project-a", 0x10_0000, 8, &locked)
+            .expect("project-a reservation should succeed");
+
+    let mut conflicting_locked = BTreeSet::new();
+    conflicting_locked.insert(0x10_0002);
+    let error = reserve_project_unicode_range(
+        Some(&registry_root),
+        "project-b",
+        0x10_0000,
+        1,
+        &conflicting_locked,
+    )
+    .expect_err("reservation should fail on owned codepoint conflict");
+
+    let message = format!("{error:#}");
+    assert!(
+        message.contains("conflict") && message.contains("project-a"),
+        "unexpected conflict error: {message}"
+    );
+
+    fs::remove_dir_all(registry_root).expect("temp registry root is removed");
+}
+
+#[test]
+fn build_force_remap_recovers_from_foreign_codepoint_conflict() {
+    let project_dir = make_temp_dir("force-remap-conflict");
+    let input_dir = project_dir.join("icons");
+    let out_dir = project_dir.join("build");
+    fs::create_dir_all(&input_dir).expect("icons dir is created");
+    fs::create_dir_all(&out_dir).expect("build dir is created");
+    write_test_png(&input_dir.join("icon.png"));
+
+    let foreign_locked = BTreeSet::new();
+    let foreign = reserve_project_unicode_range(
+        Some(&project_dir),
+        "project-a",
+        0x10_0000,
+        8,
+        &foreign_locked,
+    )
+    .expect("project-a reservation should succeed");
+
+    let conflicting_codepoint = format_codepoint(foreign.range_start);
+    let lock_json = serde_json::json!({
+        "version": 1,
+        "project_id": "project-b",
+        "codepoint_start": "U+100000",
+        "entries": [
+            {
+                "source_file": "icon.png",
+                "codepoint": conflicting_codepoint,
+                "image_fingerprint": "fnv1a64:0000000000000000",
+                "active": true
+            }
+        ]
+    });
+    fs::write(
+        project_dir.join("petiglyph.lock"),
+        serde_json::to_string_pretty(&lock_json).expect("lock serializes"),
+    )
+    .expect("lock is written");
+
+    let config = RuntimeConfig {
+        project_dir: project_dir.clone(),
+        project_id: "project-b".to_string(),
+        input_dir,
+        out_dir,
+        font_name: "ForceRemap".to_string(),
+        glyph_size: 16,
+        base_threshold: 64,
+        threshold_overrides: BTreeMap::new(),
+        codepoint_start: 0x10_0000,
+    };
+
+    let regular_error = build_outputs(&config).expect_err("regular build should fail on conflict");
+    let regular_message = format!("{regular_error:#}");
+    assert!(
+        regular_message.contains("conflict"),
+        "unexpected regular conflict error: {regular_message}"
+    );
+
+    build_outputs_with_options(&config, BuildOptions { force_remap: true })
+        .expect("force remap build should recover and succeed");
 
     fs::remove_dir_all(project_dir).expect("temp project dir is removed");
 }

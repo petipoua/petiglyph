@@ -6,9 +6,14 @@ use resvg::usvg;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::fs;
+use std::fs::OpenOptions;
+use std::io::Write;
 use std::path::{Path, PathBuf};
+use std::thread;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use walkdir::WalkDir;
 
+use crate::install::reserve_project_unicode_range;
 use crate::project::{RuntimeConfig, format_codepoint, parse_codepoint};
 
 #[derive(Debug, Clone)]
@@ -44,7 +49,27 @@ pub(crate) struct BuildSummary {
 }
 
 const GLYPH_LOCK_FILE_NAME: &str = "petiglyph.lock";
+const GLYPH_BUILD_LOCK_FILE_NAME: &str = ".petiglyph-build.lock";
 const GLYPH_LOCK_VERSION: u32 = 1;
+const BUILD_LOCK_TIMEOUT: Duration = Duration::from_secs(15);
+const BUILD_LOCK_STALE_AFTER: Duration = Duration::from_secs(120);
+const BUILD_LOCK_RETRY_DELAY: Duration = Duration::from_millis(50);
+
+#[derive(Debug, Clone, Copy, Default)]
+pub(crate) struct BuildOptions {
+    pub(crate) force_remap: bool,
+}
+
+#[derive(Debug)]
+struct BuildFileLockGuard {
+    path: PathBuf,
+}
+
+impl Drop for BuildFileLockGuard {
+    fn drop(&mut self) {
+        let _ = fs::remove_file(&self.path);
+    }
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct GlyphLockEntry {
@@ -69,10 +94,17 @@ fn default_lock_entry_active() -> bool {
 }
 
 pub(crate) fn build_outputs(config: &RuntimeConfig) -> Result<BuildSummary> {
+    build_outputs_with_options(config, BuildOptions::default())
+}
+
+pub(crate) fn build_outputs_with_options(
+    config: &RuntimeConfig,
+    options: BuildOptions,
+) -> Result<BuildSummary> {
     let sources = collect_source_files(&config.input_dir)?;
     let glyphs = preprocess_sources(&sources, &config.input_dir, config.glyph_size)?;
     validate_codepoint_range(config.codepoint_start, glyphs.len())?;
-    let assigned_codepoints = assign_codepoints_for_build(config, &glyphs)?;
+    let assigned_codepoints = assign_codepoints_for_build(config, &glyphs, options)?;
 
     let previews_dir = config.out_dir.join("previews");
     fs::create_dir_all(&previews_dir)
@@ -117,7 +149,13 @@ pub(crate) fn build_outputs(config: &RuntimeConfig) -> Result<BuildSummary> {
     write_bdf(&bdf_path, &config.font_name, config.glyph_size, &bdf_glyphs)?;
 
     let ttf_path = config.out_dir.join(format!("{font_file_stem}.ttf"));
-    write_ttf(&ttf_path, &config.font_name, config.glyph_size, &bdf_glyphs)?;
+    write_ttf(
+        &ttf_path,
+        &config.font_name,
+        &config.project_id,
+        config.glyph_size,
+        &bdf_glyphs,
+    )?;
 
     let sample_path = config.out_dir.join("glyph-sample.txt");
     let sample = glyph_sample_string_for_codepoints(&assigned_codepoints);
@@ -138,6 +176,54 @@ fn glyph_lock_path(config: &RuntimeConfig) -> PathBuf {
     config.project_dir.join(GLYPH_LOCK_FILE_NAME)
 }
 
+fn build_lock_path(config: &RuntimeConfig) -> PathBuf {
+    config.project_dir.join(GLYPH_BUILD_LOCK_FILE_NAME)
+}
+
+fn now_millis() -> u128 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis()
+}
+
+fn acquire_build_lock(config: &RuntimeConfig) -> Result<BuildFileLockGuard> {
+    let path = build_lock_path(config);
+    let started = SystemTime::now();
+    loop {
+        match OpenOptions::new().write(true).create_new(true).open(&path) {
+            Ok(mut file) => {
+                let _ = writeln!(
+                    file,
+                    "pid={} created_unix_ms={}",
+                    std::process::id(),
+                    now_millis()
+                );
+                return Ok(BuildFileLockGuard { path });
+            }
+            Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => {
+                let stale = fs::metadata(&path)
+                    .and_then(|metadata| metadata.modified())
+                    .ok()
+                    .and_then(|modified| modified.elapsed().ok())
+                    .is_some_and(|elapsed| elapsed > BUILD_LOCK_STALE_AFTER);
+                if stale {
+                    let _ = fs::remove_file(&path);
+                    continue;
+                }
+                if started.elapsed().unwrap_or_default() >= BUILD_LOCK_TIMEOUT {
+                    bail!("timed out waiting for build lock {}", path.display());
+                }
+                thread::sleep(BUILD_LOCK_RETRY_DELAY);
+            }
+            Err(err) => {
+                return Err(err)
+                    .with_context(|| format!("failed to create build lock {}", path.display()));
+            }
+        }
+    }
+}
+
 fn load_glyph_lock(config: &RuntimeConfig) -> Result<GlyphLockFile> {
     let path = glyph_lock_path(config);
     if !path.exists() {
@@ -151,7 +237,7 @@ fn load_glyph_lock(config: &RuntimeConfig) -> Result<GlyphLockFile> {
 
     let raw =
         fs::read_to_string(&path).with_context(|| format!("failed to read {}", path.display()))?;
-    let mut lock: GlyphLockFile = serde_json::from_str(&raw)
+    let lock: GlyphLockFile = serde_json::from_str(&raw)
         .with_context(|| format!("failed to parse {}", path.display()))?;
 
     if lock.version != GLYPH_LOCK_VERSION {
@@ -193,7 +279,6 @@ fn load_glyph_lock(config: &RuntimeConfig) -> Result<GlyphLockFile> {
         })?;
     }
 
-    lock.codepoint_start = format_codepoint(config.codepoint_start);
     Ok(lock)
 }
 
@@ -236,8 +321,19 @@ fn next_available_codepoint(start: u32, used: &BTreeSet<u32>) -> Result<u32> {
 fn assign_codepoints_for_build(
     config: &RuntimeConfig,
     glyphs: &[PreprocessedGlyph],
+    options: BuildOptions,
 ) -> Result<Vec<u32>> {
-    let mut lock = load_glyph_lock(config)?;
+    let _build_lock = acquire_build_lock(config)?;
+    let mut lock = if options.force_remap {
+        GlyphLockFile {
+            version: GLYPH_LOCK_VERSION,
+            project_id: config.project_id.clone(),
+            codepoint_start: format_codepoint(config.codepoint_start),
+            entries: Vec::new(),
+        }
+    } else {
+        load_glyph_lock(config)?
+    };
     let mut entries_by_source: BTreeMap<String, GlyphLockEntry> = BTreeMap::new();
     let mut used_codepoints = BTreeSet::new();
 
@@ -263,6 +359,46 @@ fn assign_codepoints_for_build(
         }
     }
 
+    let mut existing_active_sources = BTreeSet::new();
+    for glyph in glyphs {
+        existing_active_sources.insert(glyph.source_key.clone());
+    }
+    let mut missing_sources = 0usize;
+    for source_key in &existing_active_sources {
+        if !entries_by_source.contains_key(source_key) {
+            missing_sources += 1;
+        }
+    }
+
+    let required_codepoints = used_codepoints
+        .len()
+        .checked_add(missing_sources)
+        .ok_or_else(|| anyhow::anyhow!("glyph count is too large to allocate codepoints"))?;
+    #[cfg(test)]
+    let registry_root_override = Some(config.project_dir.as_path());
+    #[cfg(not(test))]
+    let registry_root_override = None;
+
+    let range = reserve_project_unicode_range(
+        registry_root_override,
+        &config.project_id,
+        config.codepoint_start,
+        required_codepoints,
+        &used_codepoints,
+    )
+    .map_err(|err| {
+        if options.force_remap {
+            err
+        } else {
+            err.context(
+                "if this conflict is intentional, rerun with `--force-remap` to rebuild glyph mappings in a fresh owned range",
+            )
+        }
+    })?;
+    let allocation_start = range.range_start;
+    let allocation_end = range.range_end;
+    lock.codepoint_start = format_codepoint(allocation_start);
+
     let mut assigned = Vec::with_capacity(glyphs.len());
     let mut active_sources = BTreeSet::new();
 
@@ -277,7 +413,15 @@ fn assign_codepoints_for_build(
             continue;
         }
 
-        let codepoint = next_available_codepoint(config.codepoint_start, &used_codepoints)?;
+        let codepoint = next_available_codepoint(allocation_start, &used_codepoints)?;
+        if codepoint > allocation_end {
+            bail!(
+                "Unicode range conflict: project {} exhausted its owned range {}..{}",
+                config.project_id,
+                format_codepoint(allocation_start),
+                format_codepoint(allocation_end)
+            );
+        }
         used_codepoints.insert(codepoint);
 
         entries_by_source.insert(
@@ -747,16 +891,18 @@ fn font_vertical_metrics(units_per_em: u16) -> FontVerticalMetrics {
 fn write_ttf(
     path: &Path,
     font_name: &str,
+    font_identity: &str,
     glyph_size: u32,
     glyphs: &[(String, u32, GlyphBitmap)],
 ) -> Result<()> {
-    let bytes = build_ttf(font_name, glyph_size, glyphs)?;
+    let bytes = build_ttf(font_name, font_identity, glyph_size, glyphs)?;
     fs::write(path, bytes).with_context(|| format!("failed to write {}", path.display()))?;
     Ok(())
 }
 
 fn build_ttf(
     font_name: &str,
+    font_identity: &str,
     glyph_size: u32,
     glyphs: &[(String, u32, GlyphBitmap)],
 ) -> Result<Vec<u8>> {
@@ -882,7 +1028,7 @@ fn build_ttf(
     let maxp = build_maxp_table(num_glyphs, max_points, max_contours);
     let loca_table = build_loca_table(&loca);
     let cmap = build_cmap_table(&mappings);
-    let name = build_name_table(font_name);
+    let name = build_name_table(font_name, font_identity);
     let post = build_post_table();
     let os2 = build_os2_table(units_per_em, vertical_metrics, &mappings, advance_width_max);
 
@@ -1320,16 +1466,22 @@ fn build_cmap_format12(mappings: &[(u32, u16)]) -> Vec<u8> {
     out
 }
 
-fn build_name_table(font_name: &str) -> Vec<u8> {
+fn build_name_table(font_name: &str, font_identity: &str) -> Vec<u8> {
     let family = font_name.trim();
     let family = if family.is_empty() {
         "Petiglyph"
     } else {
         family
     };
+    let identity = font_identity.trim();
+    let identity = if identity.is_empty() {
+        "identity_missing"
+    } else {
+        identity
+    };
     let postscript = postscript_name(family);
     let full_name = format!("{family} Regular");
-    let unique = format!("{family};Regular");
+    let unique = format!("{family};{};{identity}", env!("CARGO_PKG_VERSION"));
 
     let records = [
         (1u16, family.to_string()),
@@ -1646,6 +1798,7 @@ pub(crate) fn glyph_sample_string_for_codepoints(codepoints: &[u32]) -> String {
     out.trim_end().to_string()
 }
 
+#[allow(dead_code)]
 pub(crate) fn glyph_sample_string(codepoint_start: u32, glyph_count: usize) -> String {
     let mut codepoints = Vec::with_capacity(glyph_count);
     for idx in 0..glyph_count {

@@ -164,12 +164,24 @@ fn cli_human_build_and_sample_workflow() {
     assert!(project_dir.join("build/glyph-sample.txt").exists());
     assert!(project_dir.join("build/previews/alpha.png").exists());
 
+    #[cfg(target_os = "linux")]
+    let sample = {
+        let home = workspace.join("home");
+        fs::create_dir_all(&home).expect("home dir is created");
+        let fake_path = make_fake_fc_cache_path(&workspace);
+        run_petiglyph(&project_dir, &["sample"], Some(&home), Some(&fake_path))
+    };
+    #[cfg(not(target_os = "linux"))]
     let sample = run_petiglyph(&project_dir, &["sample"], None, None);
     assert!(sample.status.success(), "sample command should succeed");
     let sample_stdout = String::from_utf8_lossy(&sample.stdout);
     assert!(
         sample_stdout.contains("petiglyph sample"),
         "sample output should include header: {sample_stdout}"
+    );
+    assert!(
+        sample_stdout.contains("installed:"),
+        "sample output should include installed artifact path: {sample_stdout}"
     );
 
     fs::remove_dir_all(workspace).expect("temp dir is removed");
@@ -240,6 +252,29 @@ fn cli_build_json_failure_returns_error_payload() {
     fs::remove_dir_all(workspace).expect("temp dir is removed");
 }
 
+#[test]
+fn cli_doctor_json_reports_global_health_without_manifest() {
+    let workspace = make_temp_dir("doctor-json-global");
+    let home = workspace.join("home");
+    fs::create_dir_all(&home).expect("home dir is created");
+
+    let output = run_petiglyph(&workspace, &["doctor", "--json"], Some(&home), None);
+    assert!(output.status.success(), "doctor --json should succeed");
+    assert!(
+        output.stderr.is_empty(),
+        "doctor --json should keep stderr clean on success"
+    );
+
+    let payload = parse_json_stdout(&output);
+    assert_api_envelope(&payload, "doctor", true);
+    assert_eq!(payload["data"]["repair"].as_bool(), Some(false));
+    assert!(payload["data"]["install_dir"].as_str().is_some());
+    assert!(payload["data"]["registry_path"].as_str().is_some());
+    assert!(payload["data"]["findings"].as_array().is_some());
+
+    fs::remove_dir_all(workspace).expect("temp dir is removed");
+}
+
 #[cfg(target_os = "linux")]
 #[test]
 fn cli_install_and_uninstall_json_lifecycle_is_idempotent() {
@@ -263,12 +298,23 @@ fn cli_install_and_uninstall_json_lifecycle_is_idempotent() {
         install_1_payload["data"]["platform"].as_str(),
         Some("linux")
     );
+    let installed_ttf_1 = install_1_payload["data"]["installed_ttf"]
+        .as_str()
+        .expect("installed ttf");
     assert!(
-        install_1_payload["data"]["installed_ttf"]
-            .as_str()
-            .expect("installed ttf")
-            .ends_with("/.local/share/fonts/petiglyph/demo_font_demo_font.ttf"),
-        "CLI install should use project-prefixed effective font name"
+        installed_ttf_1.contains("/.local/share/fonts/petiglyph/demo_font_demo_font_")
+            && installed_ttf_1.ends_with(".ttf")
+            && installed_ttf_1.contains(".v"),
+        "CLI install should use immutable project-scoped artifact naming, got {installed_ttf_1}"
+    );
+    let alias_path = home
+        .join(".config")
+        .join("fontconfig")
+        .join("conf.d")
+        .join("99-petiglyph.conf");
+    assert!(
+        alias_path.exists(),
+        "linux install should publish petiglyph fontconfig alias"
     );
     assert_eq!(
         install_1_payload["data"]["replaced_previous_ttf_count"].as_u64(),
@@ -286,8 +332,8 @@ fn cli_install_and_uninstall_json_lifecycle_is_idempotent() {
     assert_api_envelope(&install_2_payload, "install-font", true);
     assert_eq!(
         install_2_payload["data"]["replaced_previous_ttf_count"].as_u64(),
-        Some(1),
-        "second install should replace exactly one prior ttf"
+        Some(0),
+        "second identical install should keep immutable artifact without replacement"
     );
 
     let uninstall_1 = run_petiglyph(
@@ -327,6 +373,10 @@ fn cli_install_and_uninstall_json_lifecycle_is_idempotent() {
         uninstall_2_payload["data"]["outcome"].as_str(),
         Some("already_absent")
     );
+    assert!(
+        !alias_path.exists(),
+        "fontconfig alias should be removed when no managed fonts remain"
+    );
 
     let installed_dir = home
         .join(".local")
@@ -342,6 +392,74 @@ fn cli_install_and_uninstall_json_lifecycle_is_idempotent() {
     assert!(
         !prefixed_path.exists(),
         "project-prefixed install candidate should be absent after uninstall"
+    );
+    let remaining_ttf_count = fs::read_dir(&installed_dir)
+        .ok()
+        .into_iter()
+        .flat_map(|entries| entries.filter_map(|entry| entry.ok()))
+        .filter(|entry| {
+            entry
+                .path()
+                .extension()
+                .and_then(|ext| ext.to_str())
+                .is_some_and(|ext| ext.eq_ignore_ascii_case("ttf"))
+        })
+        .count();
+    assert_eq!(
+        remaining_ttf_count, 0,
+        "immutable install artifacts should be fully removed on uninstall"
+    );
+
+    fs::remove_dir_all(workspace).expect("temp dir is removed");
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn cli_install_identity_isolated_even_for_slug_collisions() {
+    let workspace = make_temp_dir("install-slug-collision");
+    let (project_a, _) = create_project_with_icon(&workspace, "my-proj");
+    let (project_b, _) = create_project_with_icon(&workspace, "my_proj");
+    let home = workspace.join("home");
+    fs::create_dir_all(&home).expect("home dir is created");
+    let fake_path = make_fake_fc_cache_path(&workspace);
+
+    let install_a = run_petiglyph(
+        &project_a,
+        &["install-font", "--json"],
+        Some(&home),
+        Some(&fake_path),
+    );
+    assert!(
+        install_a.status.success(),
+        "project A install should succeed"
+    );
+    let payload_a = parse_json_stdout(&install_a);
+    assert_api_envelope(&payload_a, "install-font", true);
+    let installed_a = payload_a["data"]["installed_ttf"]
+        .as_str()
+        .expect("project A installed_ttf")
+        .to_string();
+
+    let install_b = run_petiglyph(
+        &project_b,
+        &["install-font", "--json"],
+        Some(&home),
+        Some(&fake_path),
+    );
+    assert!(
+        install_b.status.success(),
+        "project B install should succeed"
+    );
+    let payload_b = parse_json_stdout(&install_b);
+    assert_api_envelope(&payload_b, "install-font", true);
+    let installed_b = payload_b["data"]["installed_ttf"]
+        .as_str()
+        .expect("project B installed_ttf")
+        .to_string();
+
+    assert_ne!(
+        installed_a, installed_b,
+        "install artifacts must remain isolated even when project slugs collide"
     );
 
     fs::remove_dir_all(workspace).expect("temp dir is removed");

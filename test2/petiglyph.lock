@@ -1,0 +1,13 @@
+{
+  "version": 1,
+  "project_id": "643dcde1e28d41b8a1e4aaaaa616f920",
+  "codepoint_start": "U+10001A",
+  "entries": [
+    {
+      "source_file": "cursor.svg",
+      "codepoint": "U+10001A",
+      "image_fingerprint": "fnv1a64:385cc1b232951b24",
+      "active": true
+    }
+  ]
+}

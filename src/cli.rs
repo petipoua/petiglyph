@@ -4,10 +4,11 @@ use serde::Serialize;
 use std::io::{self, IsTerminal};
 use std::path::{Path, PathBuf};
 
-use crate::build::{BuildSummary, build_outputs};
+use crate::build::{BuildOptions, BuildSummary, build_outputs_with_options};
+use crate::doctor::{DoctorReport, doctor};
 use crate::install::{
-    FontInstallNameMode, FontPlatform, UninstallOutcome, effective_font_name, install_built_font,
-    uninstall_project_font,
+    DEFAULT_INSTALL_NAME_MODE, FontPlatform, UninstallOutcome, diagnose_sample_coverage,
+    effective_font_name, install_built_font, uninstall_project_font,
 };
 use crate::project::{
     RuntimeConfig, create_project, discover_project_manifests, format_codepoint,
@@ -79,6 +80,9 @@ enum CliCommand {
         /// Emit machine-readable JSON to stdout.
         #[arg(long)]
         json: bool,
+        /// Discard existing glyph lock mappings and remap all codepoints for this build.
+        #[arg(long)]
+        force_remap: bool,
     },
     /// Build the font and print the sample private-use string.
     Sample {
@@ -103,6 +107,9 @@ enum CliCommand {
         /// Emit machine-readable JSON to stdout.
         #[arg(long)]
         json: bool,
+        /// Discard existing glyph lock mappings and remap all codepoints for this build.
+        #[arg(long)]
+        force_remap: bool,
     },
     /// Build the font and install it into the user font directory using a project-prefixed name.
     InstallFont {
@@ -127,12 +134,27 @@ enum CliCommand {
         /// Emit machine-readable JSON to stdout.
         #[arg(long)]
         json: bool,
+        /// Discard existing glyph lock mappings and remap all codepoints for this build.
+        #[arg(long)]
+        force_remap: bool,
     },
     /// Uninstall this project's managed installed font variants.
     UninstallFont {
         /// Path to the manifest file. When omitted, auto-detect from the current directory or one level below.
         #[arg(short, long)]
         manifest: Option<PathBuf>,
+        /// Emit machine-readable JSON to stdout.
+        #[arg(long)]
+        json: bool,
+    },
+    /// Inspect and repair glyph lock/Unicode registry health.
+    Doctor {
+        /// Path to the manifest file. When omitted, global checks run and project checks auto-detect when possible.
+        #[arg(short, long)]
+        manifest: Option<PathBuf>,
+        /// Apply safe repairs for stale locks, orphan metadata, and missing project registry assignment.
+        #[arg(long)]
+        repair: bool,
         /// Emit machine-readable JSON to stdout.
         #[arg(long)]
         json: bool,
@@ -177,6 +199,9 @@ pub(crate) struct BuildCommandData {
 struct SampleCommandData {
     build: BuildCommandData,
     sample_string: String,
+    installed_ttf: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    coverage: Option<crate::install::SampleCoverageDiagnosis>,
 }
 
 #[derive(Debug, Serialize)]
@@ -317,6 +342,7 @@ fn run_cli(cli: Cli) -> std::result::Result<(), CliRunError> {
             glyph_size,
             codepoint_start,
             json,
+            force_remap,
         }) => run_automation_command(
             "build",
             json,
@@ -328,6 +354,7 @@ fn run_cli(cli: Cli) -> std::result::Result<(), CliRunError> {
                     threshold,
                     glyph_size,
                     codepoint_start,
+                    force_remap,
                 )
             },
             print_build_result,
@@ -340,6 +367,7 @@ fn run_cli(cli: Cli) -> std::result::Result<(), CliRunError> {
             glyph_size,
             codepoint_start,
             json,
+            force_remap,
         }) => run_automation_command(
             "sample",
             json,
@@ -351,6 +379,7 @@ fn run_cli(cli: Cli) -> std::result::Result<(), CliRunError> {
                     threshold,
                     glyph_size,
                     codepoint_start,
+                    force_remap,
                 )
             },
             print_sample_result,
@@ -363,6 +392,7 @@ fn run_cli(cli: Cli) -> std::result::Result<(), CliRunError> {
             glyph_size,
             codepoint_start,
             json,
+            force_remap,
         }) => run_automation_command(
             "install-font",
             json,
@@ -374,6 +404,7 @@ fn run_cli(cli: Cli) -> std::result::Result<(), CliRunError> {
                     threshold,
                     glyph_size,
                     codepoint_start,
+                    force_remap,
                 )
             },
             print_install_result,
@@ -383,6 +414,16 @@ fn run_cli(cli: Cli) -> std::result::Result<(), CliRunError> {
             json,
             || uninstall_font_command(manifest_path_from_option(manifest)?),
             print_uninstall_result,
+        ),
+        Some(CliCommand::Doctor {
+            manifest,
+            repair,
+            json,
+        }) => run_automation_command(
+            "doctor",
+            json,
+            || doctor_command(manifest, repair),
+            print_doctor_result,
         ),
     }
 }
@@ -508,7 +549,23 @@ fn print_sample_result(data: &SampleCommandData) {
     println!("threshold-overrides: {}", data.build.threshold_overrides);
     println!("glyph-size: {}", data.build.glyph_size);
     println!("ttf: {}", data.build.ttf);
+    println!("installed: {}", data.installed_ttf);
     println!("sample: {}", data.build.sample);
+    if let Some(coverage) = &data.coverage {
+        println!(
+            "coverage: {}/{} codepoints resolved to managed petiglyph fonts",
+            coverage
+                .checked_codepoints
+                .saturating_sub(coverage.missing_codepoints),
+            coverage.checked_codepoints
+        );
+        if coverage.missing_codepoints > 0 {
+            println!(
+                "warning: {} sample glyph(s) may render as '?'",
+                coverage.missing_codepoints
+            );
+        }
+    }
     println!();
     println!("{}", data.sample_string);
 }
@@ -540,6 +597,32 @@ fn print_uninstall_result(data: &UninstallFontCommandData) {
     }
 }
 
+fn print_doctor_result(data: &DoctorReport) {
+    if data.healthy {
+        println!("petiglyph doctor: healthy");
+    } else {
+        println!("petiglyph doctor: issues detected");
+    }
+    println!("  install-dir: {}", data.install_dir);
+    println!("  registry: {}", data.registry_path);
+    if let Some(manifest) = &data.manifest {
+        println!("  manifest: {}", manifest);
+    }
+    if let Some(project_id) = &data.project_id {
+        println!("  project-id: {}", project_id);
+    }
+    println!("  warnings: {}", data.warnings);
+    println!("  errors: {}", data.errors);
+    println!("  repaired: {}", data.repaired);
+    println!();
+    for finding in &data.findings {
+        println!(
+            "- [{:?}/{:?}] {}: {}",
+            finding.severity, finding.status, finding.code, finding.message
+        );
+    }
+}
+
 fn build_font(
     manifest_path: PathBuf,
     input_override: Option<PathBuf>,
@@ -547,6 +630,7 @@ fn build_font(
     threshold_override: Option<u8>,
     glyph_size_override: Option<u32>,
     codepoint_start_override: Option<String>,
+    force_remap: bool,
 ) -> Result<BuildCommandData> {
     let config = load_runtime_config(
         &manifest_path,
@@ -561,7 +645,7 @@ fn build_font(
         anyhow::bail!("glyph_size must be > 0");
     }
 
-    let summary = build_outputs(&config)?;
+    let summary = build_outputs_with_options(&config, BuildOptions { force_remap })?;
     Ok(build_command_data(&manifest_path, &config, &summary))
 }
 
@@ -572,8 +656,9 @@ fn sample_command(
     threshold_override: Option<u8>,
     glyph_size_override: Option<u32>,
     codepoint_start_override: Option<String>,
+    force_remap: bool,
 ) -> Result<SampleCommandData> {
-    let config = load_runtime_config(
+    let mut config = load_runtime_config(
         &manifest_path,
         input_override,
         out_override,
@@ -581,13 +666,26 @@ fn sample_command(
         glyph_size_override,
         codepoint_start_override,
     )?;
+    config.font_name =
+        effective_font_name(&manifest_path, &config.font_name, DEFAULT_INSTALL_NAME_MODE)?;
 
-    let summary = build_outputs(&config)?;
+    let summary = build_outputs_with_options(&config, BuildOptions { force_remap })?;
+    let install_result = install_built_font(
+        &manifest_path,
+        &config.font_name,
+        &config.project_id,
+        &summary.ttf_path,
+        summary.glyph_count,
+    )?;
     let sample = std::fs::read_to_string(&summary.sample_path)
         .with_context(|| format!("failed to read {}", summary.sample_path.display()))?;
+    let sample_string = sample.trim_end().to_string();
+    let coverage = diagnose_sample_coverage(&sample_string).ok().flatten();
     Ok(SampleCommandData {
         build: build_command_data(&manifest_path, &config, &summary),
-        sample_string: sample.trim_end().to_string(),
+        sample_string,
+        installed_ttf: install_result.install_path.display().to_string(),
+        coverage,
     })
 }
 
@@ -598,6 +696,7 @@ fn install_font_command(
     threshold_override: Option<u8>,
     glyph_size_override: Option<u32>,
     codepoint_start_override: Option<String>,
+    force_remap: bool,
 ) -> Result<InstallFontCommandData> {
     let mut config = load_runtime_config(
         &manifest_path,
@@ -607,16 +706,14 @@ fn install_font_command(
         glyph_size_override,
         codepoint_start_override,
     )?;
-    config.font_name = effective_font_name(
-        &manifest_path,
-        &config.font_name,
-        FontInstallNameMode::ProjectPrefixed,
-    )?;
+    config.font_name =
+        effective_font_name(&manifest_path, &config.font_name, DEFAULT_INSTALL_NAME_MODE)?;
 
-    let summary = build_outputs(&config)?;
+    let summary = build_outputs_with_options(&config, BuildOptions { force_remap })?;
     let install_result = install_built_font(
         &manifest_path,
         &config.font_name,
+        &config.project_id,
         &summary.ttf_path,
         summary.glyph_count,
     )?;
@@ -638,4 +735,8 @@ fn uninstall_font_command(manifest_path: PathBuf) -> Result<UninstallFontCommand
         outcome: uninstall.outcome,
         removed_ttf_count: uninstall.removed_ttf_count,
     })
+}
+
+fn doctor_command(manifest: Option<PathBuf>, repair: bool) -> Result<DoctorReport> {
+    doctor(repair, manifest)
 }

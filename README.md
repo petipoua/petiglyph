@@ -48,17 +48,24 @@ petiglyph tui
 petiglyph build
 petiglyph build --json
 
-# build and print sample string
+# build, install, refresh cache, and print sample string
 petiglyph sample
 petiglyph sample --json
 
 # build and install in user font location
 petiglyph install-font
 petiglyph install-font --json
+# explicit conflict escape hatch: rebuild lock mappings from scratch
+petiglyph build --force-remap
 
 # uninstall managed installed variants for the current project/font
 petiglyph uninstall-font
 petiglyph uninstall-font --json
+
+# inspect lock/registry health
+petiglyph doctor
+petiglyph doctor --repair
+petiglyph doctor --json
 ```
 
 All non-`create` commands accept `--manifest` to target another project.
@@ -76,6 +83,7 @@ When `--manifest` is omitted, petiglyph checks `./petiglyph.toml` first, then sc
 - `sample`
 - `install-font`
 - `uninstall-font`
+- `doctor`
 
 When `--json` is enabled, stdout is a single machine-readable envelope:
 
@@ -156,21 +164,37 @@ install = run_petiglyph("install-font", "--manifest", "./petiglyph.toml", "--jso
 
 ## Font Lifecycle Behavior
 
-Install naming modes:
+Install naming mode:
 
-- TUI (`petiglyph` / `petiglyph tui` then `i`): installs `<font>.ttf`
-- CLI (`petiglyph install-font`): installs `<project>-<font>.ttf`
+- TUI (`petiglyph` / `petiglyph tui` then `i`): uses project-scoped effective font identity `<project>-<font>`
+- CLI (`petiglyph install-font`): uses project-scoped effective font identity `<project>-<font>`
 
 Both are installed into a flat `petiglyph` directory under the user font root.
 
 `install-font` is idempotent for a given effective font name.
 
-`uninstall-font` removes both managed candidates for the current manifest font:
+`sample` now performs a managed install before printing glyphs so the sample codepoints are immediately available without terminal restart/cache-manual steps.
 
+Install artifacts are immutable per build:
+
+- installed files are content-addressed/versioned TTF artifacts
+- active metadata is atomically switched to the new artifact
+- previous active artifact for the same project/font identity is removed after switch
+
+`uninstall-font` removes the active immutable artifact for the current manifest font identity.
+
+For cleanup compatibility with older installs, it also removes legacy fixed-name candidates when present:
 - `<font>.ttf`
 - `<project>-<font>.ttf`
 
-If the project directory name changes, the `<project>-<font>.ttf` candidate changes too; run `install-font` again to publish the new name.
+Install identity is anchored to `project_id` to prevent slug collisions between similarly named projects.
+
+Linux font fallback alias:
+
+- petiglyph maintains `~/.config/fontconfig/conf.d/99-petiglyph.conf`
+- alias families `Petiglyph` and `petiglyph` are kept in sync with installed project-scoped families
+- this gives a stable terminal-facing family while preserving project-scoped install isolation
+- alias file is removed automatically when no managed petiglyph fonts remain
 
 Outcomes:
 
@@ -183,6 +207,27 @@ Current install root by OS:
 - Linux: `~/.local/share/fonts/petiglyph/`
 - macOS: `~/Library/Fonts/petiglyph/`
 - Windows: `%LOCALAPPDATA%/Microsoft/Windows/Fonts/petiglyph/`
+
+Unicode ownership guardrails:
+
+- petiglyph maintains a machine-wide Unicode registry at:
+  - `~/.local/share/fonts/petiglyph/.unicode-registry.json` (Linux)
+  - `~/Library/Fonts/petiglyph/.unicode-registry.json` (macOS)
+  - `%LOCALAPPDATA%/Microsoft/Windows/Fonts/petiglyph/.unicode-registry.json` (Windows)
+- each `project_id` gets a disjoint owned range in supplementary private-use space
+- build-time allocation is lock-backed and project-stable; existing mappings remain pinned via `petiglyph.lock`
+- if a project lock attempts to use codepoints owned by another project, build fails with an actionable conflict error
+- if that conflict is intentional, `--force-remap` explicitly discards current lock mappings and rebuilds codepoints in a fresh owned range
+- registry and install metadata updates are file-lock protected to avoid concurrent corruption/races
+
+`doctor` guardrail tooling:
+
+- `petiglyph doctor` inspects global install/registry health and project lock consistency when a project can be resolved
+- `petiglyph doctor --repair` applies safe repairs:
+  - removes stale lock files
+  - removes orphan `.petiglyph-install-*.json` metadata entries
+  - creates missing project Unicode registry assignment (when conflict-free)
+- if no project can be auto-detected and `--manifest` is not provided, project checks are skipped with a warning in the report
 
 ## Command Stability Policy
 
@@ -213,6 +258,7 @@ cargo run -- sample --manifest ./petiglyph.toml
 cargo run -- tui --manifest ./petiglyph.toml
 cargo run -- install-font --manifest ./petiglyph.toml --json
 cargo run -- uninstall-font --manifest ./petiglyph.toml --json
+cargo run -- doctor --manifest ./petiglyph.toml --json
 ```
 
 ## Local AUR-Style Test Scripts
@@ -279,6 +325,7 @@ codepoint_start = "U+100000"
 Project root also contains:
 
 - `petiglyph.lock` (stable source-file to codepoint allocations; keeps removed entries tombstoned to avoid unsafe reuse)
+- `.petiglyph-build.lock` (ephemeral build lock while assigning/writing glyph mappings)
 
 ## Notes
 
