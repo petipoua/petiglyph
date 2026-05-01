@@ -22,10 +22,13 @@ usage() {
 Usage:
   ./scripts/tui_e2e_hty.sh [options]
 
-Runs 3 process-level TUI E2E journeys with hty:
+Runs process-level TUI E2E journeys with hty:
   1. launch + quit from existing project
   2. create project from Home panel
   3. build shortcut writes artifacts
+  4. glyph threshold override persists and clears
+  5. workspace multi-project selection builds chosen project
+  6. rescan picks up new image and rebuild includes it
 
 Options:
   --watch                 Pause before each journey step so you can run `hty watch <session>`
@@ -122,6 +125,46 @@ wait_for_ttf() {
     elapsed_ms="$((now_ms - start_ms))"
     if (( elapsed_ms >= timeout )); then
       echo "Timeout waiting for .ttf in: $build_dir" >&2
+      return 1
+    fi
+    sleep 0.03
+  done
+}
+
+wait_for_file_contains() {
+  local path="$1"
+  local needle="$2"
+  local timeout="$3"
+  local start_ms now_ms elapsed_ms
+  start_ms="$(date +%s%3N)"
+  while true; do
+    if [[ -f "$path" ]] && grep -Fq "$needle" "$path"; then
+      return 0
+    fi
+    now_ms="$(date +%s%3N)"
+    elapsed_ms="$((now_ms - start_ms))"
+    if (( elapsed_ms >= timeout )); then
+      echo "Timeout waiting for content in $path: $needle" >&2
+      return 1
+    fi
+    sleep 0.03
+  done
+}
+
+wait_for_file_not_contains() {
+  local path="$1"
+  local needle="$2"
+  local timeout="$3"
+  local start_ms now_ms elapsed_ms
+  start_ms="$(date +%s%3N)"
+  while true; do
+    if [[ -f "$path" ]] && ! grep -Fq "$needle" "$path"; then
+      return 0
+    fi
+    now_ms="$(date +%s%3N)"
+    elapsed_ms="$((now_ms - start_ms))"
+    if (( elapsed_ms >= timeout )); then
+      echo "Timeout waiting for content removal in $path: $needle" >&2
       return 1
     fi
     sleep 0.03
@@ -259,7 +302,7 @@ create_project_with_icon() {
 }
 
 journey_launch_and_quit() {
-  log "journey 1/3: launch and quit from existing project"
+  log "journey 1/6: launch and quit from existing project"
   local workspace project_dir session
   workspace="$(make_temp_dir "launch-quit")"
   project_dir="$(create_project_with_icon "$workspace" "launch-quit-demo")"
@@ -270,11 +313,11 @@ journey_launch_and_quit() {
   wait_exit "$session"
   session_cleanup "$session"
   current_session=""
-  log "journey 1/3 passed"
+  log "journey 1/6 passed"
 }
 
 journey_create_project_from_home() {
-  log "journey 2/3: create project from home panel"
+  log "journey 2/6: create project from home panel"
   local workspace session project_name
   workspace="$(make_temp_dir "create-home")"
   project_name="from-tui-e2e"
@@ -304,11 +347,11 @@ journey_create_project_from_home() {
 
   session_cleanup "$session"
   current_session=""
-  log "journey 2/3 passed"
+  log "journey 2/6 passed"
 }
 
 journey_build_shortcut() {
-  log "journey 3/3: build shortcut writes artifacts"
+  log "journey 3/6: build shortcut writes artifacts"
   local workspace project_dir session build_dir mapping sample ttf
   workspace="$(make_temp_dir "build")"
   project_dir="$(create_project_with_icon "$workspace" "build-demo")"
@@ -332,7 +375,100 @@ journey_build_shortcut() {
   wait_exit "$session"
   session_cleanup "$session"
   current_session=""
-  log "journey 3/3 passed (ttf: $ttf)"
+  log "journey 3/6 passed (ttf: $ttf)"
+}
+
+journey_glyph_threshold_override_roundtrip() {
+  log "journey 4/6: glyph threshold override persists and clears"
+  local workspace project_dir session manifest_path
+  workspace="$(make_temp_dir "threshold")"
+  project_dir="$(create_project_with_icon "$workspace" "threshold-demo")"
+  manifest_path="$project_dir/petiglyph.toml"
+  session="petiglyph-e2e-threshold-$$-$(date +%s%N)"
+
+  run_session "$session" "$project_dir" "$petiglyph_bin" >/dev/null
+  send_text "$session" "2" "switch to glyphs panel"
+  send_key "$session" "right" "increase threshold by 1"
+  wait_for_file_contains "$manifest_path" "threshold_overrides" "$timeout_ms"
+  wait_for_file_contains "$manifest_path" "alpha.png" "$timeout_ms"
+  send_text "$session" "r" "clear threshold override"
+  wait_for_file_not_contains "$manifest_path" "alpha.png" "$timeout_ms"
+  wait_for_file_not_contains "$manifest_path" "threshold_overrides" "$timeout_ms"
+  send_text "$session" "q" "quit"
+  wait_exit "$session"
+  session_cleanup "$session"
+  current_session=""
+  log "journey 4/6 passed"
+}
+
+journey_workspace_multi_project_selection() {
+  log "journey 5/6: workspace multi-project selection builds chosen project"
+  local workspace project_a project_b session project_a_build project_b_build ttf_b
+  workspace="$(make_temp_dir "workspace-select")"
+  project_a="$(create_project_with_icon "$workspace" "project-one")"
+  project_b="$(create_project_with_icon "$workspace" "project-two")"
+  project_a_build="$project_a/build/glyph-map.json"
+  project_b_build="$project_b/build/glyph-map.json"
+  session="petiglyph-e2e-workspace-select-$$-$(date +%s%N)"
+
+  run_session "$session" "$workspace" "$petiglyph_bin" >/dev/null
+  send_key "$session" "down" "select second project in list"
+  send_key "$session" "enter" "open selected project"
+  send_text "$session" "b" "build selected project"
+  wait_for_path "$project_b_build" "$timeout_ms"
+  ttf_b="$(wait_for_ttf "$project_b/build" "$timeout_ms")"
+  [[ ! -f "$project_a_build" ]] || {
+    echo "Unexpected build output in unselected project: $project_a_build" >&2
+    return 1
+  }
+  [[ -n "$ttf_b" ]] || {
+    echo "Expected .ttf output missing in selected project: $project_b/build" >&2
+    return 1
+  }
+  send_text "$session" "q" "quit"
+  wait_exit "$session"
+  session_cleanup "$session"
+  current_session=""
+  log "journey 5/6 passed (ttf: $ttf_b)"
+}
+
+journey_rescan_new_image_and_rebuild() {
+  log "journey 6/6: rescan picks up new image and rebuild includes it"
+  local workspace project_dir session build_dir mapping sample initial_ttf ttf
+  workspace="$(make_temp_dir "rescan")"
+  project_dir="$(create_project_with_icon "$workspace" "rescan-demo")"
+  build_dir="$project_dir/build"
+  mapping="$build_dir/glyph-map.json"
+  sample="$build_dir/glyph-sample.txt"
+  session="petiglyph-e2e-rescan-$$-$(date +%s%N)"
+
+  run_session "$session" "$project_dir" "$petiglyph_bin" >/dev/null
+  send_text "$session" "b" "initial build"
+  wait_for_path "$mapping" "$timeout_ms"
+  wait_for_path "$sample" "$timeout_ms"
+  initial_ttf="$(wait_for_ttf "$build_dir" "$timeout_ms")"
+  [[ -n "$initial_ttf" ]] || {
+    echo "Expected initial .ttf output missing in $build_dir" >&2
+    return 1
+  }
+  "$hty_bin" wait "$session" --idle 200 --timeout "$timeout_ms" >/dev/null 2>/dev/null || true
+  wait_for_file_contains "$mapping" "\"source_file\": \"alpha.png\"" "$timeout_ms"
+
+  write_test_png "$project_dir/icons/beta.png"
+  send_text "$session" "R" "rescan project icons"
+  send_text "$session" "b" "rebuild after rescan"
+  wait_for_file_contains "$mapping" "\"source_file\": \"beta.png\"" "$timeout_ms"
+  ttf="$(wait_for_ttf "$build_dir" "$timeout_ms")"
+  [[ -n "$ttf" ]] || {
+    echo "Expected .ttf output missing after rescan in $build_dir" >&2
+    return 1
+  }
+
+  send_text "$session" "q" "quit"
+  wait_exit "$session"
+  session_cleanup "$session"
+  current_session=""
+  log "journey 6/6 passed (ttf: $ttf)"
 }
 
 cleanup() {
@@ -422,5 +558,8 @@ log "timeout: ${timeout_ms}ms, startup-wait: ${startup_wait_ms}ms, step delay: $
 journey_launch_and_quit
 journey_create_project_from_home
 journey_build_shortcut
+journey_glyph_threshold_override_roundtrip
+journey_workspace_multi_project_selection
+journey_rescan_new_image_and_rebuild
 
 log "all journeys passed"

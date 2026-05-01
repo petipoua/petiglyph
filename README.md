@@ -285,6 +285,9 @@ The harness mirrors these critical flows:
 - launch + quit from existing project
 - create project from Home panel
 - build shortcut writes artifacts
+- glyph threshold override persists and clears
+- workspace multi-project selection builds chosen project
+- rescan picks up new image and rebuild includes it
 
 ## Local AUR-Style Test Scripts
 
