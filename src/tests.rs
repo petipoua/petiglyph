@@ -613,8 +613,8 @@ fn projects_card_hint_keeps_fixed_width_and_stays_local() {
 fn project_action_labels_switch_with_current_project_state() {
     assert_eq!(build_action_name(false), "Build");
     assert_eq!(build_action_name(true), "Rebuild");
-    assert_eq!(install_action_name(false), "Install Font");
-    assert_eq!(install_action_name(true), "Uninstall Font");
+    assert_eq!(install_action_name(false), "Install");
+    assert_eq!(install_action_name(true), "Reinstall");
 }
 
 #[test]

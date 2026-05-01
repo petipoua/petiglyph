@@ -106,6 +106,18 @@ pub(crate) fn build_outputs_with_options(
     validate_codepoint_range(config.codepoint_start, glyphs.len())?;
     let assigned_codepoints = assign_codepoints_for_build(config, &glyphs, options)?;
 
+    if config.out_dir.exists() {
+        if config.out_dir.is_dir() {
+            fs::remove_dir_all(&config.out_dir)
+                .with_context(|| format!("failed to clear {}", config.out_dir.display()))?;
+        } else {
+            bail!(
+                "build output path is not a directory: {}",
+                config.out_dir.display()
+            );
+        }
+    }
+
     let previews_dir = config.out_dir.join("previews");
     fs::create_dir_all(&previews_dir)
         .with_context(|| format!("failed to create {}", previews_dir.display()))?;

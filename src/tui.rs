@@ -39,7 +39,6 @@ use crate::install::{
     DEFAULT_INSTALL_NAME_MODE, FontInstallNameMode, effective_font_name,
     expected_install_ttf_path_for_mode, install_built_font, install_dir_for_manifest,
     installed_ttf_candidates_for_manifest_font, uninstall_installed_font_file,
-    uninstall_project_font,
 };
 use crate::project::{
     RuntimeConfig, create_project_in_dir, discover_project_manifests, load_runtime_config,
@@ -330,7 +329,6 @@ impl BuildTaskKind {
 #[derive(Debug, Clone)]
 enum FontTaskKind {
     Install,
-    UninstallProject,
     UninstallInstalled { path: PathBuf },
 }
 
@@ -598,9 +596,9 @@ pub(crate) fn build_action_name(project_is_built: bool) -> &'static str {
 
 pub(crate) fn install_action_name(project_is_installed: bool) -> &'static str {
     if project_is_installed {
-        "Uninstall Font"
+        "Reinstall"
     } else {
-        "Install Font"
+        "Install"
     }
 }
 
@@ -1111,9 +1109,7 @@ fn draw_welcome_view(
     let install_button_style =
         if app.active_project.is_none() && !app.install_in_progress() && !app.build_in_progress() {
             disabled_button_style
-        } else if let Some(FontTaskKind::Install | FontTaskKind::UninstallProject) =
-            app.font_task_kind()
-        {
+        } else if let Some(FontTaskKind::Install) = app.font_task_kind() {
             app.font_task_button_style()
                 .unwrap_or(disabled_button_style)
         } else if app.install_in_progress() || app.build_in_progress() {
@@ -1125,9 +1121,6 @@ fn draw_welcome_view(
         };
     let install_label = match (app.font_task_kind(), app.font_task_spinner_frame()) {
         (Some(FontTaskKind::Install), Some(spinner)) => format!(" {spinner} Installing... "),
-        (Some(FontTaskKind::UninstallProject), Some(spinner)) => {
-            format!(" {spinner} Removing... ")
-        }
         _ => format!(
             " {} ",
             install_action_name(app.current_project_is_installed())
@@ -1848,7 +1841,7 @@ impl App {
         let launch_overrides = self.launch_overrides.clone();
         let (sender, receiver) = mpsc::channel();
         thread::spawn(move || {
-            let result = build_project_task(manifest_path, launch_overrides, rebuilding)
+            let result = build_project_task(manifest_path, launch_overrides)
                 .map_err(|err| err.to_string());
             let _ = sender.send(result);
         });
@@ -1943,44 +1936,7 @@ impl App {
         Ok(())
     }
 
-    fn start_uninstall_active_project_font(&mut self) -> Result<()> {
-        if self.active_project.is_none() {
-            self.status = Some(
-                "create a project in Home or relaunch with --manifest before uninstalling"
-                    .to_string(),
-            );
-            return Ok(());
-        }
 
-        if self.build_in_progress() {
-            self.status = Some("build is in progress; wait before uninstalling".to_string());
-            return Ok(());
-        }
-
-        if self.install_in_progress() {
-            self.status =
-                Some("font operation is in progress; wait before uninstalling".to_string());
-            return Ok(());
-        }
-
-        let manifest_path = self.manifest_path.clone();
-        let font_name = self.config.font_name.clone();
-        let (sender, receiver) = mpsc::channel();
-        thread::spawn(move || {
-            let result = uninstall_project_font_task(manifest_path, font_name)
-                .map_err(|err| err.to_string());
-            let _ = sender.send(result);
-        });
-
-        self.install_task = Some(InstallTask {
-            kind: FontTaskKind::UninstallProject,
-            receiver,
-            spinner_index: 0,
-            spinner_last_frame_at: Instant::now(),
-        });
-        self.status = None;
-        Ok(())
-    }
 
     fn poll_build_task(&mut self) {
         let mut disconnected = false;
@@ -2040,6 +1996,7 @@ impl App {
             }
             Err(err) => {
                 self.status = Some(format_status_from_error(&self.manifest_path, &err));
+                let _ = self.reload_config();
             }
         }
     }
@@ -2124,6 +2081,7 @@ impl App {
             }
             Err(err) => {
                 self.status = Some(format_status_from_error(&self.manifest_path, &err));
+                let _ = self.reload_config();
             }
         }
     }
@@ -2229,7 +2187,6 @@ pub(crate) fn switch_notice_visible(started_at: Instant, now: Instant) -> bool {
 fn build_project_task(
     manifest_path: PathBuf,
     launch_overrides: TuiLaunchOverrides,
-    rebuilding: bool,
 ) -> Result<BuildTaskOutput> {
     let config = load_runtime_config(
         &manifest_path,
@@ -2241,10 +2198,6 @@ fn build_project_task(
     )?;
     if config.glyph_size == 0 {
         bail!("glyph_size must be > 0");
-    }
-
-    if rebuilding {
-        clear_existing_build_dir(&config.out_dir)?;
     }
 
     let summary = build_outputs(&config)?;
@@ -2299,19 +2252,7 @@ fn build_and_install(
     })
 }
 
-fn uninstall_project_font_task(
-    manifest_path: PathBuf,
-    font_name: String,
-) -> Result<InstallTaskOutput> {
-    let result = uninstall_project_font(&manifest_path)?;
-    let status_message = match result.outcome {
-        crate::install::UninstallOutcome::Removed => format!("uninstalled {font_name}"),
-        crate::install::UninstallOutcome::AlreadyAbsent => {
-            format!("font already absent: {font_name}")
-        }
-    };
-    Ok(InstallTaskOutput::Uninstall { status_message })
-}
+
 
 fn uninstall_installed_font_task(
     installed_ttf: PathBuf,
@@ -2327,22 +2268,7 @@ fn uninstall_installed_font_task(
     Ok(InstallTaskOutput::Uninstall { status_message })
 }
 
-fn clear_existing_build_dir(out_dir: &Path) -> Result<()> {
-    if !out_dir.exists() {
-        return Ok(());
-    }
 
-    if !out_dir.is_dir() {
-        bail!(
-            "build output path is not a directory: {}",
-            out_dir.display()
-        );
-    }
-
-    fs::remove_dir_all(out_dir)
-        .with_context(|| format!("failed to remove {}", out_dir.display()))?;
-    Ok(())
-}
 
 fn cached_build_state(config: &RuntimeConfig) -> (Option<BuildSummary>, Option<String>) {
     let ttf_path = expected_ttf_path(config);
@@ -2742,12 +2668,8 @@ fn trigger_install_action(app: &mut App) -> Result<()> {
         app.status = Some("build is in progress; wait for it to finish".to_string());
         return Ok(());
     }
-    if app.current_project_is_installed() {
-        app.start_uninstall_active_project_font()
-    } else {
-        app.start_install_font();
-        Ok(())
-    }
+    app.start_install_font();
+    Ok(())
 }
 
 fn trigger_uninstall_action(app: &mut App) -> Result<()> {
