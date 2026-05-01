@@ -28,6 +28,8 @@ Deleting the project directory removes project-local assets only.
 
 ```bash
 petiglyph create my-font
+# optional non-interactive create mode
+petiglyph create my-font --no-launch
 cd my-font
 petiglyph
 ```
@@ -39,6 +41,7 @@ After `create`, place your images in `icons/` and use the TUI to tune thresholds
 ```bash
 # create a new project in the current directory
 petiglyph create my-font
+petiglyph create my-font --no-launch
 
 # launch the TUI for the current project
 petiglyph
@@ -47,16 +50,17 @@ petiglyph tui
 # automation-friendly build
 petiglyph build
 petiglyph build --json
+petiglyph build --force-remap
 
 # build, install, refresh cache, and print sample string
 petiglyph sample
 petiglyph sample --json
+petiglyph sample --force-remap
 
 # build and install in user font location
 petiglyph install-font
 petiglyph install-font --json
-# explicit conflict escape hatch: rebuild lock mappings from scratch
-petiglyph build --force-remap
+petiglyph install-font --force-remap
 
 # uninstall managed installed variants for the current project/font
 petiglyph uninstall-font
@@ -69,6 +73,8 @@ petiglyph doctor --json
 ```
 
 All non-`create` commands accept `--manifest` to target another project.
+
+`petiglyph` (no subcommand) and `petiglyph tui` require an interactive terminal (TTY).
 
 When `--manifest` is omitted, petiglyph checks `./petiglyph.toml` first, then scans one directory below:
 
@@ -109,6 +115,7 @@ Failure mode rules:
 - non-zero exit code
 - `ok: false`
 - actionable `error.message`
+- optional `error.causes[]` for nested error chain context
 - human logs are kept off stdout in JSON mode
 
 ## Integration Examples
@@ -295,6 +302,7 @@ codepoint_start = "U+100000"
 ```
 
 `threshold_overrides` stores per-file threshold tuning relative to `input_dir`.
+`project_id` is managed automatically (generated if missing) and anchors install/Unicode ownership.
 
 ## TUI Keys
 
@@ -302,7 +310,7 @@ codepoint_start = "U+100000"
 - `Tab`: cycle Home -> Glyphs
 - `1` / `2`: switch between Home and Glyphs panels
 - Home shows detected project folders, project creation controls, build/install actions, advanced generator placeholder buttons inside the projects card, a current-project panel for outputs/sample, and a machine-wide installed petiglyph font inventory with sample glyphs
-- Home navigation: project list uses `↑` / `↓`; the create/build/install/generator controls use stacked rows with `←` / `→` moving within a row and `↑` / `↓` moving between rows; `Enter` opens the selected project or runs the focused Home action
+- Home navigation: project list uses `↑` / `↓`; the create/build/install/generator controls use stacked rows with `←` / `→` moving within a row and `↑` / `↓` moving between rows; `Enter` opens the selected project or runs the focused Home action (including uninstall for the selected installed-font row)
 - `R`: rescan the workspace project list and the active project's `icons/`
 - `j` / `k` or `↑` / `↓`: select glyph (Glyphs view)
 - `←` / `→` or `+` / `-`: adjust threshold by 1 for selected glyph (Glyphs view)
@@ -333,3 +341,4 @@ Project root also contains:
 - if source alpha exists, alpha drives glyph coverage
 - otherwise, border color is treated as background and contrast becomes coverage
 - default `codepoint_start` is `U+100000` to avoid common BMP private-use collisions
+- if metadata/lock artifacts are incompatible, CLI errors include an actionable `petiglyph doctor --repair` hint

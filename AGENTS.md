@@ -10,16 +10,20 @@
 ### Current CLI/TUI Contract (No Backward Compatibility Layer)
 - Primary commands:
   - `petiglyph create <name>`
+  - `petiglyph create <name> --no-launch`
   - `petiglyph` (or `petiglyph tui`) for interactive TUI
   - `petiglyph build`
   - `petiglyph sample`
   - `petiglyph install-font`
   - `petiglyph uninstall-font`
+  - `petiglyph doctor`
 - If no subcommand is provided, `petiglyph` launches the interactive workspace TUI.
+- In non-interactive contexts (no TTY), TUI launch fails with an explicit terminal-required error.
 - Manifest auto-detection when `--manifest` is omitted checks:
   - `./petiglyph.toml` first
   - then one directory level below current directory
 - If exactly one project is found, it is auto-selected; otherwise the Home panel opens for selection/creation.
+- `doctor` runs global checks without a manifest and runs project checks when a project is resolvable.
 - Default manifest values:
   - `input_dir = "icons"`
   - `out_dir = "build"`
@@ -32,10 +36,16 @@
   - [src/project.rs](/home/peti_poua/Code/petiglyph/src/project.rs)
   - [src/build.rs](/home/peti_poua/Code/petiglyph/src/build.rs)
   - [src/install.rs](/home/peti_poua/Code/petiglyph/src/install.rs)
+  - [src/doctor.rs](/home/peti_poua/Code/petiglyph/src/doctor.rs)
+  - [src/artifact_warning.rs](/home/peti_poua/Code/petiglyph/src/artifact_warning.rs)
+- In-crate unit/integration-style coverage helpers:
+  - [src/tests.rs](/home/peti_poua/Code/petiglyph/src/tests.rs)
+  - [tests/cli_contract.rs](/home/peti_poua/Code/petiglyph/tests/cli_contract.rs)
 - Root metadata/docs:
   - [Cargo.toml](/home/peti_poua/Code/petiglyph/Cargo.toml)
   - [README.md](/home/peti_poua/Code/petiglyph/README.md)
   - [petiglyph.toml](/home/peti_poua/Code/petiglyph/petiglyph.toml) (sample/root manifest)
+  - [PLAN.md](/home/peti_poua/Code/petiglyph/PLAN.md)
 - Local Arch packaging helpers:
   - [PKGBUILD](/home/peti_poua/Code/petiglyph/PKGBUILD)
   - `scripts/aur.sh`
@@ -46,6 +56,7 @@
 - `petiglyph-*.pkg.tar.zst`, `petiglyph-debug-*.pkg.tar.zst`, and `petiglyph-*.tar.gz` are build artifacts.
 - `target/` is Cargo build output.
 - `build/` at repo root is generated output from the sample/root project manifest.
+- `test1/` and `test2/` are local project fixtures with generated outputs and should not be treated as canonical source.
 
 ### Recent History You Should Know
 - Major refactor established TUI-first architecture and standardized command surface (`petiglyph <command>`).
@@ -53,10 +64,12 @@
 - Threshold tuning now supports per-glyph overrides in manifest.
 - Default codepoint range moved out of BMP private-use area (`U+100000` start).
 - Arch local packaging flow was added for AUR-style testing.
+- Managed install now uses immutable artifacts plus metadata, Unicode range registry ownership, and `doctor --repair` recovery paths.
 
 ### Practical Workflow Guidance for Agents
 - Before changing behavior, validate against the current CLI contract above.
 - Keep project outputs self-contained; do not introduce system-wide scattered asset storage for user projects.
+- Preserve automation contract semantics (`--json` envelope fields and non-zero exit behavior on failures).
 - For packaging-related work, prefer `scripts/aur.sh` and keep `PKGBUILD` aligned with `Cargo.toml` version.
 - When checking the codebase, avoid accidentally editing generated files under `.makepkg/`.
 - If touching UX or command semantics, update README examples in the same change.
