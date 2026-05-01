@@ -43,10 +43,7 @@ pub(crate) fn incompatible_artifact_warning(
     let lowered = error_text.to_ascii_lowercase();
     let reason = artifact_reason(&lowered)?;
     let repair_cmd = if let Some(path) = manifest_path {
-        format!(
-            "petiglyph doctor --repair --manifest {}",
-            quoted_path(path)
-        )
+        format!("petiglyph doctor --repair --manifest {}", quoted_path(path))
     } else {
         "petiglyph doctor --repair".to_string()
     };

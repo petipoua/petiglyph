@@ -555,6 +555,75 @@ fn find_first_fit(
     Ok(None)
 }
 
+fn find_first_fit_containing_locked(
+    preferred_start: u32,
+    span: u32,
+    project_id: &str,
+    registry: &UnicodeRegistryFile,
+    locked_codepoints: &BTreeSet<u32>,
+) -> Result<Option<(u32, u32)>> {
+    if locked_codepoints.is_empty() {
+        return find_first_fit(preferred_start, span, project_id, registry);
+    }
+
+    let Some(min_locked) = locked_codepoints.iter().min().copied() else {
+        return find_first_fit(preferred_start, span, project_id, registry);
+    };
+    let Some(max_locked) = locked_codepoints.iter().max().copied() else {
+        return find_first_fit(preferred_start, span, project_id, registry);
+    };
+
+    if max_locked < min_locked {
+        return Ok(None);
+    }
+
+    let locked_span = max_locked - min_locked + 1;
+    if locked_span > span {
+        bail!(
+            "locked codepoint span U+{:04X}..U+{:04X} cannot fit requested range span {}",
+            min_locked,
+            max_locked,
+            span
+        );
+    }
+
+    let latest_start = SUPPLEMENTARY_PUA_END
+        .checked_sub(span.saturating_sub(1))
+        .ok_or_else(|| anyhow::anyhow!("Unicode range span is too large for supplementary PUA"))?;
+    let min_start = max_locked
+        .saturating_sub(span.saturating_sub(1))
+        .max(SUPPLEMENTARY_PUA_START);
+    let max_start = min_locked.min(latest_start);
+    if min_start > max_start {
+        return Ok(None);
+    }
+
+    let preferred = preferred_start.clamp(min_start, max_start);
+    let mut starts = Vec::with_capacity((max_start - min_start + 1) as usize);
+    starts.push(preferred);
+    for delta in 1..=(max_start - min_start) {
+        if let Some(left) = preferred.checked_sub(delta)
+            && left >= min_start
+        {
+            starts.push(left);
+        }
+        if let Some(right) = preferred.checked_add(delta)
+            && right <= max_start
+        {
+            starts.push(right);
+        }
+    }
+
+    for start in starts {
+        let end = start + span - 1;
+        if can_use_range(start, end, project_id, registry)? {
+            return Ok(Some((start, end)));
+        }
+    }
+
+    Ok(None)
+}
+
 pub(crate) fn reserve_project_unicode_range(
     registry_root_override: Option<&Path>,
     project_id: &str,
@@ -638,24 +707,31 @@ pub(crate) fn reserve_project_unicode_range(
         let current_span = range_len(start, end);
 
         if required_span > current_span {
-            end = start
+            let expanded_end = start
                 .checked_add(required_span - 1)
                 .ok_or_else(|| anyhow::anyhow!("Unicode range expansion overflow"))?;
-            if end > SUPPLEMENTARY_PUA_END {
-                bail!(
-                    "Unicode range expansion exceeds supplementary private use limit for project {}",
-                    project_id
-                );
-            }
-            if !can_use_range(start, end, project_id, &registry)? {
-                bail!(
-                    "Unicode range conflict: cannot expand project {} range to {}..{} without colliding with another project",
+            if expanded_end <= SUPPLEMENTARY_PUA_END
+                && can_use_range(start, expanded_end, project_id, &registry)?
+            {
+                end = expanded_end;
+                (start, end, true)
+            } else {
+                let Some((relocated_start, relocated_end)) = find_first_fit_containing_locked(
+                    start,
+                    required_span,
                     project_id,
-                    format_codepoint(start),
-                    format_codepoint(end)
-                );
+                    &registry,
+                    locked_codepoints,
+                )?
+                else {
+                    bail!(
+                        "Unicode range conflict: cannot reserve {} codepoints for project {} without colliding with another project",
+                        required_span,
+                        project_id
+                    );
+                };
+                (relocated_start, relocated_end, true)
             }
-            (start, end, true)
         } else {
             (start, end, false)
         }

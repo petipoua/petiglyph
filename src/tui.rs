@@ -1,8 +1,9 @@
 use anyhow::{Context, Result, bail};
 use crossterm::ExecutableCommand;
 use crossterm::event::{
-    self, Event, KeyCode, KeyEvent, KeyEventKind, KeyEventState, KeyboardEnhancementFlags,
-    PopKeyboardEnhancementFlags, PushKeyboardEnhancementFlags,
+    self, DisableBracketedPaste, EnableBracketedPaste, Event, KeyCode, KeyEvent, KeyEventKind,
+    KeyEventState, KeyboardEnhancementFlags, PopKeyboardEnhancementFlags,
+    PushKeyboardEnhancementFlags,
 };
 use crossterm::terminal::{
     EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode,
@@ -160,8 +161,10 @@ pub(crate) fn tui_workspace(
                     if should_dispatch_key_kind(key.kind) {
                         tui_debug_log("event.dispatch.before", app_debug_state(&app));
                         if let Err(err) = handle_key_event(&mut app, key) {
-                            app.status =
-                                Some(format_status_from_error(&app.manifest_path, &err.to_string()));
+                            app.status = Some(format_status_from_error(
+                                &app.manifest_path,
+                                &err.to_string(),
+                            ));
                             tui_debug_log("event.dispatch.error", app_debug_state(&app));
                         } else {
                             tui_debug_log("event.dispatch.after", app_debug_state(&app));
@@ -171,6 +174,18 @@ pub(crate) fn tui_workspace(
                         }
                     } else {
                         tui_debug_log("event.key.ignored_non_press", key_debug(&key));
+                    }
+                }
+                Event::Paste(payload) => {
+                    tui_debug_log("event.read.paste", payload.replace('\n', "\\n"));
+                    if let Err(err) = handle_paste_event(&mut app, &payload) {
+                        app.status = Some(format_status_from_error(
+                            &app.manifest_path,
+                            &err.to_string(),
+                        ));
+                        tui_debug_log("event.dispatch.error", app_debug_state(&app));
+                    } else {
+                        tui_debug_log("event.dispatch.after", app_debug_state(&app));
                     }
                 }
                 other => {
@@ -246,6 +261,7 @@ pub(crate) struct InteractiveGlyph {
 struct TerminalSession {
     terminal: Terminal<CrosstermBackend<io::Stdout>>,
     keyboard_enhancements_enabled: bool,
+    bracketed_paste_enabled: bool,
 }
 
 struct BuildTask {
@@ -386,12 +402,18 @@ impl TerminalSession {
             "terminal.start.keyboard_enhancements",
             format!("enabled={keyboard_enhancements_enabled}"),
         );
+        let bracketed_paste_enabled = stdout.execute(EnableBracketedPaste).is_ok();
+        tui_debug_log(
+            "terminal.start.bracketed_paste",
+            format!("enabled={bracketed_paste_enabled}"),
+        );
 
         let backend = CrosstermBackend::new(stdout);
         let terminal = Terminal::new(backend).context("failed to initialize terminal UI")?;
         Ok(Self {
             terminal,
             keyboard_enhancements_enabled,
+            bracketed_paste_enabled,
         })
     }
 }
@@ -403,6 +425,9 @@ impl Drop for TerminalSession {
                 .terminal
                 .backend_mut()
                 .execute(PopKeyboardEnhancementFlags);
+        }
+        if self.bracketed_paste_enabled {
+            let _ = self.terminal.backend_mut().execute(DisableBracketedPaste);
         }
         let _ = disable_raw_mode();
         let _ = self.terminal.backend_mut().execute(LeaveAlternateScreen);
@@ -1675,7 +1700,7 @@ impl App {
             self.glyphs.clear();
             self.selected = 0;
             self.status = Some(format!(
-                "add image files to {} and press R to rescan",
+                "add or drag image files into {}",
                 self.config.input_dir.display()
             ));
             return Ok(());
@@ -1709,6 +1734,91 @@ impl App {
         Ok(())
     }
 
+    fn import_dropped_images(&mut self, payload: &str) -> Result<()> {
+        if self.build_in_progress() || self.install_in_progress() {
+            self.status =
+                Some("a background task is in progress; wait before importing images".to_string());
+            return Ok(());
+        }
+
+        if self.active_project.is_none() {
+            self.status =
+                Some("create or select a project before importing dropped images".to_string());
+            return Ok(());
+        }
+
+        self.reload_config()?;
+        fs::create_dir_all(&self.config.input_dir)
+            .with_context(|| format!("failed to create {}", self.config.input_dir.display()))?;
+
+        let dropped_paths = collect_dropped_paths(payload);
+        if dropped_paths.is_empty() {
+            self.status = Some("drop did not include readable file paths".to_string());
+            return Ok(());
+        }
+
+        let mut imported = 0usize;
+        let mut renamed = 0usize;
+        let mut skipped_existing = 0usize;
+        let mut skipped_unsupported = 0usize;
+        let mut skipped_missing = 0usize;
+
+        for source in dropped_paths {
+            if !source.is_file() {
+                skipped_missing += 1;
+                continue;
+            }
+
+            if !is_supported_source(&source) {
+                skipped_unsupported += 1;
+                continue;
+            }
+
+            let Some(file_name) = source.file_name() else {
+                skipped_missing += 1;
+                continue;
+            };
+
+            let canonical_destination = self.config.input_dir.join(file_name);
+            if paths_resolve_to_same_file(&source, &canonical_destination) {
+                skipped_existing += 1;
+                continue;
+            }
+
+            let (destination, was_renamed) =
+                next_available_import_destination(&self.config.input_dir, file_name);
+            fs::copy(&source, &destination).with_context(|| {
+                format!(
+                    "failed to import {} into {}",
+                    source.display(),
+                    destination.display()
+                )
+            })?;
+
+            imported += 1;
+            if was_renamed {
+                renamed += 1;
+            }
+        }
+
+        if imported > 0 {
+            self.reload_glyphs()?;
+            if self.view == AppView::Welcome {
+                self.welcome_input_editing = false;
+                self.view = AppView::Glyphs;
+            }
+        }
+
+        self.status = Some(format_drop_import_status(
+            imported,
+            renamed,
+            skipped_existing,
+            skipped_unsupported,
+            skipped_missing,
+        ));
+        Ok(())
+    }
+
     fn start_build_project(&mut self) -> Result<()> {
         if self.active_project.is_none() {
             self.status = Some(
@@ -1728,10 +1838,6 @@ impl App {
         }
 
         let rebuilding = self.current_project_is_built();
-        if rebuilding {
-            self.last_build = None;
-            self.last_sample = None;
-        }
 
         let kind = if rebuilding {
             BuildTaskKind::Rebuild
@@ -2424,6 +2530,11 @@ pub(crate) fn handle_key_event_for_test(app: &mut App, key: KeyEvent) -> Result<
 }
 
 #[cfg(test)]
+pub(crate) fn handle_paste_event_for_test(app: &mut App, payload: &str) -> Result<()> {
+    handle_paste_event(app, payload)
+}
+
+#[cfg(test)]
 pub(crate) fn render_ui_for_test(app: &App, width: u16, height: u16) -> Result<()> {
     let backend = ratatui::backend::TestBackend::new(width, height);
     let mut terminal = Terminal::new(backend).context("failed to initialize test terminal")?;
@@ -2450,6 +2561,13 @@ fn adjust_selected_threshold_by(app: &mut App, step: i16) {
     } else if app.active_project.is_none() {
         set_selected_threshold(app, 0);
     }
+}
+
+fn handle_paste_event(app: &mut App, payload: &str) -> Result<()> {
+    if !looks_like_path_payload(payload) {
+        return Ok(());
+    }
+    app.import_dropped_images(payload)
 }
 
 fn handle_key_event(app: &mut App, key: KeyEvent) -> Result<()> {
@@ -2997,7 +3115,7 @@ fn draw_glyphs_view(
     let mut preview_content = if app.glyphs.is_empty() {
         vec![
             Line::from(""),
-            Line::from("  Add images and press R to rescan."),
+            Line::from("  Add or drag images into this project."),
         ]
     } else {
         let active = &app.glyphs[app.selected];
@@ -3122,6 +3240,241 @@ fn preview_lines(
     }
 
     rows.into_iter().map(Line::from).collect()
+}
+
+fn looks_like_path_payload(payload: &str) -> bool {
+    let trimmed = payload.trim();
+    if trimmed.is_empty() {
+        return false;
+    }
+    trimmed.contains('/') || trimmed.starts_with("file://") || trimmed.contains('\\')
+}
+
+fn collect_dropped_paths(payload: &str) -> Vec<PathBuf> {
+    let normalized = payload.replace("\r\n", "\n").replace('\r', "\n");
+    let mut fragments = Vec::new();
+    let trimmed = normalized.trim();
+    if !trimmed.is_empty() {
+        fragments.push(trimmed.to_string());
+    }
+    for line in normalized.lines() {
+        let line = line.trim();
+        if !line.is_empty() {
+            fragments.push(line.to_string());
+        }
+    }
+
+    let mut seen = BTreeSet::new();
+    let mut out = Vec::new();
+
+    for fragment in fragments {
+        let mut candidates = vec![fragment.clone()];
+        candidates.extend(split_shell_like_tokens(&fragment));
+
+        for candidate in candidates {
+            let Some(path) = normalize_dropped_path_candidate(&candidate) else {
+                continue;
+            };
+            let key = path.to_string_lossy().to_string();
+            if seen.insert(key) {
+                out.push(path);
+            }
+        }
+    }
+
+    out
+}
+
+fn split_shell_like_tokens(input: &str) -> Vec<String> {
+    let mut tokens = Vec::new();
+    let mut current = String::new();
+    let mut escaped = false;
+    let mut in_single_quote = false;
+    let mut in_double_quote = false;
+
+    for ch in input.chars() {
+        if escaped {
+            current.push(ch);
+            escaped = false;
+            continue;
+        }
+
+        if ch == '\\' && !in_single_quote {
+            escaped = true;
+            continue;
+        }
+
+        if ch == '\'' && !in_double_quote {
+            in_single_quote = !in_single_quote;
+            continue;
+        }
+
+        if ch == '"' && !in_single_quote {
+            in_double_quote = !in_double_quote;
+            continue;
+        }
+
+        if ch.is_whitespace() && !in_single_quote && !in_double_quote {
+            if !current.is_empty() {
+                tokens.push(current.clone());
+                current.clear();
+            }
+            continue;
+        }
+
+        current.push(ch);
+    }
+
+    if escaped {
+        current.push('\\');
+    }
+
+    if !current.is_empty() {
+        tokens.push(current);
+    }
+
+    tokens
+}
+
+fn normalize_dropped_path_candidate(candidate: &str) -> Option<PathBuf> {
+    let trimmed = candidate.trim().trim_end_matches('\0');
+    if trimmed.is_empty() {
+        return None;
+    }
+
+    let stripped = strip_wrapping_quotes(trimmed);
+    if let Some(uri_path) = stripped.strip_prefix("file://") {
+        return Some(PathBuf::from(decode_file_uri_path(uri_path)));
+    }
+
+    Some(PathBuf::from(unescape_backslashes(stripped)))
+}
+
+fn strip_wrapping_quotes(value: &str) -> &str {
+    if value.len() >= 2 {
+        let bytes = value.as_bytes();
+        let starts = bytes[0];
+        let ends = bytes[value.len() - 1];
+        if (starts == b'"' && ends == b'"') || (starts == b'\'' && ends == b'\'') {
+            return &value[1..value.len() - 1];
+        }
+    }
+    value
+}
+
+fn decode_file_uri_path(uri_path: &str) -> String {
+    let mut path = uri_path;
+    if let Some(rest) = path.strip_prefix("localhost") {
+        path = rest;
+    }
+    percent_decode(path)
+}
+
+fn percent_decode(input: &str) -> String {
+    let bytes = input.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut index = 0usize;
+
+    while index < bytes.len() {
+        if bytes[index] == b'%'
+            && index + 2 < bytes.len()
+            && let (Some(hi), Some(lo)) = (hex_value(bytes[index + 1]), hex_value(bytes[index + 2]))
+        {
+            out.push((hi << 4) | lo);
+            index += 3;
+            continue;
+        }
+
+        out.push(bytes[index]);
+        index += 1;
+    }
+
+    String::from_utf8_lossy(&out).into_owned()
+}
+
+fn hex_value(value: u8) -> Option<u8> {
+    match value {
+        b'0'..=b'9' => Some(value - b'0'),
+        b'a'..=b'f' => Some(value - b'a' + 10),
+        b'A'..=b'F' => Some(value - b'A' + 10),
+        _ => None,
+    }
+}
+
+fn unescape_backslashes(value: &str) -> String {
+    let mut out = String::with_capacity(value.len());
+    let mut escaped = false;
+
+    for ch in value.chars() {
+        if escaped {
+            out.push(ch);
+            escaped = false;
+        } else if ch == '\\' {
+            escaped = true;
+        } else {
+            out.push(ch);
+        }
+    }
+
+    if escaped {
+        out.push('\\');
+    }
+    out
+}
+
+fn paths_resolve_to_same_file(left: &Path, right: &Path) -> bool {
+    let Ok(left) = fs::canonicalize(left) else {
+        return false;
+    };
+    let Ok(right) = fs::canonicalize(right) else {
+        return false;
+    };
+    left == right
+}
+
+fn next_available_import_destination(
+    input_dir: &Path,
+    file_name: &std::ffi::OsStr,
+) -> (PathBuf, bool) {
+    let candidate = input_dir.join(file_name);
+    if !candidate.exists() {
+        return (candidate, false);
+    }
+
+    let stem = Path::new(file_name)
+        .file_stem()
+        .and_then(|value| value.to_str())
+        .filter(|value| !value.is_empty())
+        .unwrap_or("glyph");
+    let ext = Path::new(file_name)
+        .extension()
+        .and_then(|value| value.to_str())
+        .filter(|value| !value.is_empty());
+
+    for index in 1.. {
+        let renamed = match ext {
+            Some(ext) => format!("{stem}-{index}.{ext}"),
+            None => format!("{stem}-{index}"),
+        };
+        let next = input_dir.join(renamed);
+        if !next.exists() {
+            return (next, true);
+        }
+    }
+
+    (candidate, false)
+}
+
+fn format_drop_import_status(
+    imported: usize,
+    renamed: usize,
+    skipped_existing: usize,
+    skipped_unsupported: usize,
+    skipped_missing: usize,
+) -> String {
+    format!(
+        "drop import: {imported} added, {renamed} renamed, {skipped_existing} already present, {skipped_unsupported} unsupported, {skipped_missing} missing"
+    )
 }
 
 fn detected_terminal_name() -> Option<&'static str> {

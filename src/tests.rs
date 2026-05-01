@@ -25,10 +25,10 @@ use crate::project::{
 use crate::tui::{
     App, AppView, HomeToolAction, InstalledFontSample, InteractiveGlyph, TuiLaunchOverrides,
     WelcomeFocus, build_action_name, format_projects_card_hint, format_welcome_input_field,
-    handle_key, handle_key_event_for_test, install_action_name, persist_threshold_override,
-    render_ui_for_test, requested_keyboard_enhancement_flags, resolve_installed_font_path_with,
-    sample_glyphs_from_ttf_bytes, should_dispatch_key_kind, spaced_sample, switch_notice_visible,
-    wrap_sample_for_display,
+    handle_key, handle_key_event_for_test, handle_paste_event_for_test, install_action_name,
+    persist_threshold_override, render_ui_for_test, requested_keyboard_enhancement_flags,
+    resolve_installed_font_path_with, sample_glyphs_from_ttf_bytes, should_dispatch_key_kind,
+    spaced_sample, switch_notice_visible, wrap_sample_for_display,
 };
 
 fn make_temp_dir(name: &str) -> PathBuf {
@@ -1396,6 +1396,64 @@ fn unicode_registry_rejects_locked_codepoint_conflicts_with_foreign_project() {
 }
 
 #[test]
+fn unicode_registry_can_relocate_project_range_while_preserving_locked_codepoints() {
+    let registry_root = make_temp_dir("unicode-registry-relocate");
+
+    let mut project_a_locked = BTreeSet::new();
+    project_a_locked.insert(0x10_0025);
+    let first = reserve_project_unicode_range(
+        Some(&registry_root),
+        "project-a",
+        0x10_0000,
+        1,
+        &project_a_locked,
+    )
+    .expect("initial project-a reservation should succeed");
+    assert_eq!(first.range_start, 0x10_0025);
+    assert_eq!(first.range_end, 0x10_0025);
+
+    let mut project_b_locked = BTreeSet::new();
+    project_b_locked.insert(0x10_0026);
+    let second = reserve_project_unicode_range(
+        Some(&registry_root),
+        "project-b",
+        0x10_0000,
+        1,
+        &project_b_locked,
+    )
+    .expect("project-b reservation should succeed");
+    assert_eq!(second.range_start, 0x10_0026);
+    assert_eq!(second.range_end, 0x10_0026);
+
+    let expanded = reserve_project_unicode_range(
+        Some(&registry_root),
+        "project-a",
+        0x10_0000,
+        3,
+        &project_a_locked,
+    )
+    .expect("project-a should relocate range to keep lock and avoid collision");
+
+    assert!(
+        expanded.range_start <= 0x10_0025 && expanded.range_end >= 0x10_0025,
+        "expanded range must still contain locked codepoint: U+100025, got U+{:X}..U+{:X}",
+        expanded.range_start,
+        expanded.range_end
+    );
+    assert_eq!(
+        expanded.range_end - expanded.range_start + 1,
+        3,
+        "expanded range should match requested span"
+    );
+    assert!(
+        expanded.range_end < second.range_start || expanded.range_start > second.range_end,
+        "expanded range must remain disjoint from project-b range"
+    );
+
+    fs::remove_dir_all(registry_root).expect("temp registry root is removed");
+}
+
+#[test]
 fn build_force_remap_recovers_from_foreign_codepoint_conflict() {
     let project_dir = make_temp_dir("force-remap-conflict");
     let input_dir = project_dir.join("icons");
@@ -1705,6 +1763,108 @@ fn tab_cycles_panels_and_glyph_controls_stay_in_glyph_view() {
     assert_eq!(app.glyphs[0].working_threshold, 65);
     handle_key(&mut app, KeyCode::Left).expect("key handling should succeed");
     assert_eq!(app.glyphs[0].working_threshold, 64);
+
+    fs::remove_dir_all(project_dir).expect("temp project dir is removed");
+}
+
+#[test]
+fn dropped_image_on_home_imports_and_switches_to_glyphs() {
+    let project_dir = make_temp_dir("drop-home-switch");
+    let manifest_path = project_dir.join("petiglyph.toml");
+    write_manifest(&manifest_path, &Manifest::default()).expect("manifest is written");
+
+    let icons_dir = project_dir.join("icons");
+    fs::create_dir_all(&icons_dir).expect("icons dir is created");
+    let dropped_image = project_dir.join("drop source.png");
+    write_test_png(&dropped_image);
+
+    let config = RuntimeConfig {
+        project_dir: project_dir.clone(),
+        project_id: "test-drop-home-switch".to_string(),
+        input_dir: icons_dir.clone(),
+        out_dir: project_dir.join("build"),
+        font_name: "Petiglyph".to_string(),
+        glyph_size: 8,
+        base_threshold: 64,
+        threshold_overrides: BTreeMap::new(),
+        codepoint_start: 0x10_0000,
+    };
+
+    let mut app = App::new(manifest_path, config);
+    app.view = AppView::Welcome;
+
+    handle_paste_event_for_test(&mut app, &format!("'{}'", dropped_image.display()))
+        .expect("drop import should succeed");
+
+    assert_eq!(app.view, AppView::Glyphs);
+    assert_eq!(app.glyphs.len(), 1);
+    assert!(
+        icons_dir.join("drop source.png").is_file(),
+        "dropped image should be copied into icons directory"
+    );
+    assert!(
+        app.status
+            .as_deref()
+            .is_some_and(|value| value.contains("drop import: 1 added")),
+        "status should report import success, got {:?}",
+        app.status
+    );
+
+    fs::remove_dir_all(project_dir).expect("temp project dir is removed");
+}
+
+#[test]
+fn dropped_image_with_conflicting_name_is_renamed_without_overwrite() {
+    let project_dir = make_temp_dir("drop-rename-collision");
+    let manifest_path = project_dir.join("petiglyph.toml");
+    write_manifest(&manifest_path, &Manifest::default()).expect("manifest is written");
+
+    let icons_dir = project_dir.join("icons");
+    fs::create_dir_all(&icons_dir).expect("icons dir is created");
+    let existing = icons_dir.join("icon.png");
+    write_test_png(&existing);
+    let existing_bytes = fs::read(&existing).expect("existing icon bytes are readable");
+
+    let import_dir = project_dir.join("imports");
+    fs::create_dir_all(&import_dir).expect("imports dir is created");
+    let dropped = import_dir.join("icon.png");
+    write_test_png(&dropped);
+
+    let config = RuntimeConfig {
+        project_dir: project_dir.clone(),
+        project_id: "test-drop-rename-collision".to_string(),
+        input_dir: icons_dir.clone(),
+        out_dir: project_dir.join("build"),
+        font_name: "Petiglyph".to_string(),
+        glyph_size: 8,
+        base_threshold: 64,
+        threshold_overrides: BTreeMap::new(),
+        codepoint_start: 0x10_0000,
+    };
+
+    let mut app = App::new(manifest_path, config);
+    app.view = AppView::Glyphs;
+
+    handle_paste_event_for_test(&mut app, &dropped.display().to_string())
+        .expect("drop import should succeed");
+
+    assert!(
+        icons_dir.join("icon-1.png").is_file(),
+        "a renamed copy should be created when filename collides"
+    );
+    assert_eq!(
+        fs::read(&existing).expect("original icon bytes are readable"),
+        existing_bytes,
+        "existing icon should not be overwritten"
+    );
+    assert_eq!(app.glyphs.len(), 2);
+    assert!(
+        app.status
+            .as_deref()
+            .is_some_and(|value| value.contains("1 renamed")),
+        "status should report renamed import, got {:?}",
+        app.status
+    );
 
     fs::remove_dir_all(project_dir).expect("temp project dir is removed");
 }
