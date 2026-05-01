@@ -268,6 +268,24 @@ cargo run -- uninstall-font --manifest ./petiglyph.toml --json
 cargo run -- doctor --manifest ./petiglyph.toml --json
 ```
 
+## TUI E2E with hty
+
+To run process-level TUI E2E journeys (headless PTY automation with optional live watch):
+
+```bash
+# requires hty: https://hty.sh
+./scripts/tui_e2e_hty.sh
+
+# optional live observer + slower key steps
+./scripts/tui_e2e_hty.sh --watch --step-delay-ms 250
+```
+
+The harness mirrors these critical flows:
+
+- launch + quit from existing project
+- create project from Home panel
+- build shortcut writes artifacts
+
 ## Local AUR-Style Test Scripts
 
 Use this script from repo root to simulate the AUR flow locally on Arch:
