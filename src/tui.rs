@@ -1326,10 +1326,33 @@ fn draw_welcome_view(
     } else {
         Vec::new()
     };
+    let show_project_scrollbar =
+        project_rows.len() > visible_project_rows && visible_project_rows > 0;
+    let project_list_layout = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([
+            Constraint::Min(0),
+            Constraint::Length(if show_project_scrollbar { 1 } else { 0 }),
+        ])
+        .split(projects_layout[1]);
     frame.render_widget(
         Paragraph::new(rendered_project_rows).wrap(Wrap { trim: false }),
-        projects_layout[1],
+        project_list_layout[0],
     );
+    if show_project_scrollbar {
+        let (thumb_top, thumb_height) =
+            scrollbar_thumb_geometry(project_rows.len(), visible_project_rows, project_row_start);
+        frame.render_widget(
+            Paragraph::new(vertical_scrollbar_lines(
+                visible_project_rows,
+                thumb_top,
+                thumb_height,
+                muted,
+                accent,
+            )),
+            project_list_layout[1],
+        );
+    }
 
     frame.render_widget(
         Paragraph::new(projects_footer_lines).wrap(Wrap { trim: false }),
@@ -1633,10 +1656,32 @@ fn draw_welcome_view(
     } else {
         Vec::new()
     };
+    let show_font_scrollbar = font_rows.len() > visible_font_rows && visible_font_rows > 0;
+    let font_list_layout = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([
+            Constraint::Min(0),
+            Constraint::Length(if show_font_scrollbar { 1 } else { 0 }),
+        ])
+        .split(fonts_layout[1]);
     frame.render_widget(
         Paragraph::new(rendered_font_rows).wrap(Wrap { trim: false }),
-        fonts_layout[1],
+        font_list_layout[0],
     );
+    if show_font_scrollbar {
+        let (thumb_top, thumb_height) =
+            scrollbar_thumb_geometry(font_rows.len(), visible_font_rows, font_row_start);
+        frame.render_widget(
+            Paragraph::new(vertical_scrollbar_lines(
+                visible_font_rows,
+                thumb_top,
+                thumb_height,
+                muted,
+                accent,
+            )),
+            font_list_layout[1],
+        );
+    }
 }
 
 impl App {
@@ -3994,6 +4039,49 @@ fn visible_window_bounds(
     }
     let end = (start + viewport_rows).min(total_rows);
     (start, end)
+}
+
+fn scrollbar_thumb_geometry(
+    total_rows: usize,
+    viewport_rows: usize,
+    viewport_start: usize,
+) -> (usize, usize) {
+    if total_rows == 0 || viewport_rows == 0 || total_rows <= viewport_rows {
+        return (0, 0);
+    }
+
+    let thumb_height =
+        ((viewport_rows.saturating_mul(viewport_rows)) + total_rows - 1) / total_rows;
+    let thumb_height = thumb_height.max(1).min(viewport_rows);
+    let track = viewport_rows.saturating_sub(thumb_height);
+    let scrollable = total_rows.saturating_sub(viewport_rows);
+    if track == 0 || scrollable == 0 {
+        return (0, thumb_height);
+    }
+
+    let thumb_top = viewport_start.saturating_mul(track) / scrollable;
+    (thumb_top.min(track), thumb_height)
+}
+
+fn vertical_scrollbar_lines(
+    height: usize,
+    thumb_top: usize,
+    thumb_height: usize,
+    track_color: Color,
+    thumb_color: Color,
+) -> Vec<Line<'static>> {
+    let mut lines = Vec::with_capacity(height);
+    let thumb_bottom = thumb_top.saturating_add(thumb_height);
+    for row in 0..height {
+        let in_thumb = row >= thumb_top && row < thumb_bottom;
+        let (glyph, style) = if in_thumb {
+            ("█", Style::default().fg(thumb_color))
+        } else {
+            ("│", Style::default().fg(track_color))
+        };
+        lines.push(Line::from(vec![Span::styled(glyph, style)]));
+    }
+    lines
 }
 
 fn drag_images_here_lines(
