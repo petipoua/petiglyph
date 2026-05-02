@@ -1042,17 +1042,39 @@ fn draw_welcome_view(
         ])
         .split(area);
 
-    let tip_lines = vec![
-        Line::from(""),
-        Line::from(vec![
+    let tip_layout = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Length(1), Constraint::Min(0)])
+        .split(body[0]);
+    let switch_notice_line = if let Some(notice) = &app.switch_notice {
+        Line::from(vec![Span::styled(
+            format!(
+                " Switched project: {} -> {} ",
+                notice.from_label, notice.to_label
+            ),
+            Style::default()
+                .fg(Color::Black)
+                .bg(Color::Yellow)
+                .add_modifier(Modifier::BOLD),
+        )])
+    } else {
+        Line::from("")
+    };
+    frame.render_widget(
+        Paragraph::new(switch_notice_line).alignment(Alignment::Center),
+        tip_layout[0],
+    );
+    frame.render_widget(
+        Paragraph::new(vec![Line::from(vec![
             Span::raw("  "),
             Span::styled(
                 "Local scan scope: petiglyph checks the current folder and one level below for local projects/builds.",
                 Style::default().fg(muted),
             ),
-        ]),
-    ];
-    frame.render_widget(Paragraph::new(tip_lines).wrap(Wrap { trim: true }), body[0]);
+        ])])
+        .wrap(Wrap { trim: true }),
+        tip_layout[1],
+    );
 
     let main = Layout::default()
         .direction(Direction::Horizontal)
@@ -2004,7 +2026,7 @@ impl App {
         }
 
         let old_manifest = self.active_project.clone();
-        let old_label = self.active_project_label();
+        let old_label = self.active_project_switch_label();
         let changed = old_manifest.as_ref() != Some(&manifest_path);
 
         self.manifest_path = manifest_path.clone();
@@ -2020,7 +2042,7 @@ impl App {
         if changed {
             self.switch_notice = Some(ProjectSwitchNotice {
                 from_label: old_label,
-                to_label: self.active_project_label(),
+                to_label: self.active_project_switch_label(),
                 started_at: Instant::now(),
             });
         }
@@ -2540,6 +2562,19 @@ impl App {
             .unwrap_or_else(|| Path::new("."))
             .display();
         format!("{} ({folder})", self.config.font_name)
+    }
+
+    fn active_project_switch_label(&self) -> String {
+        let Some(active_project) = &self.active_project else {
+            return "none".to_string();
+        };
+
+        active_project
+            .parent()
+            .and_then(Path::file_name)
+            .and_then(|name| name.to_str())
+            .map(ToOwned::to_owned)
+            .unwrap_or_else(|| self.config.font_name.clone())
     }
 
     fn clear_expired_switch_notice(&mut self) {
@@ -3105,14 +3140,12 @@ fn draw_ui(frame: &mut Frame, app: &App) {
     }
     let area = centered_bounded_viewport(area);
 
-    let status_height = if app.switch_notice.is_some() { 1 } else { 0 };
     let root = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(3),             // Header
-            Constraint::Length(status_height), // Switch notice
-            Constraint::Min(0),                // Body
-            Constraint::Length(1),             // Footer keys
+            Constraint::Length(3), // Header
+            Constraint::Min(0),    // Body
+            Constraint::Length(1), // Footer keys
         ])
         .split(area);
 
@@ -3146,25 +3179,8 @@ fn draw_ui(frame: &mut Frame, app: &App) {
 
     frame.render_widget(tabs, root[0]);
 
-    if let Some(notice) = &app.switch_notice {
-        let notice_line = Line::from(vec![Span::styled(
-            format!(
-                " Switched project: {} -> {} ",
-                notice.from_label, notice.to_label
-            ),
-            Style::default()
-                .fg(Color::Black)
-                .bg(Color::Yellow)
-                .add_modifier(Modifier::BOLD),
-        )]);
-        frame.render_widget(
-            Paragraph::new(notice_line).alignment(Alignment::Center),
-            root[1],
-        );
-    }
-
     // Body
-    let body_area = root[2];
+    let body_area = root[1];
 
     match app.view {
         AppView::Welcome => draw_welcome_view(frame, app, body_area, accent, muted),
@@ -3290,7 +3306,7 @@ fn draw_ui(frame: &mut Frame, app: &App) {
     let footer = Paragraph::new(Line::from(footer_spans))
         .alignment(Alignment::Center)
         .style(Style::default().fg(muted));
-    frame.render_widget(footer, root[3]);
+    frame.render_widget(footer, root[2]);
 }
 
 fn draw_delete_project_confirmation_popup(
