@@ -738,6 +738,7 @@ fn app_debug_state(app: &App) -> String {
 
 fn handle_welcome_key(app: &mut App, key: KeyEvent) -> Result<()> {
     let code = key.code;
+    let home_project_actions_enabled = app.active_project.is_some();
     tui_debug_log(
         "welcome.handle.enter",
         format!("{} {}", key_debug(&key), app_debug_state(app)),
@@ -825,12 +826,20 @@ fn handle_welcome_key(app: &mut App, key: KeyEvent) -> Result<()> {
                     }
                 }
                 WelcomeFocus::CreateInput => {
-                    app.selected_home_tool = HomeToolAction::ComposeGrid;
-                    WelcomeFocus::ToolList
+                    if home_project_actions_enabled {
+                        app.selected_home_tool = HomeToolAction::ComposeGrid;
+                        WelcomeFocus::ToolList
+                    } else {
+                        WelcomeFocus::CreateInput
+                    }
                 }
                 WelcomeFocus::CreateButton => {
-                    app.selected_home_tool = HomeToolAction::AnimateGlyph;
-                    WelcomeFocus::ToolList
+                    if home_project_actions_enabled {
+                        app.selected_home_tool = HomeToolAction::AnimateGlyph;
+                        WelcomeFocus::ToolList
+                    } else {
+                        WelcomeFocus::CreateButton
+                    }
                 }
                 WelcomeFocus::BuildButton => {
                     if app.installed_fonts.is_empty() {
@@ -879,8 +888,12 @@ fn handle_welcome_key(app: &mut App, key: KeyEvent) -> Result<()> {
                 },
                 WelcomeFocus::CreateButton => WelcomeFocus::CreateInput,
                 WelcomeFocus::BuildButton => {
-                    app.selected_home_tool = HomeToolAction::AnimateGlyph;
-                    WelcomeFocus::ToolList
+                    if home_project_actions_enabled {
+                        app.selected_home_tool = HomeToolAction::AnimateGlyph;
+                        WelcomeFocus::ToolList
+                    } else {
+                        WelcomeFocus::CreateButton
+                    }
                 }
                 WelcomeFocus::InstallButton => WelcomeFocus::BuildButton,
                 WelcomeFocus::DeleteProjectButton => WelcomeFocus::InstallButton,
@@ -892,11 +905,31 @@ fn handle_welcome_key(app: &mut App, key: KeyEvent) -> Result<()> {
         KeyCode::Right | KeyCode::Char('l') if !app.welcome_input_editing => {
             app.welcome_focus = match app.welcome_focus {
                 WelcomeFocus::CreateInput => WelcomeFocus::CreateButton,
-                WelcomeFocus::ProjectList => WelcomeFocus::BuildButton,
-                WelcomeFocus::CreateButton => WelcomeFocus::BuildButton,
-                WelcomeFocus::BuildButton => WelcomeFocus::InstallButton,
+                WelcomeFocus::ProjectList => {
+                    if home_project_actions_enabled {
+                        WelcomeFocus::BuildButton
+                    } else {
+                        WelcomeFocus::ProjectList
+                    }
+                }
+                WelcomeFocus::CreateButton => {
+                    if home_project_actions_enabled {
+                        WelcomeFocus::BuildButton
+                    } else {
+                        WelcomeFocus::CreateButton
+                    }
+                }
+                WelcomeFocus::BuildButton => {
+                    if home_project_actions_enabled {
+                        WelcomeFocus::InstallButton
+                    } else {
+                        WelcomeFocus::CreateButton
+                    }
+                }
                 WelcomeFocus::InstallButton => {
-                    if app.active_project_can_be_deleted() {
+                    if !home_project_actions_enabled {
+                        WelcomeFocus::CreateButton
+                    } else if app.active_project_can_be_deleted() {
                         WelcomeFocus::DeleteProjectButton
                     } else {
                         WelcomeFocus::InstallButton
@@ -908,7 +941,13 @@ fn handle_welcome_key(app: &mut App, key: KeyEvent) -> Result<()> {
                         app.selected_home_tool = HomeToolAction::AnimateGlyph;
                         WelcomeFocus::ToolList
                     }
-                    HomeToolAction::AnimateGlyph => WelcomeFocus::BuildButton,
+                    HomeToolAction::AnimateGlyph => {
+                        if home_project_actions_enabled {
+                            WelcomeFocus::BuildButton
+                        } else {
+                            WelcomeFocus::CreateButton
+                        }
+                    }
                 },
                 WelcomeFocus::InstalledFontList => WelcomeFocus::InstalledFontList,
             };
@@ -1875,6 +1914,22 @@ impl App {
                 WelcomeFocus::ProjectList
             } else {
                 WelcomeFocus::CreateInput
+            };
+        }
+
+        if self.active_project.is_none()
+            && matches!(
+                self.welcome_focus,
+                WelcomeFocus::BuildButton
+                    | WelcomeFocus::InstallButton
+                    | WelcomeFocus::DeleteProjectButton
+                    | WelcomeFocus::ToolList
+            )
+        {
+            self.welcome_focus = if self.projects.is_empty() {
+                WelcomeFocus::CreateInput
+            } else {
+                WelcomeFocus::ProjectList
             };
         }
 

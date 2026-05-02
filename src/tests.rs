@@ -332,11 +332,22 @@ fn resolve_default_tui_target_uses_welcome_for_none_or_multiple_projects() {
 #[test]
 fn unified_tui_zero_projects_starts_without_active_project() {
     let workspace = make_temp_dir("unified-zero-projects");
-    let app = App::new_workspace(workspace.clone(), None, TuiLaunchOverrides::default())
+    let mut app = App::new_workspace(workspace.clone(), None, TuiLaunchOverrides::default())
         .expect("workspace TUI app initializes");
 
     assert_eq!(app.view, AppView::Welcome);
     assert_eq!(app.active_project, None);
+    assert_eq!(app.welcome_focus, WelcomeFocus::CreateInput);
+
+    handle_key(&mut app, KeyCode::Down).expect("down should stay on create input");
+    assert_eq!(app.welcome_focus, WelcomeFocus::CreateInput);
+    handle_key(&mut app, KeyCode::Right).expect("right moves to create button");
+    assert_eq!(app.welcome_focus, WelcomeFocus::CreateButton);
+    handle_key(&mut app, KeyCode::Down).expect("down should stay on create button");
+    assert_eq!(app.welcome_focus, WelcomeFocus::CreateButton);
+    handle_key(&mut app, KeyCode::Right).expect("right should stay on create button");
+    assert_eq!(app.welcome_focus, WelcomeFocus::CreateButton);
+    handle_key(&mut app, KeyCode::Left).expect("left returns to create input");
     assert_eq!(app.welcome_focus, WelcomeFocus::CreateInput);
 
     fs::remove_dir_all(workspace).expect("temp workspace is removed");
@@ -470,11 +481,10 @@ fn welcome_input_edit_mode_types_hjkl_without_navigation() {
 
     handle_key(&mut app, KeyCode::Char('l')).expect("welcome navigation moves to create button");
     assert_eq!(app.welcome_focus, WelcomeFocus::CreateButton);
-    handle_key(&mut app, KeyCode::Char('j')).expect("welcome navigation moves to tools");
-    assert_eq!(app.welcome_focus, WelcomeFocus::ToolList);
-    assert_eq!(app.selected_home_tool, HomeToolAction::AnimateGlyph);
-    handle_key(&mut app, KeyCode::Char('j')).expect("welcome navigation moves to tools");
-    assert_eq!(app.welcome_focus, WelcomeFocus::ToolList);
+    handle_key(&mut app, KeyCode::Char('j')).expect("welcome navigation should stay on create");
+    assert_eq!(app.welcome_focus, WelcomeFocus::CreateButton);
+    handle_key(&mut app, KeyCode::Char('j')).expect("welcome navigation should stay on create");
+    assert_eq!(app.welcome_focus, WelcomeFocus::CreateButton);
     assert!(app.create_input.value().is_empty());
 
     handle_key(&mut app, KeyCode::Up).expect("up arrow returns focus to create button");
