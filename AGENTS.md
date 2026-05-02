@@ -65,6 +65,18 @@
 - Default codepoint range moved out of BMP private-use area (`U+100000` start).
 - Arch local packaging flow was added for AUR-style testing.
 - Managed install now uses immutable artifacts plus metadata, Unicode range registry ownership, and `doctor --repair` recovery paths.
+- `hty` was adopted as the primary TUI E2E runner (replacing legacy `expectrl`-driven tests).
+
+### HTY E2E Guidance (Important)
+- `hty` is very new; model priors can be stale. Before changing `hty`-based test flows, check upstream docs/repo first:
+  - Repo: `https://github.com/LatentEvals/hty`
+  - Site/docs entrypoint: `https://hty.sh`
+- Validate local CLI behavior directly on this machine (`hty --help`, and subcommand help) before assuming flags/fields.
+- Current repo harness lives in `scripts/tui_e2e_hty.sh`; prefer extending it instead of reintroducing `expect`/PTY frameworks unless explicitly requested.
+- Expected operating modes for this repo:
+  - Headless CI-style runs (default script mode).
+  - Visible observation/debug runs (`hty watch`, `hty attach`, and script `--watch`/`--watch-auto` flows).
+- When adjusting timing/synchronization, favor explicit waits on rendered state and filesystem artifacts over fixed sleeps.
 
 ### Practical Workflow Guidance for Agents
 - Before changing behavior, validate against the current CLI contract above.
