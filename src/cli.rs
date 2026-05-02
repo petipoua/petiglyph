@@ -9,7 +9,7 @@ use crate::build::{BuildOptions, BuildSummary, build_outputs_with_options};
 use crate::doctor::{DoctorReport, doctor};
 use crate::install::{
     DEFAULT_INSTALL_NAME_MODE, FontPlatform, UninstallOutcome, diagnose_sample_coverage,
-    effective_font_name, install_built_font, uninstall_project_font,
+    effective_font_name, install_built_font, uninstall_project_font, uninstall_tool_state,
 };
 use crate::project::{
     RuntimeConfig, create_project, discover_project_manifests, format_codepoint,
@@ -148,6 +148,12 @@ enum CliCommand {
         #[arg(long)]
         json: bool,
     },
+    /// Uninstall the petiglyph tool state for the current user (managed fonts + registry + metadata).
+    Uninstall {
+        /// Emit machine-readable JSON to stdout.
+        #[arg(long)]
+        json: bool,
+    },
     /// Inspect and repair glyph lock/Unicode registry health.
     Doctor {
         /// Path to the manifest file. When omitted, global checks run and project checks auto-detect when possible.
@@ -221,6 +227,16 @@ struct UninstallFontCommandData {
     install_dir: String,
     outcome: UninstallOutcome,
     removed_ttf_count: usize,
+}
+
+#[derive(Debug, Serialize)]
+struct UninstallToolCommandData {
+    platform: FontPlatform,
+    install_dir: String,
+    outcome: UninstallOutcome,
+    removed_ttf_count: usize,
+    removed_metadata_count: usize,
+    removed_state_file_count: usize,
 }
 
 enum CliRunError {
@@ -424,6 +440,12 @@ fn run_cli(cli: Cli) -> std::result::Result<(), CliRunError> {
             || uninstall_font_command(manifest_path_from_option(manifest)?),
             print_uninstall_result,
         ),
+        Some(CliCommand::Uninstall { json }) => run_automation_command(
+            "uninstall",
+            json,
+            uninstall_tool_command,
+            print_uninstall_tool_result,
+        ),
         Some(CliCommand::Doctor {
             manifest,
             repair,
@@ -606,6 +628,22 @@ fn print_uninstall_result(data: &UninstallFontCommandData) {
     }
 }
 
+fn print_uninstall_tool_result(data: &UninstallToolCommandData) {
+    match data.outcome {
+        UninstallOutcome::Removed => {
+            println!("petiglyph tool state uninstalled");
+            println!("  install-dir: {}", data.install_dir);
+            println!("  removed-ttfs: {}", data.removed_ttf_count);
+            println!("  removed-metadata: {}", data.removed_metadata_count);
+            println!("  removed-state-files: {}", data.removed_state_file_count);
+        }
+        UninstallOutcome::AlreadyAbsent => {
+            println!("petiglyph tool state already absent");
+            println!("  install-dir: {}", data.install_dir);
+        }
+    }
+}
+
 fn print_doctor_result(data: &DoctorReport) {
     if data.healthy {
         println!("petiglyph doctor: healthy");
@@ -743,6 +781,18 @@ fn uninstall_font_command(manifest_path: PathBuf) -> Result<UninstallFontCommand
         install_dir: uninstall.install_dir.display().to_string(),
         outcome: uninstall.outcome,
         removed_ttf_count: uninstall.removed_ttf_count,
+    })
+}
+
+fn uninstall_tool_command() -> Result<UninstallToolCommandData> {
+    let uninstall = uninstall_tool_state()?;
+    Ok(UninstallToolCommandData {
+        platform: uninstall.platform,
+        install_dir: uninstall.install_dir.display().to_string(),
+        outcome: uninstall.outcome,
+        removed_ttf_count: uninstall.removed_ttf_count,
+        removed_metadata_count: uninstall.removed_metadata_count,
+        removed_state_file_count: uninstall.removed_state_file_count,
     })
 }
 

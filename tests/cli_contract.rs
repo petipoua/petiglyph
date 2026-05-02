@@ -275,6 +275,32 @@ fn cli_doctor_json_reports_global_health_without_manifest() {
     fs::remove_dir_all(workspace).expect("temp dir is removed");
 }
 
+#[test]
+fn cli_tool_uninstall_json_is_idempotent() {
+    let workspace = make_temp_dir("tool-uninstall-json");
+    let home = workspace.join("home");
+    fs::create_dir_all(&home).expect("home dir is created");
+
+    let output = run_petiglyph(&workspace, &["uninstall", "--json"], Some(&home), None);
+    assert!(output.status.success(), "uninstall --json should succeed");
+    assert!(
+        output.stderr.is_empty(),
+        "uninstall --json should keep stderr clean on success"
+    );
+
+    let payload = parse_json_stdout(&output);
+    assert_api_envelope(&payload, "uninstall", true);
+    assert_eq!(payload["data"]["outcome"].as_str(), Some("already_absent"));
+    assert_eq!(payload["data"]["removed_ttf_count"].as_u64(), Some(0));
+    assert_eq!(payload["data"]["removed_metadata_count"].as_u64(), Some(0));
+    assert_eq!(
+        payload["data"]["removed_state_file_count"].as_u64(),
+        Some(0)
+    );
+
+    fs::remove_dir_all(workspace).expect("temp dir is removed");
+}
+
 #[cfg(target_os = "linux")]
 #[test]
 fn cli_install_and_uninstall_json_lifecycle_is_idempotent() {

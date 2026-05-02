@@ -29,6 +29,10 @@ const FILE_LOCK_RETRY_DELAY: Duration = Duration::from_millis(50);
 const CLI_VERSION: &str = env!("CARGO_PKG_VERSION");
 const FONTCONFIG_PETIGLYPH_ALIAS_FILE_NAME: &str = "99-petiglyph.conf";
 const INSTALL_ARTIFACT_TAG_LENGTHS: [usize; 7] = [0, 2, 4, 6, 8, 10, 12];
+const FIRST_INSTALL_STATE_FILE_NAME: &str = "first-install.json";
+const LEGACY_FIRST_INSTALL_STATE_FILE_NAME_V2: &str = ".petiglyph-first-install-state.json";
+const LEGACY_FIRST_INSTALL_STATE_FILE_NAME: &str = ".petiglyph-machine-state.json";
+const FIRST_INSTALL_STATE_VERSION: u32 = 1;
 
 #[derive(Debug)]
 struct FileLockGuard {
@@ -49,7 +53,7 @@ pub(crate) enum FontPlatform {
     Windows,
 }
 
-#[derive(Debug, Clone, Copy, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub(crate) enum UninstallOutcome {
     Removed,
@@ -91,6 +95,13 @@ struct UnicodeRegistryFile {
     assignments: Vec<UnicodeRegistryRange>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct FirstInstallStateFile {
+    version: u32,
+    first_install_recorded_unix_ms: u128,
+    recorded_by_cli_version: String,
+}
+
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct UnicodeRangeReservation {
     pub(crate) range_start: u32,
@@ -103,6 +114,7 @@ pub(crate) struct FontInstallResult {
     pub(crate) install_dir: PathBuf,
     pub(crate) install_path: PathBuf,
     pub(crate) replaced_previous_ttf_count: usize,
+    pub(crate) first_install_on_machine: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -111,6 +123,16 @@ pub(crate) struct FontUninstallResult {
     pub(crate) install_dir: PathBuf,
     pub(crate) outcome: UninstallOutcome,
     pub(crate) removed_ttf_count: usize,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct ToolUninstallResult {
+    pub(crate) platform: FontPlatform,
+    pub(crate) install_dir: PathBuf,
+    pub(crate) outcome: UninstallOutcome,
+    pub(crate) removed_ttf_count: usize,
+    pub(crate) removed_metadata_count: usize,
+    pub(crate) removed_state_file_count: usize,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -448,6 +470,18 @@ fn project_slug_for_manifest(manifest_path: &Path) -> Result<String> {
 
 fn install_dir_for_project(font_root: &Path) -> PathBuf {
     font_root.join("petiglyph")
+}
+
+fn first_install_state_path(install_dir: &Path) -> PathBuf {
+    install_dir.join(FIRST_INSTALL_STATE_FILE_NAME)
+}
+
+fn legacy_first_install_state_path(font_root: &Path) -> PathBuf {
+    font_root.join(LEGACY_FIRST_INSTALL_STATE_FILE_NAME)
+}
+
+fn legacy_first_install_state_path_v2(install_dir: &Path) -> PathBuf {
+    install_dir.join(LEGACY_FIRST_INSTALL_STATE_FILE_NAME_V2)
 }
 
 fn install_lock_path(font_root: &Path) -> PathBuf {
@@ -978,6 +1012,86 @@ fn metadata_path_for_project_font(
     install_dir.join(metadata_file_name_for_project(project_id, font_name))
 }
 
+fn install_dir_has_any_ttf(install_dir: &Path) -> Result<bool> {
+    if !install_dir.is_dir() {
+        return Ok(false);
+    }
+
+    for entry in fs::read_dir(install_dir)
+        .with_context(|| format!("failed to read {}", install_dir.display()))?
+    {
+        let entry =
+            entry.with_context(|| format!("failed to read entry in {}", install_dir.display()))?;
+        let path = entry.path();
+        if !path.is_file() {
+            continue;
+        }
+        let is_ttf = path
+            .extension()
+            .and_then(|ext| ext.to_str())
+            .is_some_and(|ext| ext.eq_ignore_ascii_case("ttf"));
+        if is_ttf {
+            return Ok(true);
+        }
+    }
+
+    Ok(false)
+}
+
+fn mark_first_install_state(
+    font_root: &Path,
+    install_dir: &Path,
+    had_existing_install_before: bool,
+) -> Result<bool> {
+    let legacy_state_path_v2 = legacy_first_install_state_path_v2(install_dir);
+    if legacy_state_path_v2.is_file() {
+        fs::remove_file(&legacy_state_path_v2)
+            .with_context(|| format!("failed to remove {}", legacy_state_path_v2.display()))?;
+    } else if legacy_state_path_v2.exists() {
+        bail!(
+            "blocked install for {}: expected file but found non-file at {}",
+            install_dir.display(),
+            legacy_state_path_v2.display()
+        );
+    }
+
+    let legacy_state_path = legacy_first_install_state_path(font_root);
+    if legacy_state_path.is_file() {
+        fs::remove_file(&legacy_state_path)
+            .with_context(|| format!("failed to remove {}", legacy_state_path.display()))?;
+    } else if legacy_state_path.exists() {
+        bail!(
+            "blocked install for {}: expected file but found non-file at {}",
+            install_dir.display(),
+            legacy_state_path.display()
+        );
+    }
+
+    let state_path = first_install_state_path(install_dir);
+    if state_path.is_file() {
+        return Ok(false);
+    }
+    if state_path.exists() {
+        bail!(
+            "blocked install for {}: expected file but found non-file at {}",
+            install_dir.display(),
+            state_path.display()
+        );
+    }
+
+    let state = FirstInstallStateFile {
+        version: FIRST_INSTALL_STATE_VERSION,
+        first_install_recorded_unix_ms: now_millis(),
+        recorded_by_cli_version: CLI_VERSION.to_string(),
+    };
+    let raw = serde_json::to_string_pretty(&state)
+        .context("failed to serialize first install machine state")?;
+    write_atomic_string(&state_path, &raw)
+        .with_context(|| format!("failed to write {}", state_path.display()))?;
+
+    Ok(!had_existing_install_before)
+}
+
 fn metadata_matches_installed_ttf(
     metadata: &InstalledFontMetadata,
     installed_ttf: &Path,
@@ -1198,6 +1312,7 @@ pub(crate) fn install_built_font(
     fs::create_dir_all(&install_dir)
         .with_context(|| format!("failed to create {}", install_dir.display()))?;
     let _guard = acquire_file_lock(&install_lock_path(&font_root), "font install metadata")?;
+    let had_existing_install_before = install_dir_has_any_ttf(&install_dir)?;
 
     let built_bytes =
         fs::read(built_ttf).with_context(|| format!("failed to read {}", built_ttf.display()))?;
@@ -1261,17 +1376,22 @@ pub(crate) fn install_built_font(
 
     update_fontconfig_petiglyph_alias(&install_dir, platform)?;
     refresh_font_cache(&font_root, platform)?;
+    let first_install_on_machine =
+        mark_first_install_state(&font_root, &install_dir, had_existing_install_before)?;
     Ok(FontInstallResult {
         platform,
         install_dir,
         install_path,
         replaced_previous_ttf_count,
+        first_install_on_machine,
     })
 }
 
 pub(crate) fn uninstall_project_font(manifest_path: &Path) -> Result<FontUninstallResult> {
     let platform = current_platform()?;
     let font_root = user_font_root()?;
+    fs::create_dir_all(&font_root)
+        .with_context(|| format!("failed to create {}", font_root.display()))?;
     let _guard = acquire_file_lock(&install_lock_path(&font_root), "font install metadata")?;
     let install_dir = install_dir_for_project(&font_root);
     let manifest = read_manifest(manifest_path)?;
@@ -1416,6 +1536,8 @@ pub(crate) fn uninstall_project_font(manifest_path: &Path) -> Result<FontUninsta
 pub(crate) fn uninstall_installed_font_file(installed_ttf: &Path) -> Result<FontUninstallResult> {
     let platform = current_platform()?;
     let font_root = user_font_root()?;
+    fs::create_dir_all(&font_root)
+        .with_context(|| format!("failed to create {}", font_root.display()))?;
     let _guard = acquire_file_lock(&install_lock_path(&font_root), "font install metadata")?;
     let install_dir = install_dir_for_project(&font_root);
 
@@ -1496,9 +1618,124 @@ pub(crate) fn uninstall_installed_font_file(installed_ttf: &Path) -> Result<Font
     })
 }
 
+fn uninstall_tool_state_for_font_root(font_root: &Path) -> Result<ToolUninstallResult> {
+    let platform = current_platform()?;
+    fs::create_dir_all(font_root)
+        .with_context(|| format!("failed to create {}", font_root.display()))?;
+    let _guard = acquire_file_lock(&install_lock_path(&font_root), "font install metadata")?;
+    let install_dir = install_dir_for_project(&font_root);
+
+    if !install_dir.exists() {
+        update_fontconfig_petiglyph_alias(&install_dir, platform)?;
+        return Ok(ToolUninstallResult {
+            platform,
+            install_dir,
+            outcome: UninstallOutcome::AlreadyAbsent,
+            removed_ttf_count: 0,
+            removed_metadata_count: 0,
+            removed_state_file_count: 0,
+        });
+    }
+
+    let entries: Vec<_> = fs::read_dir(&install_dir)
+        .with_context(|| format!("failed to read {}", install_dir.display()))?
+        .filter_map(|entry| entry.ok())
+        .map(|entry| entry.path())
+        .collect();
+
+    let mut removed_ttf_count = 0usize;
+    let mut removed_metadata_count = 0usize;
+    let mut removed_state_file_count = 0usize;
+
+    for path in entries {
+        if !path.is_file() {
+            bail!(
+                "blocked tool uninstall for {}: expected file but found non-file at {}",
+                install_dir.display(),
+                path.display()
+            );
+        }
+
+        let file_name = path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or("");
+        let is_ttf = path
+            .extension()
+            .and_then(|ext| ext.to_str())
+            .is_some_and(|ext| ext.eq_ignore_ascii_case("ttf"));
+        let is_metadata = file_name.starts_with(INSTALL_METADATA_PREFIX)
+            && file_name.ends_with(INSTALL_METADATA_SUFFIX);
+        let is_state = matches!(
+            file_name,
+            UNICODE_REGISTRY_FILE_NAME
+                | UNICODE_REGISTRY_LOCK_FILE_NAME
+                | FIRST_INSTALL_STATE_FILE_NAME
+                | LEGACY_FIRST_INSTALL_STATE_FILE_NAME_V2
+        );
+
+        if !(is_ttf || is_metadata || is_state) {
+            bail!(
+                "blocked tool uninstall for {}: unexpected file {}",
+                install_dir.display(),
+                path.display()
+            );
+        }
+
+        fs::remove_file(&path).with_context(|| format!("failed to remove {}", path.display()))?;
+        if is_ttf {
+            removed_ttf_count += 1;
+        } else if is_metadata {
+            removed_metadata_count += 1;
+        } else {
+            removed_state_file_count += 1;
+        }
+    }
+
+    update_fontconfig_petiglyph_alias(&install_dir, platform)?;
+    if removed_ttf_count > 0 {
+        refresh_font_cache(&font_root, platform)?;
+    }
+
+    if fs::read_dir(&install_dir)
+        .with_context(|| format!("failed to read {}", install_dir.display()))?
+        .next()
+        .is_none()
+    {
+        fs::remove_dir(&install_dir)
+            .with_context(|| format!("failed to remove {}", install_dir.display()))?;
+    }
+
+    let removed_any =
+        removed_ttf_count > 0 || removed_metadata_count > 0 || removed_state_file_count > 0;
+    let outcome = if removed_any {
+        UninstallOutcome::Removed
+    } else {
+        UninstallOutcome::AlreadyAbsent
+    };
+
+    Ok(ToolUninstallResult {
+        platform,
+        install_dir,
+        outcome,
+        removed_ttf_count,
+        removed_metadata_count,
+        removed_state_file_count,
+    })
+}
+
+pub(crate) fn uninstall_tool_state() -> Result<ToolUninstallResult> {
+    let font_root = user_font_root()?;
+    uninstall_tool_state_for_font_root(&font_root)
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{immutable_ttf_file_name, immutable_ttf_install_path};
+    use super::{
+        first_install_state_path, immutable_ttf_file_name, immutable_ttf_install_path,
+        install_dir_for_project, install_dir_has_any_ttf, mark_first_install_state,
+        uninstall_tool_state_for_font_root,
+    };
     use std::fs;
     use std::path::PathBuf;
     use std::time::{SystemTime, UNIX_EPOCH};
@@ -1566,5 +1803,119 @@ mod tests {
         );
 
         fs::remove_dir_all(install_dir).expect("temp dir is removed");
+    }
+
+    #[test]
+    fn first_install_state_marks_first_then_skips_afterward() {
+        let font_root = make_temp_dir("first-install-state");
+        let install_dir = install_dir_for_project(&font_root);
+        fs::create_dir_all(&install_dir).expect("install dir is created");
+
+        let had_existing = install_dir_has_any_ttf(&install_dir).expect("ttf scan should work");
+        assert!(!had_existing, "fresh install dir should have no ttf files");
+
+        let first = mark_first_install_state(&font_root, &install_dir, had_existing)
+            .expect("first mark should succeed");
+        assert!(first, "first marker write should report first install");
+        assert!(
+            first_install_state_path(&install_dir).is_file(),
+            "first-install marker file should be written"
+        );
+
+        let second = mark_first_install_state(&font_root, &install_dir, false)
+            .expect("second mark should also succeed");
+        assert!(
+            !second,
+            "subsequent marker checks should not report first install"
+        );
+
+        fs::remove_dir_all(font_root).expect("temp dir is removed");
+    }
+
+    #[test]
+    fn first_install_state_backfills_without_first_flag_when_ttf_exists() {
+        let font_root = make_temp_dir("first-install-backfill");
+        let install_dir = install_dir_for_project(&font_root);
+        fs::create_dir_all(&install_dir).expect("install dir is created");
+        fs::write(install_dir.join("already_here.ttf"), b"ttf").expect("existing ttf is written");
+
+        let had_existing = install_dir_has_any_ttf(&install_dir).expect("ttf scan should work");
+        assert!(had_existing, "existing ttf should be detected");
+
+        let first = mark_first_install_state(&font_root, &install_dir, had_existing)
+            .expect("marker write should succeed");
+        assert!(
+            !first,
+            "backfill marker with pre-existing install should not report first install"
+        );
+
+        fs::remove_dir_all(font_root).expect("temp dir is removed");
+    }
+
+    #[test]
+    fn first_install_state_removes_legacy_root_marker() {
+        let font_root = make_temp_dir("first-install-legacy-cleanup");
+        let install_dir = install_dir_for_project(&font_root);
+        fs::create_dir_all(&install_dir).expect("install dir is created");
+        let legacy = super::legacy_first_install_state_path(&font_root);
+        fs::write(&legacy, b"legacy").expect("legacy marker is written");
+
+        let first = mark_first_install_state(&font_root, &install_dir, false)
+            .expect("marker write should succeed");
+        assert!(first, "fresh marker should still report first install");
+        assert!(
+            !legacy.exists(),
+            "legacy marker at font root should be removed during migration"
+        );
+
+        fs::remove_dir_all(font_root).expect("temp dir is removed");
+    }
+
+    #[test]
+    fn uninstall_tool_state_removes_all_managed_files() {
+        let font_root = make_temp_dir("tool-uninstall-removes-all");
+        let install_dir = install_dir_for_project(&font_root);
+        fs::create_dir_all(&install_dir).expect("install dir is created");
+
+        fs::write(install_dir.join("demo_font.ttf"), b"ttf").expect("ttf is written");
+        fs::write(install_dir.join(".petiglyph-install-demo.json"), b"{}")
+            .expect("metadata is written");
+        fs::write(
+            install_dir.join(super::UNICODE_REGISTRY_FILE_NAME),
+            b"{\"version\":1,\"assignments\":[]}",
+        )
+        .expect("registry is written");
+        fs::write(
+            install_dir.join(super::FIRST_INSTALL_STATE_FILE_NAME),
+            b"{\"version\":1}",
+        )
+        .expect("first-install is written");
+
+        let result =
+            uninstall_tool_state_for_font_root(&font_root).expect("tool uninstall should succeed");
+
+        assert_eq!(result.outcome, super::UninstallOutcome::Removed);
+        assert_eq!(result.removed_ttf_count, 1);
+        assert_eq!(result.removed_metadata_count, 1);
+        assert_eq!(result.removed_state_file_count, 2);
+        assert!(
+            !install_dir.exists(),
+            "install dir should be removed when tool uninstall deletes all state"
+        );
+
+        fs::remove_dir_all(font_root).expect("temp dir is removed");
+    }
+
+    #[test]
+    fn uninstall_tool_state_is_idempotent_when_absent() {
+        let font_root = make_temp_dir("tool-uninstall-idempotent");
+        let result =
+            uninstall_tool_state_for_font_root(&font_root).expect("tool uninstall should succeed");
+        assert_eq!(result.outcome, super::UninstallOutcome::AlreadyAbsent);
+        assert_eq!(result.removed_ttf_count, 0);
+        assert_eq!(result.removed_metadata_count, 0);
+        assert_eq!(result.removed_state_file_count, 0);
+
+        fs::remove_dir_all(font_root).expect("temp dir is removed");
     }
 }

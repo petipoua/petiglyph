@@ -66,6 +66,10 @@ petiglyph install-font --force-remap
 petiglyph uninstall-font
 petiglyph uninstall-font --json
 
+# uninstall petiglyph tool state for current user (all managed petiglyph fonts + registry/metadata)
+petiglyph uninstall
+petiglyph uninstall --json
+
 # inspect lock/registry health
 petiglyph doctor
 petiglyph doctor --repair
@@ -89,6 +93,7 @@ When `--manifest` is omitted, petiglyph checks `./petiglyph.toml` first, then sc
 - `sample`
 - `install-font`
 - `uninstall-font`
+- `uninstall`
 - `doctor`
 
 When `--json` is enabled, stdout is a single machine-readable envelope:
@@ -129,8 +134,11 @@ petiglyph build --manifest ./petiglyph.toml --json
 # Install and parse with jq
 petiglyph install-font --json | jq -r '.data.installed_ttf'
 
-# Uninstall during app uninstall hook
+# Uninstall one project font during your app uninstall hook
 petiglyph uninstall-font --manifest ./petiglyph.toml --json
+
+# Uninstall all petiglyph-managed user state before removing the petiglyph tool itself
+petiglyph uninstall --json
 ```
 
 ### Node.js
@@ -189,6 +197,11 @@ Install artifacts are immutable per build:
 - previous active artifact for the same project/font identity is removed after switch
 
 `uninstall-font` removes the active immutable artifact for the current manifest font identity.
+
+`uninstall` is tool-level cleanup for the current user:
+- removes all managed petiglyph TTFs in the managed install directory
+- removes petiglyph install metadata and machine state files
+- removes the managed `petiglyph` install directory when empty
 
 For cleanup compatibility with older installs, it also removes legacy fixed-name candidates when present:
 - `<font>.ttf`
@@ -265,6 +278,7 @@ cargo run -- sample --manifest ./petiglyph.toml
 cargo run -- tui --manifest ./petiglyph.toml
 cargo run -- install-font --manifest ./petiglyph.toml --json
 cargo run -- uninstall-font --manifest ./petiglyph.toml --json
+cargo run -- uninstall --json
 cargo run -- doctor --manifest ./petiglyph.toml --json
 ```
 
@@ -306,6 +320,7 @@ Use this script from repo root to simulate the AUR flow locally on Arch:
 
 `scripts/aur.sh` builds in an isolated `.makepkg/` workspace so it does not touch your repo `src/` tree.
 By default (`./scripts/aur.sh`), it performs a full reinstall cycle (remove, rebuild, install). Use `./scripts/aur.sh uninstall` for uninstall-only.
+The uninstall step now attempts `petiglyph uninstall --json` first to clean current-user Petiglyph state, then runs `pacman -Rns`.
 Source tarballs are created from your current working tree snapshot (tracked + untracked, excluding ignored files), so uncommitted local changes are included in package test builds.
 
 ## Manifest

@@ -162,6 +162,12 @@ install_package() {
 }
 
 uninstall_package() {
+  if command -v petiglyph >/dev/null 2>&1; then
+    if ! petiglyph uninstall --json >/dev/null 2>&1; then
+      echo "Warning: petiglyph tool-state cleanup failed; continuing package uninstall" >&2
+    fi
+  fi
+
   if pacman -Q "$pkgname" >/dev/null 2>&1; then
     echo "Removing installed package: $pkgname"
     sudo pacman -Rns --noconfirm "$pkgname"

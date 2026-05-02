@@ -283,6 +283,7 @@ pub(crate) struct App {
     pub(crate) last_sample: Option<String>,
     pub(crate) installed_font_path: Option<PathBuf>,
     delete_project_confirm_selection: Option<usize>,
+    first_install_notice_open: bool,
     launch_overrides: TuiLaunchOverrides,
     build_task: Option<BuildTask>,
     install_task: Option<InstallTask>,
@@ -329,6 +330,7 @@ enum InstallTaskOutput {
         summary: BuildSummary,
         sample: Option<String>,
         installed_path: PathBuf,
+        first_install_on_machine: bool,
     },
     Uninstall {
         status_message: String,
@@ -1062,6 +1064,14 @@ fn handle_delete_project_confirmation_key(app: &mut App, code: KeyCode) -> Resul
         _ => {}
     }
     tui_debug_log("welcome.delete_confirm.exit", app_debug_state(app));
+    Ok(())
+}
+
+fn handle_first_install_notice_key(app: &mut App, code: KeyCode) -> Result<()> {
+    if matches!(code, KeyCode::Enter | KeyCode::Esc | KeyCode::Char(' ')) {
+        app.first_install_notice_open = false;
+    }
+    tui_debug_log("first_install_notice.exit", app_debug_state(app));
     Ok(())
 }
 
@@ -1819,6 +1829,7 @@ impl App {
             last_sample: None,
             installed_font_path: None,
             delete_project_confirm_selection: None,
+            first_install_notice_open: false,
             launch_overrides,
             build_task: None,
             install_task: None,
@@ -1862,6 +1873,7 @@ impl App {
             last_sample,
             installed_font_path,
             delete_project_confirm_selection: None,
+            first_install_notice_open: false,
             launch_overrides,
             build_task: None,
             install_task: None,
@@ -2516,6 +2528,7 @@ impl App {
                 summary,
                 sample,
                 installed_path,
+                first_install_on_machine,
             }) => {
                 self.last_build = Some(summary);
                 self.last_sample = sample;
@@ -2534,6 +2547,9 @@ impl App {
                         self.selected_installed_font = idx;
                     }
                     self.status = Some(format!("installed font to {}", installed_path.display()));
+                }
+                if first_install_on_machine {
+                    self.first_install_notice_open = true;
                 }
             }
             Ok(InstallTaskOutput::Uninstall { status_message }) => {
@@ -2732,6 +2748,7 @@ fn build_and_install(
         summary,
         sample,
         installed_path: installed.install_path,
+        first_install_on_machine: installed.first_install_on_machine,
     })
 }
 
@@ -2982,6 +2999,9 @@ fn handle_key_event(app: &mut App, key: KeyEvent) -> Result<()> {
         "handle_key_event.enter",
         format!("{} {}", key_debug(&key), app_debug_state(app)),
     );
+    if app.first_install_notice_open {
+        return handle_first_install_notice_key(app, code);
+    }
     let is_global_panel_jump = matches!(code, KeyCode::Tab | KeyCode::BackTab)
         || (matches!(code, KeyCode::Char('2')) && !app.welcome_input_editing);
 
@@ -3242,6 +3262,7 @@ fn draw_ui(frame: &mut Frame, app: &App) {
         AppView::Glyphs => draw_glyphs_view(frame, app, body_area, accent, muted),
     }
     draw_delete_project_confirmation_popup(frame, app, area, accent, muted);
+    draw_first_install_notice_popup(frame, app, area, accent, muted);
 
     // Footer
     let mut footer_spans = vec![
@@ -3521,6 +3542,68 @@ fn draw_delete_project_confirmation_popup(
         Paragraph::new(lines)
             .block(block)
             .wrap(Wrap { trim: false }),
+        popup,
+    );
+}
+
+fn draw_first_install_notice_popup(
+    frame: &mut Frame,
+    app: &App,
+    area: Rect,
+    accent: Color,
+    muted: Color,
+) {
+    if !app.first_install_notice_open {
+        return;
+    }
+
+    let restart_target = detected_terminal_name()
+        .map(|name| format!("all {name} terminals"))
+        .unwrap_or_else(|| "all terminals".to_string());
+    let popup = centered_popup_rect(area, 106, 15);
+    frame.render_widget(Clear, popup);
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(Style::default().fg(Color::Yellow))
+        .title(Span::styled(
+            " First Install Guidance ",
+            Style::default().fg(accent).add_modifier(Modifier::BOLD),
+        ));
+    let lines = vec![
+        Line::from(""),
+        Line::from(vec![Span::styled(
+            format!(
+                "To load the newly installed glyphs of a new font, you need to restart {restart_target}."
+            ),
+            Style::default()
+                .fg(Color::Yellow)
+                .add_modifier(Modifier::BOLD),
+        )]),
+        Line::from(""),
+        Line::from(Span::styled(
+            "If you do not restart, this current terminal session may render glyphs as errors.",
+            Style::default().fg(Color::White),
+        )),
+        Line::from(Span::styled(
+            "Preview output can be misleading until the terminal process is restarted.",
+            Style::default().fg(Color::White),
+        )),
+        Line::from(Span::styled(
+            "After restart, relaunch petiglyph and verify sample/preview again.",
+            Style::default().fg(Color::White),
+        )),
+        Line::from(""),
+        Line::from(Span::styled(
+            "Press Enter, Esc, or Space to dismiss this message.",
+            Style::default().fg(muted),
+        )),
+    ];
+    frame.render_widget(
+        Paragraph::new(lines)
+            .block(block)
+            .alignment(Alignment::Center)
+            .wrap(Wrap { trim: true }),
         popup,
     );
 }
