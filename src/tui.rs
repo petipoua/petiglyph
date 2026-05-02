@@ -1469,6 +1469,7 @@ fn draw_welcome_view(
         .constraints([
             Constraint::Length(top_lines_height.min(current_project_inner.height)),
             Constraint::Length(1),
+            Constraint::Length(1),
             Constraint::Min(0),
         ])
         .split(current_project_inner);
@@ -1502,12 +1503,12 @@ fn draw_welcome_view(
     if tools_active {
         frame.render_widget(
             Paragraph::new(drag_images_here_lines(
-                current_project_sections[2].width,
-                current_project_sections[2].height,
+                current_project_sections[3].width,
+                current_project_sections[3].height,
                 accent,
             ))
             .wrap(Wrap { trim: false }),
-            current_project_sections[2],
+            current_project_sections[3],
         );
     }
 
