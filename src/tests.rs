@@ -806,8 +806,13 @@ fn home_installed_font_buttons_can_be_navigated() {
     assert_eq!(app.welcome_focus, WelcomeFocus::InstalledFontList);
     assert_eq!(app.selected_installed_font, 0);
 
-    handle_key(&mut app, KeyCode::Up).expect("up from first installed font returns to delete");
-    assert_eq!(app.welcome_focus, WelcomeFocus::DeleteProjectButton);
+    handle_key(&mut app, KeyCode::Up).expect("up from first installed font returns to build");
+    assert_eq!(app.welcome_focus, WelcomeFocus::BuildButton);
+
+    handle_key(&mut app, KeyCode::Right).expect("right moves to install");
+    assert_eq!(app.welcome_focus, WelcomeFocus::InstallButton);
+    handle_key(&mut app, KeyCode::Right).expect("right from install stays put when delete is unavailable");
+    assert_eq!(app.welcome_focus, WelcomeFocus::InstallButton);
 
     fs::remove_dir_all(project_dir).expect("temp project dir is removed");
 }

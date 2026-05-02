@@ -805,7 +805,7 @@ fn handle_welcome_key(app: &mut App, key: KeyEvent) -> Result<()> {
                         app.selected_installed_font -= 1;
                         WelcomeFocus::InstalledFontList
                     } else if app.active_project.is_some() {
-                        WelcomeFocus::DeleteProjectButton
+                        WelcomeFocus::BuildButton
                     } else if !app.projects.is_empty() {
                         WelcomeFocus::ProjectList
                     } else {
