@@ -697,9 +697,8 @@ fn delete_project_flow_requires_arrow_hops_to_reach_delete() {
     handle_key(&mut app, KeyCode::Enter).expect("reopen delete confirmation for hop validation");
     assert!(app.status.is_none());
     handle_key(&mut app, KeyCode::Right).expect("move to first hop");
-    handle_key(&mut app, KeyCode::Right).expect("move to second hop");
     handle_key(&mut app, KeyCode::Right).expect("right should not bypass turn");
-    handle_key(&mut app, KeyCode::Enter).expect("enter on second hop should be blocked");
+    handle_key(&mut app, KeyCode::Enter).expect("enter on first hop should be blocked");
     assert!(project_dir.exists());
     assert!(
         app.status
@@ -707,7 +706,7 @@ fn delete_project_flow_requires_arrow_hops_to_reach_delete() {
             .is_some_and(|status| status.contains("path with turns"))
     );
 
-    let hop_path = [KeyCode::Down, KeyCode::Down, KeyCode::Right, KeyCode::Right];
+    let hop_path = [KeyCode::Down, KeyCode::Right, KeyCode::Right];
     for key in hop_path {
         handle_key(&mut app, key).expect("hop movement should work");
     }

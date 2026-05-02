@@ -62,8 +62,8 @@ const TUI_MAX_HEIGHT: u16 = 46;
 const DECPNM_NUMERIC_KEYPAD_MODE: &str = "\x1B>";
 const WELCOME_HINT_WIDTH: usize = 27;
 const DELETE_CONFIRM_CANCEL_INDEX: usize = 0;
-const DELETE_CONFIRM_DELETE_INDEX: usize = 6;
-const DELETE_CONFIRM_PATH: [(i8, i8); 7] = [(0, 0), (1, 0), (2, 0), (2, 1), (2, 2), (3, 2), (4, 2)];
+const DELETE_CONFIRM_DELETE_INDEX: usize = 4;
+const DELETE_CONFIRM_PATH: [(i8, i8); 5] = [(0, 0), (1, 0), (1, 1), (2, 1), (3, 1)];
 
 #[derive(Debug, Clone, Default)]
 pub(crate) struct TuiLaunchOverrides {
@@ -105,8 +105,6 @@ enum DeleteProjectConfirmSlot {
     Hop1,
     Hop2,
     Hop3,
-    Hop4,
-    Hop5,
     Delete,
 }
 
@@ -117,8 +115,6 @@ impl DeleteProjectConfirmSlot {
             1 => Self::Hop1,
             2 => Self::Hop2,
             3 => Self::Hop3,
-            4 => Self::Hop4,
-            5 => Self::Hop5,
             _ => Self::Delete,
         }
     }
@@ -3427,12 +3423,10 @@ fn draw_delete_project_confirmation_popup(
     let slot_text = "        ";
     let h_gap = "  ";
     let left_pad = "  ";
-    let branch_indent = format!(
-        "{}{}{}{}{}",
+    let lower_row_indent = format!(
+        "{}{}{}",
         left_pad,
         " ".repeat(" CANCEL ".chars().count()),
-        h_gap,
-        " ".repeat(slot_text.chars().count()),
         h_gap
     );
 
@@ -3455,7 +3449,10 @@ fn draw_delete_project_confirmation_popup(
                 hop_style
             },
         ),
-        Span::raw(h_gap),
+    ]);
+
+    let lower_row = Line::from(vec![
+        Span::raw(&lower_row_indent),
         Span::styled(
             slot_text,
             if selected_button == DeleteProjectConfirmSlot::Hop2 {
@@ -3464,34 +3461,10 @@ fn draw_delete_project_confirmation_popup(
                 hop_style
             },
         ),
-    ]);
-
-    let middle_row = Line::from(vec![
-        Span::raw(&branch_indent),
-        Span::styled(
-            slot_text,
-            if selected_button == DeleteProjectConfirmSlot::Hop3 {
-                selected_style
-            } else {
-                hop_style
-            },
-        ),
-    ]);
-
-    let bottom_row = Line::from(vec![
-        Span::raw(&branch_indent),
-        Span::styled(
-            slot_text,
-            if selected_button == DeleteProjectConfirmSlot::Hop4 {
-                selected_style
-            } else {
-                hop_style
-            },
-        ),
         Span::raw(h_gap),
         Span::styled(
             slot_text,
-            if selected_button == DeleteProjectConfirmSlot::Hop5 {
+            if selected_button == DeleteProjectConfirmSlot::Hop3 {
                 selected_style
             } else {
                 hop_style
@@ -3534,9 +3507,7 @@ fn draw_delete_project_confirmation_popup(
         Line::from(""),
         top_row,
         Line::from(""),
-        middle_row,
-        Line::from(""),
-        bottom_row,
+        lower_row,
     ];
     frame.render_widget(
         Paragraph::new(lines)

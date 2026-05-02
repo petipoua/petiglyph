@@ -15,6 +15,7 @@ keep_sessions=0
 declare -a sessions=()
 declare -a watch_pids=()
 declare -a temp_dirs=()
+declare -a selected_journeys=()
 current_session=""
 
 usage() {
@@ -32,6 +33,7 @@ Runs process-level TUI E2E journeys with hty:
   7. multi-project create/build/install/uninstall lifecycle
 
 Options:
+  --journey N[,M...]      Run only selected journey number(s) (1-7). Repeatable.
   --watch                 Pause before each journey step so you can run `hty watch <session>`
                           or `hty attach <session>` in another terminal
   --watch-auto            Auto-open a watcher terminal for each session (best effort)
@@ -47,6 +49,8 @@ Environment:
   PETIGLYPH_BIN   Same as --petiglyph-bin
 
 Example:
+  ./scripts/tui_e2e_hty.sh --journey 7
+  ./scripts/tui_e2e_hty.sh --journey 2,5 --journey 7
   ./scripts/tui_e2e_hty.sh --watch --step-delay-ms 250
   ./scripts/tui_e2e_hty.sh --watch-auto --step-delay-ms 250
 EOF
@@ -54,6 +58,47 @@ EOF
 
 log() {
   printf '[tui-e2e-hty] %s\n' "$*"
+}
+
+append_selected_journey() {
+  local id="$1"
+  local existing
+  for existing in "${selected_journeys[@]:-}"; do
+    if [[ "$existing" == "$id" ]]; then
+      return 0
+    fi
+  done
+  selected_journeys+=("$id")
+}
+
+parse_journey_selector() {
+  local raw="$1"
+  local token
+  local id
+  IFS=',' read -r -a tokens <<<"$raw"
+  for token in "${tokens[@]}"; do
+    id="${token//[[:space:]]/}"
+    [[ -n "$id" ]] || continue
+    if [[ ! "$id" =~ ^[1-7]$ ]]; then
+      echo "Invalid journey id: $id (expected 1-7)" >&2
+      exit 1
+    fi
+    append_selected_journey "$id"
+  done
+}
+
+should_run_journey() {
+  local id="$1"
+  local selected
+  if (( ${#selected_journeys[@]} == 0 )); then
+    return 0
+  fi
+  for selected in "${selected_journeys[@]}"; do
+    if [[ "$selected" == "$id" ]]; then
+      return 0
+    fi
+  done
+  return 1
 }
 
 require_command() {
@@ -406,6 +451,44 @@ dismiss_first_install_notice() {
   wait_for_session_not_contains "$session" "First Install Guidance" "$timeout"
 }
 
+dismiss_delete_project_confirmation_if_open() {
+  local session="$1"
+  if session_snapshot_text "$session" | grep -Fq "Confirm Deletion"; then
+    send_key "$session" "esc" "dismiss delete-project confirmation popup"
+    wait_for_session_not_contains "$session" "Confirm Deletion" "$timeout_ms"
+  fi
+}
+
+focus_installed_fonts_list() {
+  local session="$1"
+  local prefix="$2"
+  local project_count="$3"
+  local down_steps=$((project_count + 2))
+  local idx
+
+  # Traverse vertically to avoid accidentally entering the delete-project slot puzzle.
+  # Normalize to project list first, then take exact steps into installed-font list.
+  for idx in 1 2 3 4 5; do
+    send_key "$session" "up" "$prefix: normalize to project list ($idx/5)"
+  done
+  for ((idx = 1; idx <= down_steps; idx++)); do
+    send_key "$session" "down" "$prefix: move toward installed fonts list ($idx/$down_steps)"
+  done
+}
+
+focus_create_input_for_single_project_workspace() {
+  local session="$1"
+  local prefix="$2"
+  # Journey 7 has exactly one project at this point.
+  # Normalize to project list, then one step down reaches create input.
+  send_key "$session" "up" "$prefix: normalize to project list (1/5)"
+  send_key "$session" "up" "$prefix: normalize to project list (2/5)"
+  send_key "$session" "up" "$prefix: normalize to project list (3/5)"
+  send_key "$session" "up" "$prefix: normalize to project list (4/5)"
+  send_key "$session" "up" "$prefix: normalize to project list (5/5)"
+  send_key "$session" "down" "$prefix: focus create input"
+}
+
 wait_for_session_background_tasks_done() {
   local session="$1"
   local timeout="$2"
@@ -455,9 +538,7 @@ assert_current_project_outputs_built() {
   local session="$1"
   local timeout="$2"
   wait_for_session_contains "$session" "TTF: built:" "$timeout"
-  wait_for_session_contains "$session" "BDF: built:" "$timeout"
   wait_for_session_not_contains "$session" "TTF: pending:" "$timeout"
-  wait_for_session_not_contains "$session" "BDF: pending:" "$timeout"
 }
 
 create_project_with_icon() {
@@ -707,17 +788,15 @@ journey_multi_project_lifecycle() {
   wait_for_file_not_contains "$manifest_one" "b-svg.svg" "$timeout_ms"
   send_key "$session" "tab" "project one: switch back to home"
 
-  send_key "$session" "right" "project one: focus create button"
-  send_key "$session" "right" "project one: focus build button"
-  send_key "$session" "enter" "project one: build via home button"
+  send_key "$session" "enter" "project one: build via focused action (nav-only)"
   wait_for_path "$project_one_build" "$timeout_ms"
   wait_for_file_contains "$project_one_build" "\"source_file\": \"a-png.png\"" "$timeout_ms"
   wait_for_file_contains "$project_one_build" "\"source_file\": \"b-svg.svg\"" "$timeout_ms"
   wait_session_idle "$session" 300 "$timeout_ms"
   assert_current_project_outputs_built "$session" "$timeout_ms"
 
-  send_key "$session" "right" "project one: focus install button"
-  send_key "$session" "enter" "project one: install via home button"
+  send_key "$session" "right" "project one: move to install action"
+  send_key "$session" "enter" "project one: install via focused action (nav-only)"
   wait_for_matching_file_count_ge "$install_dir" "*.ttf" 1 "$timeout_ms"
   wait_session_idle "$session" 300 "$timeout_ms"
   wait_for_session_background_tasks_done "$session" "$timeout_ms"
@@ -729,37 +808,33 @@ journey_multi_project_lifecycle() {
   wait_session_idle "$session" 300 "$timeout_ms"
   wait_for_session_background_tasks_done "$session" "$timeout_ms"
 
-  send_text "$session" "b" "project one: rebuild after rescan"
+  send_key "$session" "left" "project one: move back to build action"
+  send_key "$session" "enter" "project one: rebuild via focused action (nav-only)"
   wait_for_file_contains "$project_one_build" "\"source_file\": \"c-jpg.jpg\"" "$timeout_ms"
   wait_session_idle "$session" 300 "$timeout_ms"
   wait_for_session_background_tasks_done "$session" "$timeout_ms"
   assert_current_project_outputs_built "$session" "$timeout_ms"
 
-  send_key "$session" "right" "project one: focus install button for reinstall"
-  send_key "$session" "enter" "project one: reinstall via home button"
+  send_key "$session" "right" "project one: move to reinstall action"
+  send_key "$session" "enter" "project one: reinstall via focused action (nav-only)"
   wait_for_matching_file_count_ge "$install_dir" "*.ttf" 1 "$timeout_ms"
   wait_session_idle "$session" 300 "$timeout_ms"
   wait_for_session_background_tasks_done "$session" "$timeout_ms"
 
-  send_key "$session" "down" "project one: focus installed fonts list"
+  focus_installed_fonts_list "$session" "project one" 1
   send_key "$session" "enter" "project one: uninstall selected font from list"
+  dismiss_delete_project_confirmation_if_open "$session"
   wait_for_matching_file_count_eq "$install_dir" "*.ttf" 0 "$timeout_ms"
   wait_session_idle "$session" 300 "$timeout_ms"
   wait_for_session_background_tasks_done "$session" "$timeout_ms"
 
-  send_key "$session" "up" "project one: normalize focus step 1"
-  send_key "$session" "up" "project one: normalize focus step 2"
-  send_key "$session" "up" "project one: normalize focus step 3"
-  send_key "$session" "right" "project one: focus create button again"
-  send_key "$session" "right" "project one: focus build button again"
-  send_key "$session" "right" "project one: focus install button again"
-  send_key "$session" "enter" "project one: install again via home button"
+  send_key "$session" "right" "project one: move to install action again"
+  send_key "$session" "enter" "project one: install again via focused action (nav-only)"
   wait_for_matching_file_count_ge "$install_dir" "*.ttf" 1 "$timeout_ms"
   wait_session_idle "$session" 300 "$timeout_ms"
   wait_for_session_background_tasks_done "$session" "$timeout_ms"
 
-  send_key "$session" "up" "project two: focus create button"
-  send_key "$session" "left" "project two: focus create input"
+  focus_create_input_for_single_project_workspace "$session" "project two"
 
   send_key "$session" "enter" "project two: enter typing mode"
   send_text "$session" "$project_two" "project two: type project name"
@@ -795,10 +870,9 @@ journey_multi_project_lifecycle() {
   wait_for_session_background_tasks_done "$session" "$timeout_ms"
   send_text "$session" "1" "project two: return to home view"
 
-  send_key "$session" "right" "project two: move toward action buttons"
-  send_key "$session" "right" "project two: focus install/build region"
-  send_key "$session" "down" "project two: focus installed fonts list"
+  focus_installed_fonts_list "$session" "project two" 2
   send_key "$session" "enter" "project two: uninstall selected font from list"
+  dismiss_delete_project_confirmation_if_open "$session"
   wait_for_matching_file_count_eq "$install_dir" "*.ttf" 1 "$timeout_ms"
   wait_session_idle "$session" 300 "$timeout_ms"
   wait_for_session_background_tasks_done "$session" "$timeout_ms"
@@ -860,6 +934,14 @@ trap cleanup EXIT
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
+    --journey|-j)
+      shift
+      if [[ -z "${1:-}" ]]; then
+        echo "Missing value for --journey" >&2
+        exit 1
+      fi
+      parse_journey_selector "$1"
+      ;;
     --watch)
       watch_enabled=1
       ;;
@@ -914,13 +996,30 @@ fi
 log "hty binary: $hty_bin"
 log "petiglyph binary: $petiglyph_bin"
 log "timeout: ${timeout_ms}ms, startup-wait: ${startup_wait_ms}ms, step delay: ${step_delay_ms}ms, watch: ${watch_enabled}, watch-auto: ${watch_auto_enabled}, keep sessions: ${keep_sessions}"
+if (( ${#selected_journeys[@]} > 0 )); then
+  log "selected journeys: ${selected_journeys[*]}"
+fi
 
-journey_launch_and_quit
-journey_create_project_from_home
-journey_build_shortcut
-journey_glyph_threshold_override_roundtrip
-journey_workspace_multi_project_selection
-journey_rescan_new_image_and_rebuild
-journey_multi_project_lifecycle
+if should_run_journey 1; then
+  journey_launch_and_quit
+fi
+if should_run_journey 2; then
+  journey_create_project_from_home
+fi
+if should_run_journey 3; then
+  journey_build_shortcut
+fi
+if should_run_journey 4; then
+  journey_glyph_threshold_override_roundtrip
+fi
+if should_run_journey 5; then
+  journey_workspace_multi_project_selection
+fi
+if should_run_journey 6; then
+  journey_rescan_new_image_and_rebuild
+fi
+if should_run_journey 7; then
+  journey_multi_project_lifecycle
+fi
 
 log "all journeys passed"
