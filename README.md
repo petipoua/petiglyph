@@ -184,7 +184,7 @@ Both are installed into a flat `petiglyph` directory under the user font root.
 
 Install artifacts are immutable per build:
 
-- installed files are content-addressed/versioned TTF artifacts
+- installed files use progressive immutable names: `<font_slug>.ttf` first, then `<font_slug>_<hash>.ttf` with hash length auto-expanding only on conflicts
 - active metadata is atomically switched to the new artifact
 - previous active artifact for the same project/font identity is removed after switch
 

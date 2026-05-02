@@ -177,6 +177,30 @@ fn effective_font_name_uses_project_prefix_in_project_mode() {
 }
 
 #[test]
+fn effective_font_name_avoids_duplicate_project_slug_prefix() {
+    let project_dir = make_temp_dir("dup-font");
+    let manifest_path = project_dir.join("petiglyph.toml");
+    let project_slug = project_dir
+        .file_name()
+        .and_then(|name| name.to_str())
+        .expect("temp project dir name");
+
+    let prefixed = effective_font_name(
+        &manifest_path,
+        project_slug,
+        FontInstallNameMode::ProjectPrefixed,
+    )
+    .expect("project naming resolves");
+
+    assert_eq!(
+        prefixed, project_slug,
+        "project-prefixed mode should collapse redundant <project>-<font> names when slugs match"
+    );
+
+    fs::remove_dir_all(project_dir).expect("temp project dir is removed");
+}
+
+#[test]
 fn resolve_installed_font_path_detects_cli_project_prefixed_name() {
     let project_dir = make_temp_dir("installed-path-fallback");
     let manifest_path = project_dir.join("petiglyph.toml");

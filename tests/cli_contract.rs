@@ -302,10 +302,10 @@ fn cli_install_and_uninstall_json_lifecycle_is_idempotent() {
         .as_str()
         .expect("installed ttf");
     assert!(
-        installed_ttf_1.contains("/.local/share/fonts/petiglyph/demo_font_demo_font_")
+        installed_ttf_1.contains("/.local/share/fonts/petiglyph/demo_font")
             && installed_ttf_1.ends_with(".ttf")
-            && installed_ttf_1.contains(".v"),
-        "CLI install should use immutable project-scoped artifact naming, got {installed_ttf_1}"
+            && !installed_ttf_1.contains("demo_font_demo_font_"),
+        "CLI install should use progressive immutable artifact naming, got {installed_ttf_1}"
     );
     let alias_path = home
         .join(".config")

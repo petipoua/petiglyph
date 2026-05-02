@@ -28,6 +28,7 @@ const FILE_LOCK_STALE_AFTER: Duration = Duration::from_secs(120);
 const FILE_LOCK_RETRY_DELAY: Duration = Duration::from_millis(50);
 const CLI_VERSION: &str = env!("CARGO_PKG_VERSION");
 const FONTCONFIG_PETIGLYPH_ALIAS_FILE_NAME: &str = "99-petiglyph.conf";
+const INSTALL_ARTIFACT_TAG_LENGTHS: [usize; 7] = [0, 2, 4, 6, 8, 10, 12];
 
 #[derive(Debug)]
 struct FileLockGuard {
@@ -277,23 +278,6 @@ fn install_key(project_id: &str, font_name: &str) -> String {
     format!("{font}_{project}_{font_hash:08x}")
 }
 
-fn version_slug() -> String {
-    let mut out = String::new();
-    let mut prev_sep = false;
-    for ch in CLI_VERSION.chars() {
-        if ch.is_ascii_alphanumeric() {
-            out.push(ch.to_ascii_lowercase());
-            prev_sep = false;
-            continue;
-        }
-        if !prev_sep {
-            out.push('_');
-            prev_sep = true;
-        }
-    }
-    out.trim_matches('_').to_string()
-}
-
 fn fnv1a64(bytes: &[u8]) -> u64 {
     let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
     for byte in bytes {
@@ -303,11 +287,61 @@ fn fnv1a64(bytes: &[u8]) -> u64 {
     hash
 }
 
-fn immutable_ttf_file_name(project_id: &str, font_name: &str, ttf_bytes: &[u8]) -> String {
-    let key = install_key(project_id, font_name);
-    let version = version_slug();
-    let hash = fnv1a64(ttf_bytes);
-    format!("{key}.v{version}.{hash:016x}.ttf")
+fn install_artifact_base(font_name: &str) -> String {
+    let slug = slugify(font_name);
+    if slug.is_empty() {
+        "petiglyph".to_string()
+    } else {
+        slug
+    }
+}
+
+fn immutable_ttf_file_name(font_name: &str, artifact_hash: u64, tag_len: usize) -> String {
+    let base = install_artifact_base(font_name);
+    if tag_len == 0 {
+        return format!("{base}.ttf");
+    }
+    let full_hash = format!("{artifact_hash:016x}");
+    let tag_len = tag_len.min(full_hash.len());
+    let short_tag = &full_hash[..tag_len];
+    format!("{base}_{short_tag}.ttf")
+}
+
+fn immutable_ttf_install_path(
+    install_dir: &Path,
+    project_id: &str,
+    font_name: &str,
+    ttf_bytes: &[u8],
+) -> Result<PathBuf> {
+    let mut hash_input = Vec::with_capacity(project_id.len() + ttf_bytes.len() + 1);
+    hash_input.extend_from_slice(project_id.as_bytes());
+    hash_input.push(0);
+    hash_input.extend_from_slice(ttf_bytes);
+    let artifact_hash = fnv1a64(&hash_input);
+
+    for tag_len in INSTALL_ARTIFACT_TAG_LENGTHS {
+        let candidate =
+            install_dir.join(immutable_ttf_file_name(font_name, artifact_hash, tag_len));
+        if !candidate.exists() {
+            return Ok(candidate);
+        }
+        if !candidate.is_file() {
+            bail!(
+                "blocked install for {}: expected file path but found non-file",
+                candidate.display()
+            );
+        }
+        let existing = fs::read(&candidate)
+            .with_context(|| format!("failed to read {}", candidate.display()))?;
+        if existing == ttf_bytes {
+            return Ok(candidate);
+        }
+    }
+
+    bail!(
+        "hash collision while installing immutable artifact for {}",
+        install_artifact_base(font_name)
+    )
 }
 
 fn parse_registry_range(range: &UnicodeRegistryRange) -> Result<(u32, u32)> {
@@ -787,6 +821,8 @@ pub(crate) fn effective_font_name(
             let trimmed = font_name.trim();
             if trimmed.is_empty() {
                 Ok(project_slug)
+            } else if slugify(trimmed) == project_slug {
+                Ok(trimmed.to_string())
             } else {
                 Ok(format!("{project_slug}-{trimmed}"))
             }
@@ -1166,23 +1202,8 @@ pub(crate) fn install_built_font(
     let built_bytes =
         fs::read(built_ttf).with_context(|| format!("failed to read {}", built_ttf.display()))?;
     let install_path =
-        install_dir.join(immutable_ttf_file_name(project_id, font_name, &built_bytes));
-    if install_path.exists() {
-        if !install_path.is_file() {
-            bail!(
-                "blocked install for {}: expected file path but found non-file",
-                install_path.display()
-            );
-        }
-        let existing = fs::read(&install_path)
-            .with_context(|| format!("failed to read {}", install_path.display()))?;
-        if existing != built_bytes {
-            bail!(
-                "hash collision while installing immutable artifact at {}",
-                install_path.display()
-            );
-        }
-    } else {
+        immutable_ttf_install_path(&install_dir, project_id, font_name, &built_bytes)?;
+    if !install_path.exists() {
         write_atomic_bytes(&install_path, &built_bytes)
             .with_context(|| format!("failed to write {}", install_path.display()))?;
     }
@@ -1473,4 +1494,77 @@ pub(crate) fn uninstall_installed_font_file(installed_ttf: &Path) -> Result<Font
         outcome,
         removed_ttf_count,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{immutable_ttf_file_name, immutable_ttf_install_path};
+    use std::fs;
+    use std::path::PathBuf;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    fn make_temp_dir(name: &str) -> PathBuf {
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system time is valid")
+            .as_nanos();
+        let dir = std::env::temp_dir().join(format!("petiglyph-install-{name}-{nonce}"));
+        fs::create_dir_all(&dir).expect("temp dir is created");
+        dir
+    }
+
+    #[test]
+    fn immutable_ttf_file_name_uses_plain_name_for_zero_suffix_length() {
+        let name = immutable_ttf_file_name("Test Font", 0x1234_5678_9abc_def0, 0);
+        assert_eq!(name, "test_font.ttf");
+    }
+
+    #[test]
+    fn immutable_ttf_install_path_escalates_suffix_and_caps_at_twelve_hex() {
+        let install_dir = make_temp_dir("suffix-escalation");
+        let project_id = "project-1";
+        let font_name = "Test Font";
+        let ttf_bytes = b"new-bytes";
+
+        let plain_name = "test_font.ttf";
+        fs::write(install_dir.join(plain_name), b"existing")
+            .expect("conflicting plain artifact is written");
+        let first_candidate =
+            immutable_ttf_install_path(&install_dir, project_id, font_name, ttf_bytes)
+                .expect("next candidate should resolve");
+        let first_name = first_candidate
+            .file_name()
+            .and_then(|name| name.to_str())
+            .expect("candidate name");
+        assert!(
+            first_name.starts_with("test_font_")
+                && first_name.ends_with(".ttf")
+                && first_name.len() == "test_font_aa.ttf".len(),
+            "expected 2-hex fallback after plain-name conflict, got {first_name}"
+        );
+
+        let full_hash = format!(
+            "{:016x}",
+            super::fnv1a64(&[project_id.as_bytes(), &[0], ttf_bytes,].concat())
+        );
+        for tag_len in [0usize, 2, 4, 6, 8, 10, 12] {
+            let name = if tag_len == 0 {
+                "test_font.ttf".to_string()
+            } else {
+                format!("test_font_{}.ttf", &full_hash[..tag_len])
+            };
+            fs::write(install_dir.join(name), b"different-bytes")
+                .expect("conflicting candidate is written");
+        }
+
+        let err = immutable_ttf_install_path(&install_dir, project_id, font_name, ttf_bytes)
+            .expect_err("should fail after exhausting up to 12 hex");
+        let message = err.to_string();
+        assert!(
+            message.contains("hash collision"),
+            "expected collision error after exhausting 12 hex, got {message}"
+        );
+
+        fs::remove_dir_all(install_dir).expect("temp dir is removed");
+    }
 }
