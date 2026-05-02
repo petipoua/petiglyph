@@ -2936,6 +2936,9 @@ fn handle_key_event(app: &mut App, key: KeyEvent) -> Result<()> {
         KeyCode::Esc | KeyCode::Char('q') => app.quit = true,
         KeyCode::Char('1') => {
             app.welcome_input_editing = false;
+            if app.view == AppView::Glyphs && app.active_project.is_some() {
+                app.welcome_focus = WelcomeFocus::BuildButton;
+            }
             app.view = AppView::Welcome;
         }
         KeyCode::Char('2') => {
@@ -2946,7 +2949,12 @@ fn handle_key_event(app: &mut App, key: KeyEvent) -> Result<()> {
             app.welcome_input_editing = false;
             app.view = match app.view {
                 AppView::Welcome => AppView::Glyphs,
-                AppView::Glyphs => AppView::Welcome,
+                AppView::Glyphs => {
+                    if app.active_project.is_some() {
+                        app.welcome_focus = WelcomeFocus::BuildButton;
+                    }
+                    AppView::Welcome
+                }
             }
         }
         KeyCode::Char('R') => {
