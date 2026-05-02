@@ -1313,6 +1313,7 @@ fn draw_welcome_view(
 
     let ok_style = Style::default().fg(Color::Green);
     let missing_style = Style::default().fg(Color::Red);
+    let unbuilt_style = Style::default().fg(Color::Rgb(255, 165, 0));
     let tools_active = app.active_project.is_some();
     let section_style = Style::default().fg(muted);
     let hint_style = if tools_active {
@@ -1321,34 +1322,42 @@ fn draw_welcome_view(
         Style::default().fg(Color::Yellow)
     };
 
-    let (ttf_status, bdf_status, installed_status) = if app.active_project.is_none() {
-        (
-            Span::styled("Select a project first", missing_style),
-            Span::styled("Select a project first", missing_style),
-            Span::styled("Select a project first", missing_style),
-        )
-    } else {
-        let build_summary = app.last_build.as_ref();
-        let ttf_status = match build_summary {
-            Some(s) => Span::styled(format!("built: {}", s.ttf_path.display()), ok_style),
-            None => Span::styled(
-                format!("pending: {}", expected_ttf_path(&app.config).display()),
-                missing_style,
-            ),
+    let (ttf_status, bdf_status, installed_status, ttf_built, bdf_built) =
+        if app.active_project.is_none() {
+            (
+                Span::styled("Select a project first", missing_style),
+                Span::styled("Select a project first", missing_style),
+                Span::styled("Select a project first", missing_style),
+                false,
+                false,
+            )
+        } else {
+            let ttf_path = expected_ttf_path(&app.config);
+            let bdf_path = expected_bdf_path(&app.config);
+            let ttf_built = ttf_path.is_file();
+            let bdf_built = bdf_path.is_file();
+            let ttf_status = if ttf_built {
+                Span::styled(format!("built: {}", ttf_path.display()), ok_style)
+            } else {
+                Span::styled("not built yet", unbuilt_style)
+            };
+            let bdf_status = if bdf_built {
+                Span::styled(format!("built: {}", bdf_path.display()), ok_style)
+            } else {
+                Span::styled("not built yet", unbuilt_style)
+            };
+            let installed_status = match &app.installed_font_path {
+                Some(_) => Span::styled("✓", ok_style),
+                None => Span::styled("✗", missing_style),
+            };
+            (
+                ttf_status,
+                bdf_status,
+                installed_status,
+                ttf_built,
+                bdf_built,
+            )
         };
-        let bdf_status = match build_summary {
-            Some(s) => Span::styled(format!("built: {}", s.bdf_path.display()), ok_style),
-            None => Span::styled(
-                format!("pending: {}", expected_bdf_path(&app.config).display()),
-                missing_style,
-            ),
-        };
-        let installed_status = match &app.installed_font_path {
-            Some(_) => Span::styled("✓", ok_style),
-            None => Span::styled("✗", missing_style),
-        };
-        (ttf_status, bdf_status, installed_status)
-    };
 
     let current_project_summary = if tools_active {
         app.active_project_label()
@@ -1356,6 +1365,14 @@ fn draw_welcome_view(
         "Select or create a project to see project-local status.".to_string()
     };
 
+    let current_project_inner = current_project_block.inner(main[1]);
+    frame.render_widget(current_project_block, main[1]);
+    let current_project_layout = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Min(0), Constraint::Length(1)])
+        .split(current_project_inner);
+
+    let show_add_images_warning = tools_active && !ttf_built && !bdf_built && app.glyphs.is_empty();
     let mut current_project_lines = vec![
         Line::from(vec![
             Span::raw("  "),
@@ -1381,8 +1398,18 @@ fn draw_welcome_view(
             Span::styled("Installed: ", Style::default().fg(muted)),
             installed_status,
         ]),
+        Line::from(""),
     ];
-    current_project_lines.push(Line::from(""));
+    if show_add_images_warning {
+        current_project_lines.push(Line::from(vec![
+            Span::raw("  "),
+            Span::styled(
+                "you need to add images to build the font",
+                unbuilt_style.add_modifier(Modifier::BOLD),
+            ),
+        ]));
+        current_project_lines.push(Line::from(""));
+    }
     current_project_lines.push(Line::from(vec![
         Span::raw("  "),
         Span::styled("Actions: ", Style::default().fg(muted)),
@@ -1390,13 +1417,13 @@ fn draw_welcome_view(
         Span::raw(" "),
         Span::styled(install_label, install_button_style),
     ]));
+    if tools_active {
+        current_project_lines.extend(drag_images_here_lines(
+            current_project_layout[0].width,
+            accent,
+        ));
+    }
 
-    let current_project_inner = current_project_block.inner(main[1]);
-    frame.render_widget(current_project_block, main[1]);
-    let current_project_layout = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([Constraint::Min(0), Constraint::Length(1)])
-        .split(current_project_inner);
     frame.render_widget(
         Paragraph::new(current_project_lines).wrap(Wrap { trim: true }),
         current_project_layout[0],
@@ -3863,6 +3890,63 @@ fn installed_fonts_restart_warning() -> String {
         return format!("restart all {name} terminals to render newly installed glyphs");
     }
     "restart all terminals to render newly installed glyphs".to_string()
+}
+
+fn drag_images_here_lines(available_width: u16, accent: Color) -> Vec<Line<'static>> {
+    let max_line_width = usize::from(available_width.saturating_sub(4));
+    if max_line_width < 22 {
+        return Vec::new();
+    }
+
+    let inner_width = max_line_width.saturating_sub(2).min(34);
+    let top_bottom = format!("+{}+", dashed_pattern(inner_width));
+    let empty = format!("|{}|", " ".repeat(inner_width));
+    let centered_label = center_label("DRAG IMAGES HERE", inner_width);
+    let border_style = Style::default().fg(accent);
+    let label_style = Style::default().fg(accent).add_modifier(Modifier::BOLD);
+
+    vec![
+        Line::from(""),
+        Line::from(vec![
+            Span::raw("  "),
+            Span::styled(top_bottom.clone(), border_style),
+        ]),
+        Line::from(vec![
+            Span::raw("  "),
+            Span::styled(empty.clone(), border_style),
+        ]),
+        Line::from(vec![
+            Span::raw("  "),
+            Span::styled("|", border_style),
+            Span::styled(centered_label, label_style),
+            Span::styled("|", border_style),
+        ]),
+        Line::from(vec![Span::raw("  "), Span::styled(empty, border_style)]),
+        Line::from(vec![
+            Span::raw("  "),
+            Span::styled(top_bottom, border_style),
+        ]),
+    ]
+}
+
+fn dashed_pattern(width: usize) -> String {
+    let mut out = String::with_capacity(width);
+    for idx in 0..width {
+        out.push(if idx % 2 == 0 { '-' } else { ' ' });
+    }
+    out
+}
+
+fn center_label(label: &str, width: usize) -> String {
+    let label = if label.len() > width {
+        label.chars().take(width).collect::<String>()
+    } else {
+        label.to_string()
+    };
+    let padding = width.saturating_sub(label.len());
+    let left = padding / 2;
+    let right = padding - left;
+    format!("{}{}{}", " ".repeat(left), label, " ".repeat(right))
 }
 
 pub(crate) fn wrap_sample_for_display(sample: &str, max_chars: usize) -> Vec<String> {
