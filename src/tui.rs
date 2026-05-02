@@ -4099,8 +4099,9 @@ fn drag_images_here_lines(
     }
 
     let inner_width = max_line_width.saturating_sub(2);
-    let top_bottom = format!("+{}+", dashed_pattern(inner_width));
-    let empty = format!("|{}|", " ".repeat(inner_width));
+    let top_border = format!("╭{}╮", dashed_pattern(inner_width));
+    let bottom_border = format!("╰{}╯", dashed_pattern(inner_width));
+    let side_for_row = |row: usize| if row % 2 == 0 { " " } else { "│" };
     let centered_label = center_label("DRAG IMAGES HERE", inner_width);
     let border_style = Style::default().fg(accent);
     let label_style = Style::default().fg(accent).add_modifier(Modifier::BOLD);
@@ -4111,28 +4112,33 @@ fn drag_images_here_lines(
     let mut lines = Vec::with_capacity(usize::from(available_height));
     lines.push(Line::from(vec![
         Span::raw("  "),
-        Span::styled(top_bottom.clone(), border_style),
+        Span::styled(top_border, border_style),
     ]));
 
     for row in 0..usize::from(inner_rows) {
+        let left_side = side_for_row(row);
+        let right_side = side_for_row(row);
         if row == label_row {
             lines.push(Line::from(vec![
                 Span::raw("  "),
-                Span::styled("|", border_style),
+                Span::styled(left_side, border_style),
                 Span::styled(centered_label.clone(), label_style),
-                Span::styled("|", border_style),
+                Span::styled(right_side, border_style),
             ]));
         } else {
             lines.push(Line::from(vec![
                 Span::raw("  "),
-                Span::styled(empty.clone(), border_style),
+                Span::styled(
+                    format!("{left_side}{}{right_side}", " ".repeat(inner_width)),
+                    border_style,
+                ),
             ]));
         }
     }
 
     lines.push(Line::from(vec![
         Span::raw("  "),
-        Span::styled(top_bottom, border_style),
+        Span::styled(bottom_border, border_style),
     ]));
     lines
 }
@@ -4140,7 +4146,7 @@ fn drag_images_here_lines(
 fn dashed_pattern(width: usize) -> String {
     let mut out = String::with_capacity(width);
     for idx in 0..width {
-        out.push(if idx % 2 == 0 { '-' } else { ' ' });
+        out.push(if idx % 4 < 2 { '─' } else { ' ' });
     }
     out
 }
