@@ -56,7 +56,7 @@ const SWITCH_NOTICE_MS: u64 = 2500;
 const EVENT_POLL_MS: u64 = 33;
 const TUI_DEBUG_LOG_PATH: &str = "/tmp/petiglyph-tui-debug.log";
 const TUI_MIN_WIDTH: u16 = 96;
-const TUI_MIN_HEIGHT: u16 = 28;
+const TUI_MIN_HEIGHT: u16 = 40;
 const TUI_MAX_WIDTH: u16 = 148;
 const TUI_MAX_HEIGHT: u16 = 46;
 const DECPNM_NUMERIC_KEYPAD_MODE: &str = "\x1B>";
@@ -1068,9 +1068,9 @@ fn draw_welcome_view(
             Style::default().fg(accent),
         ));
 
-    let mut projects_text = vec![Line::from("")];
+    let mut project_rows = Vec::new();
     if app.projects.is_empty() {
-        projects_text.push(Line::from(vec![
+        project_rows.push(Line::from(vec![
             Span::raw("  "),
             Span::styled(
                 "No project detected in this folder.",
@@ -1094,7 +1094,7 @@ fn draw_welcome_view(
             } else {
                 Style::default().fg(Color::White)
             };
-            projects_text.push(Line::from(vec![
+            project_rows.push(Line::from(vec![
                 Span::styled(
                     if is_selected { "> " } else { "  " },
                     if is_selected {
@@ -1147,8 +1147,6 @@ fn draw_welcome_view(
             ]));
         }
     }
-
-    projects_text.push(Line::from(""));
     let input_style = if app.welcome_focus == WelcomeFocus::CreateInput {
         Style::default()
             .fg(Color::Black)
@@ -1194,8 +1192,8 @@ fn draw_welcome_view(
         format_projects_card_hint_for_display(app.welcome_focus, app.welcome_input_editing),
         Style::default().fg(muted),
     ));
-    projects_text.push(Line::from(new_project_line));
-    projects_text.push(Line::from(""));
+    let mut projects_footer_lines =
+        vec![Line::from(""), Line::from(new_project_line), Line::from("")];
 
     let selected_button_style = Style::default()
         .fg(Color::Black)
@@ -1283,23 +1281,59 @@ fn draw_welcome_view(
     } else {
         "Select or create a project to enable generators.".to_string()
     };
-    projects_text.push(Line::from(vec![
+    projects_footer_lines.push(Line::from(vec![
         Span::raw("  "),
         Span::styled("Advanced: ", Style::default().fg(muted)),
         Span::styled(" Compose Grid ", compose_button_style),
         Span::raw(" "),
         Span::styled(" Animate Glyph ", animate_button_style),
     ]));
-    projects_text.push(Line::from(vec![
+    projects_footer_lines.push(Line::from(vec![
         Span::raw("  "),
         Span::styled(tools_hint, Style::default().fg(muted)),
     ]));
 
+    let projects_inner = projects_block.inner(main[0]);
+    frame.render_widget(projects_block, main[0]);
+
+    let projects_layout = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(1),
+            Constraint::Min(1),
+            Constraint::Length(projects_footer_lines.len() as u16),
+        ])
+        .split(projects_inner);
+
     frame.render_widget(
-        Paragraph::new(projects_text)
-            .block(projects_block)
-            .wrap(Wrap { trim: false }),
-        main[0],
+        Paragraph::new(vec![Line::from("")]).wrap(Wrap { trim: false }),
+        projects_layout[0],
+    );
+
+    let visible_project_rows = usize::from(projects_layout[1].height);
+    let selected_project_row = if app.projects.is_empty() {
+        0
+    } else {
+        app.selected_project.min(app.projects.len() - 1)
+    };
+    let (project_row_start, project_row_end) = visible_window_bounds(
+        project_rows.len(),
+        selected_project_row,
+        visible_project_rows,
+    );
+    let rendered_project_rows = if project_row_start < project_row_end {
+        project_rows[project_row_start..project_row_end].to_vec()
+    } else {
+        Vec::new()
+    };
+    frame.render_widget(
+        Paragraph::new(rendered_project_rows).wrap(Wrap { trim: false }),
+        projects_layout[1],
+    );
+
+    frame.render_widget(
+        Paragraph::new(projects_footer_lines).wrap(Wrap { trim: false }),
+        projects_layout[2],
     );
 
     let current_project_block = Block::default()
@@ -1418,16 +1452,33 @@ fn draw_welcome_view(
         Span::styled(install_label, install_button_style),
     ]));
     if tools_active {
-        current_project_lines.extend(drag_images_here_lines(
-            current_project_layout[0].width,
-            accent,
-        ));
+        current_project_lines.push(Line::from(""));
     }
+
+    let top_lines_height = current_project_lines.len() as u16;
+    let current_project_body_layout = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(top_lines_height.min(current_project_layout[0].height)),
+            Constraint::Min(0),
+        ])
+        .split(current_project_layout[0]);
 
     frame.render_widget(
         Paragraph::new(current_project_lines).wrap(Wrap { trim: true }),
-        current_project_layout[0],
+        current_project_body_layout[0],
     );
+    if tools_active {
+        frame.render_widget(
+            Paragraph::new(drag_images_here_lines(
+                current_project_body_layout[1].width,
+                current_project_body_layout[1].height,
+                accent,
+            ))
+            .wrap(Wrap { trim: false }),
+            current_project_body_layout[1],
+        );
+    }
     frame.render_widget(
         Paragraph::new(Line::from(vec![Span::styled(
             " Delete project ",
@@ -1447,7 +1498,7 @@ fn draw_welcome_view(
         ));
 
     let installed_font_count = app.installed_fonts.len();
-    let mut fonts_text = vec![
+    let fonts_header = vec![
         Line::from(""),
         Line::from(vec![
             Span::raw("  "),
@@ -1479,8 +1530,10 @@ fn draw_welcome_view(
         ]),
         Line::from(""),
     ];
+    let mut font_rows = Vec::new();
+    let mut selected_font_row = 0usize;
     if app.installed_fonts.is_empty() {
-        fonts_text.push(Line::from(vec![
+        font_rows.push(Line::from(vec![
             Span::raw("  "),
             Span::styled(
                 "No installed petiglyph TTF fonts found.",
@@ -1490,6 +1543,9 @@ fn draw_welcome_view(
     } else {
         let sample_wrap_width = usize::from(body[2].width.saturating_sub(8).max(16));
         for (idx, font) in app.installed_fonts.iter().enumerate() {
+            if idx == app.selected_installed_font {
+                selected_font_row = font_rows.len();
+            }
             let sample = if font.sample.is_empty() {
                 "[sample unavailable]".to_string()
             } else if font.truncated {
@@ -1518,7 +1574,7 @@ fn draw_welcome_view(
             } else {
                 " Uninstall Font ".to_string()
             };
-            fonts_text.push(Line::from(vec![
+            font_rows.push(Line::from(vec![
                 Span::raw("  "),
                 Span::styled(
                     &font.file_name,
@@ -1529,17 +1585,17 @@ fn draw_welcome_view(
                 Span::raw("  "),
                 Span::styled(uninstall_label, uninstall_button_style),
             ]));
-            fonts_text.push(Line::from(vec![
+            font_rows.push(Line::from(vec![
                 Span::raw("    "),
                 Span::styled("path: ", Style::default().fg(muted)),
                 Span::raw(font.path.display().to_string()),
             ]));
-            fonts_text.push(Line::from(vec![
+            font_rows.push(Line::from(vec![
                 Span::raw("    "),
                 Span::styled("sample:", Style::default().fg(muted)),
             ]));
             for line in wrap_sample_for_display(&sample, sample_wrap_width) {
-                fonts_text.push(Line::from(vec![
+                font_rows.push(Line::from(vec![
                     Span::raw("    "),
                     Span::styled(
                         line,
@@ -1547,15 +1603,39 @@ fn draw_welcome_view(
                     ),
                 ]));
             }
-            fonts_text.push(Line::from(""));
+            font_rows.push(Line::from(""));
         }
     }
+    let fonts_inner = fonts_block.inner(body[2]);
+    frame.render_widget(fonts_block, body[2]);
+
+    let fonts_layout = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(fonts_header.len() as u16),
+            Constraint::Min(0),
+        ])
+        .split(fonts_inner);
 
     frame.render_widget(
-        Paragraph::new(fonts_text)
-            .block(fonts_block)
-            .wrap(Wrap { trim: false }),
-        body[2],
+        Paragraph::new(fonts_header).wrap(Wrap { trim: false }),
+        fonts_layout[0],
+    );
+
+    let visible_font_rows = usize::from(fonts_layout[1].height);
+    let (font_row_start, font_row_end) = visible_window_bounds(
+        font_rows.len(),
+        selected_font_row.min(font_rows.len().saturating_sub(1)),
+        visible_font_rows,
+    );
+    let rendered_font_rows = if font_row_start < font_row_end {
+        font_rows[font_row_start..font_row_end].to_vec()
+    } else {
+        Vec::new()
+    };
+    frame.render_widget(
+        Paragraph::new(rendered_font_rows).wrap(Wrap { trim: false }),
+        fonts_layout[1],
     );
 }
 
@@ -3892,53 +3972,81 @@ fn installed_fonts_restart_warning() -> String {
     "restart all terminals to render newly installed glyphs".to_string()
 }
 
-fn drag_images_here_lines(available_width: u16, accent: Color) -> Vec<Line<'static>> {
-    let max_line_width = usize::from(available_width.saturating_sub(4));
-    if max_line_width < 22 {
+fn visible_window_bounds(
+    total_rows: usize,
+    selected_row: usize,
+    viewport_rows: usize,
+) -> (usize, usize) {
+    if total_rows == 0 || viewport_rows == 0 {
+        return (0, 0);
+    }
+
+    if total_rows <= viewport_rows {
+        return (0, total_rows);
+    }
+
+    let selected = selected_row.min(total_rows - 1);
+    let half = viewport_rows / 2;
+    let mut start = selected.saturating_sub(half);
+    let max_start = total_rows - viewport_rows;
+    if start > max_start {
+        start = max_start;
+    }
+    let end = (start + viewport_rows).min(total_rows);
+    (start, end)
+}
+
+fn drag_images_here_lines(
+    available_width: u16,
+    available_height: u16,
+    accent: Color,
+) -> Vec<Line<'static>> {
+    if available_height < 3 {
         return Vec::new();
     }
 
-    let inner_width = max_line_width.saturating_sub(2).min(34);
+    let max_line_width = usize::from(available_width.saturating_sub(4));
+    if max_line_width < 8 {
+        return Vec::new();
+    }
+
+    let inner_width = max_line_width.saturating_sub(2);
     let top_bottom = format!("+{}+", dashed_pattern(inner_width));
     let empty = format!("|{}|", " ".repeat(inner_width));
     let centered_label = center_label("DRAG IMAGES HERE", inner_width);
     let border_style = Style::default().fg(accent);
     let label_style = Style::default().fg(accent).add_modifier(Modifier::BOLD);
 
-    vec![
-        Line::from(""),
-        Line::from(vec![
-            Span::raw("  "),
-            Span::styled(top_bottom.clone(), border_style),
-        ]),
-        Line::from(vec![
-            Span::raw("  "),
-            Span::styled(empty.clone(), border_style),
-        ]),
-        Line::from(vec![
-            Span::raw("  "),
-            Span::styled(empty.clone(), border_style),
-        ]),
-        Line::from(vec![
-            Span::raw("  "),
-            Span::styled(empty.clone(), border_style),
-        ]),
-        Line::from(vec![
-            Span::raw("  "),
-            Span::styled("|", border_style),
-            Span::styled(centered_label, label_style),
-            Span::styled("|", border_style),
-        ]),
-        Line::from(vec![
-            Span::raw("  "),
-            Span::styled(empty.clone(), border_style),
-        ]),
-        Line::from(vec![Span::raw("  "), Span::styled(empty, border_style)]),
-        Line::from(vec![
-            Span::raw("  "),
-            Span::styled(top_bottom, border_style),
-        ]),
-    ]
+    let inner_rows = available_height.saturating_sub(2);
+    let label_row = usize::from(inner_rows / 2);
+
+    let mut lines = Vec::with_capacity(usize::from(available_height));
+    lines.push(Line::from(vec![
+        Span::raw("  "),
+        Span::styled(top_bottom.clone(), border_style),
+    ]));
+
+    for row in 0..usize::from(inner_rows) {
+        if row == label_row {
+            lines.push(Line::from(vec![
+                Span::raw("  "),
+                Span::styled("|", border_style),
+                Span::styled(centered_label.clone(), label_style),
+                Span::styled("|", border_style),
+            ]));
+        } else {
+            lines.push(Line::from(vec![
+                Span::raw("  "),
+                Span::styled(empty.clone(), border_style),
+            ]));
+        }
+    }
+
+    lines.push(Line::from(vec![
+        Span::raw("  "),
+        Span::styled(top_bottom, border_style),
+    ]));
+    lines
 }
 
 fn dashed_pattern(width: usize) -> String {
