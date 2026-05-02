@@ -29,6 +29,7 @@ Runs process-level TUI E2E journeys with hty:
   4. glyph threshold override persists and clears
   5. workspace multi-project selection builds chosen project
   6. rescan picks up new image and rebuild includes it
+  7. multi-project create/build/install/uninstall lifecycle
 
 Options:
   --watch                 Pause before each journey step so you can run `hty watch <session>`
@@ -171,6 +172,62 @@ wait_for_file_not_contains() {
   done
 }
 
+count_matching_files() {
+  local dir="$1"
+  local pattern="$2"
+  if [[ ! -d "$dir" ]]; then
+    echo 0
+    return 0
+  fi
+  find "$dir" -maxdepth 1 -type f -name "$pattern" | wc -l | tr -d '[:space:]'
+}
+
+wait_for_matching_file_count_eq() {
+  local dir="$1"
+  local pattern="$2"
+  local expected="$3"
+  local timeout="$4"
+  local start_ms now_ms elapsed_ms
+  start_ms="$(date +%s%3N)"
+  while true; do
+    local current
+    current="$(count_matching_files "$dir" "$pattern")"
+    if [[ "$current" == "$expected" ]]; then
+      return 0
+    fi
+    now_ms="$(date +%s%3N)"
+    elapsed_ms="$((now_ms - start_ms))"
+    if (( elapsed_ms >= timeout )); then
+      echo "Timeout waiting for $pattern count == $expected in $dir (current: $current)" >&2
+      return 1
+    fi
+    sleep 0.03
+  done
+}
+
+wait_for_matching_file_count_ge() {
+  local dir="$1"
+  local pattern="$2"
+  local expected_min="$3"
+  local timeout="$4"
+  local start_ms now_ms elapsed_ms
+  start_ms="$(date +%s%3N)"
+  while true; do
+    local current
+    current="$(count_matching_files "$dir" "$pattern")"
+    if (( current >= expected_min )); then
+      return 0
+    fi
+    now_ms="$(date +%s%3N)"
+    elapsed_ms="$((now_ms - start_ms))"
+    if (( elapsed_ms >= timeout )); then
+      echo "Timeout waiting for $pattern count >= $expected_min in $dir (current: $current)" >&2
+      return 1
+    fi
+    sleep 0.03
+  done
+}
+
 start_watch_if_enabled() {
   local session="$1"
   if (( watch_enabled == 0 && watch_auto_enabled == 0 )); then
@@ -288,6 +345,113 @@ wait_exit() {
   "$hty_bin" wait "$session" --exit --timeout "$timeout_ms" >/dev/null
 }
 
+wait_session_idle() {
+  local session="$1"
+  local idle_ms="${2:-250}"
+  local timeout="${3:-$timeout_ms}"
+  "$hty_bin" wait "$session" --idle "$idle_ms" --timeout "$timeout" >/dev/null 2>/dev/null || true
+}
+
+session_snapshot_text() {
+  local session="$1"
+  "$hty_bin" snapshot "$session" --ansi 2>/dev/null \
+    | awk '{ gsub(/\033\[[0-9;?]*[ -\/]*[@-~]/, ""); print }' || true
+}
+
+wait_for_session_contains() {
+  local session="$1"
+  local needle="$2"
+  local timeout="$3"
+  local start_ms now_ms elapsed_ms
+  start_ms="$(date +%s%3N)"
+  while true; do
+    if session_snapshot_text "$session" | grep -Fq "$needle"; then
+      return 0
+    fi
+    now_ms="$(date +%s%3N)"
+    elapsed_ms="$((now_ms - start_ms))"
+    if (( elapsed_ms >= timeout )); then
+      echo "Timeout waiting for session content [$session]: $needle" >&2
+      return 1
+    fi
+    sleep 0.05
+  done
+}
+
+wait_for_session_not_contains() {
+  local session="$1"
+  local needle="$2"
+  local timeout="$3"
+  local start_ms now_ms elapsed_ms
+  start_ms="$(date +%s%3N)"
+  while true; do
+    if ! session_snapshot_text "$session" | grep -Fq "$needle"; then
+      return 0
+    fi
+    now_ms="$(date +%s%3N)"
+    elapsed_ms="$((now_ms - start_ms))"
+    if (( elapsed_ms >= timeout )); then
+      echo "Timeout waiting for session content removal [$session]: $needle" >&2
+      return 1
+    fi
+    sleep 0.05
+  done
+}
+
+wait_for_session_background_tasks_done() {
+  local session="$1"
+  local timeout="$2"
+  wait_for_session_not_contains "$session" "Building..." "$timeout"
+  wait_for_session_not_contains "$session" "Installing..." "$timeout"
+  wait_for_session_not_contains "$session" "Removing..." "$timeout"
+  wait_for_session_not_contains "$session" "background task is in progress" "$timeout"
+}
+
+select_jpg_fixture() {
+  local icons_dir="$1"
+  local png_fallback="$2"
+  local out_dir="$3"
+
+  local candidate
+  for candidate in "$icons_dir"/*.jpg "$icons_dir"/*.jpeg; do
+    [[ -f "$candidate" ]] || continue
+    if command -v file >/dev/null 2>&1; then
+      if file --brief --mime-type "$candidate" 2>/dev/null | grep -Fxq "image/jpeg"; then
+        printf '%s\n' "$candidate"
+        return 0
+      fi
+      continue
+    fi
+    # If `file` is unavailable, optimistically try the first .jpg/.jpeg found.
+    printf '%s\n' "$candidate"
+    return 0
+  done
+
+  local generated="$out_dir/derived-from-icons.jpg"
+  if command -v magick >/dev/null 2>&1; then
+    magick "$png_fallback" -quality 95 "$generated"
+    printf '%s\n' "$generated"
+    return 0
+  fi
+  if command -v convert >/dev/null 2>&1; then
+    convert "$png_fallback" -quality 95 "$generated"
+    printf '%s\n' "$generated"
+    return 0
+  fi
+
+  echo "No decodable JPG found in $icons_dir and no magick/convert available to derive one" >&2
+  return 1
+}
+
+assert_current_project_outputs_built() {
+  local session="$1"
+  local timeout="$2"
+  wait_for_session_contains "$session" "TTF: built:" "$timeout"
+  wait_for_session_contains "$session" "BDF: built:" "$timeout"
+  wait_for_session_not_contains "$session" "TTF: pending:" "$timeout"
+  wait_for_session_not_contains "$session" "BDF: pending:" "$timeout"
+}
+
 create_project_with_icon() {
   local workspace="$1"
   local project_name="$2"
@@ -302,7 +466,7 @@ create_project_with_icon() {
 }
 
 journey_launch_and_quit() {
-  log "journey 1/6: launch and quit from existing project"
+  log "journey 1/7: launch and quit from existing project"
   local workspace project_dir session
   workspace="$(make_temp_dir "launch-quit")"
   project_dir="$(create_project_with_icon "$workspace" "launch-quit-demo")"
@@ -313,11 +477,11 @@ journey_launch_and_quit() {
   wait_exit "$session"
   session_cleanup "$session"
   current_session=""
-  log "journey 1/6 passed"
+  log "journey 1/7 passed"
 }
 
 journey_create_project_from_home() {
-  log "journey 2/6: create project from home panel"
+  log "journey 2/7: create project from home panel"
   local workspace session project_name
   workspace="$(make_temp_dir "create-home")"
   project_name="from-tui-e2e"
@@ -347,11 +511,11 @@ journey_create_project_from_home() {
 
   session_cleanup "$session"
   current_session=""
-  log "journey 2/6 passed"
+  log "journey 2/7 passed"
 }
 
 journey_build_shortcut() {
-  log "journey 3/6: build shortcut writes artifacts"
+  log "journey 3/7: build shortcut writes artifacts"
   local workspace project_dir session build_dir mapping sample ttf
   workspace="$(make_temp_dir "build")"
   project_dir="$(create_project_with_icon "$workspace" "build-demo")"
@@ -375,11 +539,11 @@ journey_build_shortcut() {
   wait_exit "$session"
   session_cleanup "$session"
   current_session=""
-  log "journey 3/6 passed (ttf: $ttf)"
+  log "journey 3/7 passed (ttf: $ttf)"
 }
 
 journey_glyph_threshold_override_roundtrip() {
-  log "journey 4/6: glyph threshold override persists and clears"
+  log "journey 4/7: glyph threshold override persists and clears"
   local workspace project_dir session manifest_path
   workspace="$(make_temp_dir "threshold")"
   project_dir="$(create_project_with_icon "$workspace" "threshold-demo")"
@@ -398,11 +562,11 @@ journey_glyph_threshold_override_roundtrip() {
   wait_exit "$session"
   session_cleanup "$session"
   current_session=""
-  log "journey 4/6 passed"
+  log "journey 4/7 passed"
 }
 
 journey_workspace_multi_project_selection() {
-  log "journey 5/6: workspace multi-project selection builds chosen project"
+  log "journey 5/7: workspace multi-project selection builds chosen project"
   local workspace project_a project_b session project_a_build project_b_build ttf_b
   workspace="$(make_temp_dir "workspace-select")"
   project_a="$(create_project_with_icon "$workspace" "project-one")"
@@ -429,11 +593,11 @@ journey_workspace_multi_project_selection() {
   wait_exit "$session"
   session_cleanup "$session"
   current_session=""
-  log "journey 5/6 passed (ttf: $ttf_b)"
+  log "journey 5/7 passed (ttf: $ttf_b)"
 }
 
 journey_rescan_new_image_and_rebuild() {
-  log "journey 6/6: rescan picks up new image and rebuild includes it"
+  log "journey 6/7: rescan picks up new image and rebuild includes it"
   local workspace project_dir session build_dir mapping sample initial_ttf ttf
   workspace="$(make_temp_dir "rescan")"
   project_dir="$(create_project_with_icon "$workspace" "rescan-demo")"
@@ -468,7 +632,194 @@ journey_rescan_new_image_and_rebuild() {
   wait_exit "$session"
   session_cleanup "$session"
   current_session=""
-  log "journey 6/6 passed (ttf: $ttf)"
+  log "journey 6/7 passed (ttf: $ttf)"
+}
+
+journey_multi_project_lifecycle() {
+  log "journey 7/7: single-session multi-project lifecycle with real-image rescan"
+  local workspace session_home install_dir
+  local project_one project_two project_one_dir project_two_dir manifest_one manifest_two
+  local project_one_build project_two_build
+  local icons_dir png_source svg_source jpg_source
+  local session ttf_count_one ttf_count_two
+  workspace="$(make_temp_dir "mega-lifecycle")"
+  session_home="$workspace/fake-home"
+  install_dir="$session_home/.local/share/fonts/petiglyph"
+  mkdir -p "$session_home/.config"
+
+  icons_dir="$repo_root/icons"
+  png_source="$icons_dir/codex.png"
+  svg_source="$icons_dir/copilot.svg"
+  jpg_source="$(select_jpg_fixture "$icons_dir" "$png_source" "$workspace")"
+  [[ -f "$png_source" ]] || {
+    echo "Expected PNG test fixture missing: $png_source" >&2
+    return 1
+  }
+  [[ -f "$svg_source" ]] || {
+    echo "Expected SVG test fixture missing: $svg_source" >&2
+    return 1
+  }
+  [[ -f "$jpg_source" ]] || {
+    echo "Expected JPG test fixture missing or not derivable from repo icons" >&2
+    return 1
+  }
+  log "journey 7 jpg fixture: $jpg_source"
+
+  project_one="nav-only-project"
+  project_two="mixed-nav-shortcuts-project"
+  project_one_dir="$workspace/$project_one"
+  project_two_dir="$workspace/$project_two"
+  manifest_one="$project_one_dir/petiglyph.toml"
+  manifest_two="$project_two_dir/petiglyph.toml"
+  project_one_build="$project_one_dir/build/glyph-map.json"
+  project_two_build="$project_two_dir/build/glyph-map.json"
+
+  session="petiglyph-e2e-mega-lifecycle-$$-$(date +%s%N)"
+  run_session "$session" "$workspace" env HOME="$session_home" XDG_CONFIG_HOME="$session_home/.config" "$petiglyph_bin" >/dev/null
+  wait_for_session_contains "$session" "Petiglyph projects" "$timeout_ms"
+  wait_for_session_contains "$session" "Current project" "$timeout_ms"
+
+  send_key "$session" "enter" "project one: enter typing mode"
+  send_text "$session" "$project_one" "project one: type project name"
+  send_key "$session" "enter" "project one: focus create button"
+  send_key "$session" "enter" "project one: submit create"
+  wait_for_path "$manifest_one" "$timeout_ms"
+  wait_for_path "$project_one_dir/icons" "$timeout_ms"
+
+  cp "$png_source" "$project_one_dir/icons/a-png.png"
+  cp "$svg_source" "$project_one_dir/icons/b-svg.svg"
+  send_key "$session" "up" "project one: focus project list"
+  send_key "$session" "enter" "project one: reopen selected project to load images"
+
+  send_key "$session" "tab" "project one: switch to glyphs"
+  send_key "$session" "right" "project one: increase first glyph threshold"
+  send_key "$session" "down" "project one: move to second glyph"
+  wait_for_file_contains "$manifest_one" "threshold_overrides" "$timeout_ms"
+  wait_for_file_contains "$manifest_one" "a-png.png" "$timeout_ms"
+  wait_for_file_not_contains "$manifest_one" "b-svg.svg" "$timeout_ms"
+  send_key "$session" "tab" "project one: switch back to home"
+
+  send_key "$session" "right" "project one: focus create button"
+  send_key "$session" "right" "project one: focus build button"
+  send_key "$session" "enter" "project one: build via home button"
+  wait_for_path "$project_one_build" "$timeout_ms"
+  wait_for_file_contains "$project_one_build" "\"source_file\": \"a-png.png\"" "$timeout_ms"
+  wait_for_file_contains "$project_one_build" "\"source_file\": \"b-svg.svg\"" "$timeout_ms"
+  wait_session_idle "$session" 300 "$timeout_ms"
+  assert_current_project_outputs_built "$session" "$timeout_ms"
+
+  send_key "$session" "right" "project one: focus install button"
+  send_key "$session" "enter" "project one: install via home button"
+  wait_for_matching_file_count_ge "$install_dir" "*.ttf" 1 "$timeout_ms"
+  wait_session_idle "$session" 300 "$timeout_ms"
+  wait_for_session_background_tasks_done "$session" "$timeout_ms"
+  ttf_count_one="$(count_matching_files "$install_dir" "*.ttf")"
+
+  cp "$jpg_source" "$project_one_dir/icons/c-jpg.jpg"
+  send_text "$session" "R" "project one: rescan after adding third image"
+  wait_session_idle "$session" 300 "$timeout_ms"
+  wait_for_session_background_tasks_done "$session" "$timeout_ms"
+
+  send_text "$session" "b" "project one: rebuild after rescan"
+  wait_for_file_contains "$project_one_build" "\"source_file\": \"c-jpg.jpg\"" "$timeout_ms"
+  wait_session_idle "$session" 300 "$timeout_ms"
+  wait_for_session_background_tasks_done "$session" "$timeout_ms"
+  assert_current_project_outputs_built "$session" "$timeout_ms"
+
+  send_key "$session" "right" "project one: focus install button for reinstall"
+  send_key "$session" "enter" "project one: reinstall via home button"
+  wait_for_matching_file_count_ge "$install_dir" "*.ttf" 1 "$timeout_ms"
+  wait_session_idle "$session" 300 "$timeout_ms"
+  wait_for_session_background_tasks_done "$session" "$timeout_ms"
+
+  send_key "$session" "down" "project one: focus installed fonts list"
+  send_key "$session" "enter" "project one: uninstall selected font from list"
+  wait_for_matching_file_count_eq "$install_dir" "*.ttf" 0 "$timeout_ms"
+  wait_session_idle "$session" 300 "$timeout_ms"
+  wait_for_session_background_tasks_done "$session" "$timeout_ms"
+
+  send_key "$session" "up" "project one: normalize focus step 1"
+  send_key "$session" "up" "project one: normalize focus step 2"
+  send_key "$session" "up" "project one: normalize focus step 3"
+  send_key "$session" "right" "project one: focus create button again"
+  send_key "$session" "right" "project one: focus build button again"
+  send_key "$session" "right" "project one: focus install button again"
+  send_key "$session" "enter" "project one: install again via home button"
+  wait_for_matching_file_count_ge "$install_dir" "*.ttf" 1 "$timeout_ms"
+  wait_session_idle "$session" 300 "$timeout_ms"
+  wait_for_session_background_tasks_done "$session" "$timeout_ms"
+
+  send_key "$session" "up" "project two: focus create button"
+  send_key "$session" "left" "project two: focus create input"
+
+  send_key "$session" "enter" "project two: enter typing mode"
+  send_text "$session" "$project_two" "project two: type project name"
+  send_key "$session" "enter" "project two: focus create button"
+  send_key "$session" "enter" "project two: submit create"
+  wait_for_path "$manifest_two" "$timeout_ms"
+  wait_for_path "$project_two_dir/icons" "$timeout_ms"
+
+  cp "$project_one_dir/icons/a-png.png" "$project_two_dir/icons/shared-png.png"
+  cp "$svg_source" "$project_two_dir/icons/fresh-svg.svg"
+  cp "$jpg_source" "$project_two_dir/icons/fresh-jpg.jpg"
+
+  send_text "$session" "R" "project two: rescan icons after adding 3 images"
+  send_text "$session" "2" "project two: switch to glyphs view"
+  send_key "$session" "right" "project two: increase one glyph threshold"
+  wait_for_file_contains "$manifest_two" "threshold_overrides" "$timeout_ms"
+  wait_for_file_contains "$manifest_two" "fresh-jpg.jpg" "$timeout_ms"
+  wait_for_file_not_contains "$manifest_two" "fresh-svg.svg" "$timeout_ms"
+  wait_for_file_not_contains "$manifest_two" "shared-png.png" "$timeout_ms"
+
+  send_text "$session" "b" "project two: build shortcut"
+  wait_for_path "$project_two_build" "$timeout_ms"
+  wait_for_file_contains "$project_two_build" "\"source_file\": \"fresh-jpg.jpg\"" "$timeout_ms"
+  wait_for_file_contains "$project_two_build" "\"source_file\": \"fresh-svg.svg\"" "$timeout_ms"
+  wait_for_file_contains "$project_two_build" "\"source_file\": \"shared-png.png\"" "$timeout_ms"
+  wait_session_idle "$session" 300 "$timeout_ms"
+  send_text "$session" "1" "project two: return to home for render assertion"
+  assert_current_project_outputs_built "$session" "$timeout_ms"
+
+  send_text "$session" "i" "project two: install shortcut"
+  wait_for_matching_file_count_ge "$install_dir" "*.ttf" 2 "$timeout_ms"
+  wait_session_idle "$session" 300 "$timeout_ms"
+  wait_for_session_background_tasks_done "$session" "$timeout_ms"
+  send_text "$session" "1" "project two: return to home view"
+
+  send_key "$session" "right" "project two: move toward action buttons"
+  send_key "$session" "right" "project two: focus install/build region"
+  send_key "$session" "down" "project two: focus installed fonts list"
+  send_key "$session" "enter" "project two: uninstall selected font from list"
+  wait_for_matching_file_count_eq "$install_dir" "*.ttf" 1 "$timeout_ms"
+  wait_session_idle "$session" 300 "$timeout_ms"
+  wait_for_session_background_tasks_done "$session" "$timeout_ms"
+
+  send_text "$session" "b" "project two: rebuild shortcut"
+  wait_for_path "$project_two_build" "$timeout_ms"
+  wait_session_idle "$session" 300 "$timeout_ms"
+  wait_for_session_background_tasks_done "$session" "$timeout_ms"
+  assert_current_project_outputs_built "$session" "$timeout_ms"
+  send_text "$session" "i" "project two: install again shortcut"
+  wait_for_matching_file_count_ge "$install_dir" "*.ttf" 2 "$timeout_ms"
+  wait_session_idle "$session" 300 "$timeout_ms"
+  wait_for_session_background_tasks_done "$session" "$timeout_ms"
+  ttf_count_two="$(count_matching_files "$install_dir" "*.ttf")"
+
+  send_text "$session" "q" "quit journey 7 session"
+  wait_exit "$session"
+  session_cleanup "$session"
+  current_session=""
+
+  (( ttf_count_one >= 1 )) || {
+    echo "Expected at least one installed TTF after project one install cycle (got $ttf_count_one)" >&2
+    return 1
+  }
+  (( ttf_count_two >= 2 )) || {
+    echo "Expected at least two installed TTFs after project two final install (got $ttf_count_two)" >&2
+    return 1
+  }
+
+  log "journey 7/7 passed (isolated install dir: $install_dir, final ttf count: $ttf_count_two)"
 }
 
 cleanup() {
@@ -561,5 +912,6 @@ journey_build_shortcut
 journey_glyph_threshold_override_roundtrip
 journey_workspace_multi_project_selection
 journey_rescan_new_image_and_rebuild
+journey_multi_project_lifecycle
 
 log "all journeys passed"

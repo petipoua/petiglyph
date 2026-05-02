@@ -288,6 +288,7 @@ The harness mirrors these critical flows:
 - glyph threshold override persists and clears
 - workspace multi-project selection builds chosen project
 - rescan picks up new image and rebuild includes it
+- multi-project create/build/install/uninstall lifecycle in one session, using real `png`/`svg`/`jpg` fixtures from `icons/`
 
 ## Local AUR-Style Test Scripts
 
