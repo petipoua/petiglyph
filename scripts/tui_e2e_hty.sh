@@ -9,7 +9,7 @@ timeout_ms=10000
 startup_wait_ms=1500
 step_delay_ms=0
 watch_enabled=0
-watch_auto_enabled=0
+watch_terminal="auto"
 keep_sessions=0
 
 declare -a sessions=()
@@ -34,9 +34,9 @@ Runs process-level TUI E2E journeys with hty:
 
 Options:
   --journey N[,M...]      Run only selected journey number(s) (1-7). Repeatable.
-  --watch                 Pause before each journey step so you can run `hty watch <session>`
-                          or `hty attach <session>` in another terminal
-  --watch-auto            Auto-open a watcher terminal for each session (best effort)
+  --watch                 Auto-open a watcher terminal for each session (best effort)
+  --watch-terminal NAME   Force watcher terminal: auto|ghostty|kitty|alacritty|foot|tmux
+                          (default: auto)
   --keep-sessions         Keep hty sessions/logs after script exits (no hty delete)
   --timeout-ms N          Wait timeout in ms for hty waits and file polling (default: 10000)
   --step-delay-ms N       Delay in ms after each send step (default: 0)
@@ -52,7 +52,7 @@ Example:
   ./scripts/tui_e2e_hty.sh --journey 7
   ./scripts/tui_e2e_hty.sh --journey 2,5 --journey 7
   ./scripts/tui_e2e_hty.sh --watch --step-delay-ms 250
-  ./scripts/tui_e2e_hty.sh --watch-auto --step-delay-ms 250
+  ./scripts/tui_e2e_hty.sh --watch --watch-terminal alacritty --journey 7
 EOF
 }
 
@@ -275,67 +275,116 @@ wait_for_matching_file_count_ge() {
 
 start_watch_if_enabled() {
   local session="$1"
-  if (( watch_enabled == 0 && watch_auto_enabled == 0 )); then
+  if (( watch_enabled == 0 )); then
     return
   fi
 
-  if (( watch_auto_enabled == 1 )); then
-    local watcher_cmd
-    watcher_cmd="$(printf '%q watch %q' "$hty_bin" "$session")"
-    if start_watcher_terminal "$watcher_cmd" "$session"; then
-      log "auto watcher started for '$session'"
-      sleep 0.2
-      return
-    fi
-    log "failed to auto-open watcher terminal; falling back to manual watch mode"
+  local watcher_cmd
+  watcher_cmd="$(printf '%q watch %q' "$hty_bin" "$session")"
+  if start_watcher_terminal "$watcher_cmd" "$session"; then
+    log "watcher started for '$session'"
+    sleep 0.2
+    return
   fi
 
-  echo
-  log "watch mode for session '$session'"
-  echo "  In another terminal, run one of:"
-  echo "    $hty_bin watch $session    # read-only live view"
-  echo "    $hty_bin attach $session   # live view + interactive takeover"
-  if [[ -t 0 ]]; then
-    read -r -p "Press Enter here after attaching watcher... " _
-  else
-    log "non-interactive shell: continuing without pause"
-  fi
+  echo "Unable to auto-open watcher terminal for session: $session" >&2
+  echo "Install one of: ghostty, kitty, alacritty, foot, or use tmux." >&2
+  exit 1
 }
 
 start_watcher_terminal() {
   local watcher_cmd="$1"
   local session="$2"
   local title="petiglyph watch: $session"
+  local preferred="${watch_terminal:-auto}"
 
-  if command -v kitty >/dev/null 2>&1; then
-    kitty --title "$title" bash -lc "$watcher_cmd; echo; read -r -p 'Press Enter to close...' _" >/dev/null 2>&1 &
-    watch_pids+=("$!")
-    return 0
+  launch_watcher_terminal() {
+    local term="$1"
+    case "$term" in
+      ghostty)
+        command -v ghostty >/dev/null 2>&1 || return 1
+        ghostty --title="$title" -e "$hty_bin" watch "$session" >/dev/null 2>&1 &
+        watch_pids+=("$!")
+        return 0
+        ;;
+      kitty)
+        command -v kitty >/dev/null 2>&1 || return 1
+        kitty --title "$title" bash -lc "$watcher_cmd; echo; read -r -p 'Press Enter to close...' _" >/dev/null 2>&1 &
+        watch_pids+=("$!")
+        return 0
+        ;;
+      alacritty)
+        command -v alacritty >/dev/null 2>&1 || return 1
+        alacritty --title "$title" -e bash -lc "$watcher_cmd; echo; read -r -p 'Press Enter to close...' _" >/dev/null 2>&1 &
+        watch_pids+=("$!")
+        return 0
+        ;;
+      foot)
+        command -v foot >/dev/null 2>&1 || return 1
+        foot --title "$title" bash -lc "$watcher_cmd; echo; read -r -p 'Press Enter to close...' _" >/dev/null 2>&1 &
+        watch_pids+=("$!")
+        return 0
+        ;;
+      tmux)
+        command -v tmux >/dev/null 2>&1 || return 1
+        if [[ -n "${TMUX:-}" ]]; then
+          tmux split-window -v "$watcher_cmd"
+          return 0
+        fi
+
+        local tmux_session_name="petiglyph-hty-watch"
+        local tmux_window_name
+        tmux_window_name="$(printf '%s' "$session" | tr -cd '[:alnum:]_-' | cut -c1-20)"
+        [[ -n "$tmux_window_name" ]] || tmux_window_name="watch"
+
+        if ! tmux has-session -t "$tmux_session_name" >/dev/null 2>&1; then
+          tmux new-session -d -s "$tmux_session_name" -n "$tmux_window_name" "$watcher_cmd" >/dev/null 2>&1 || return 1
+        else
+          tmux new-window -d -t "$tmux_session_name:" -n "$tmux_window_name" "$watcher_cmd" >/dev/null 2>&1 || \
+            tmux new-window -d -t "$tmux_session_name:" "$watcher_cmd" >/dev/null 2>&1 || return 1
+        fi
+
+        if command -v ghostty >/dev/null 2>&1; then
+          ghostty --title="$title (tmux)" -e tmux attach -t "$tmux_session_name" >/dev/null 2>&1 &
+          watch_pids+=("$!")
+          return 0
+        fi
+        if command -v kitty >/dev/null 2>&1; then
+          kitty --title "$title (tmux)" bash -lc "tmux attach -t $(printf '%q' "$tmux_session_name")" >/dev/null 2>&1 &
+          watch_pids+=("$!")
+          return 0
+        fi
+        if command -v alacritty >/dev/null 2>&1; then
+          alacritty --title "$title (tmux)" -e bash -lc "tmux attach -t $(printf '%q' "$tmux_session_name")" >/dev/null 2>&1 &
+          watch_pids+=("$!")
+          return 0
+        fi
+        if command -v foot >/dev/null 2>&1; then
+          foot --title "$title (tmux)" bash -lc "tmux attach -t $(printf '%q' "$tmux_session_name")" >/dev/null 2>&1 &
+          watch_pids+=("$!")
+          return 0
+        fi
+
+        log "tmux watcher session created: $tmux_session_name"
+        log "attach manually with: tmux attach -t $tmux_session_name"
+        return 0
+        ;;
+      *)
+        return 1
+        ;;
+    esac
+  }
+
+  if [[ "$preferred" != "auto" ]]; then
+    launch_watcher_terminal "$preferred"
+    return $?
   fi
 
-  if command -v ghostty >/dev/null 2>&1; then
-    ghostty --title="$title" -e "$hty_bin" watch "$session" >/dev/null 2>&1 &
-    watch_pids+=("$!")
-    return 0
-  fi
-
-  if command -v alacritty >/dev/null 2>&1; then
-    alacritty --title "$title" -e bash -lc "$watcher_cmd; echo; read -r -p 'Press Enter to close...' _" >/dev/null 2>&1 &
-    watch_pids+=("$!")
-    return 0
-  fi
-
-  if command -v foot >/dev/null 2>&1; then
-    foot --title "$title" bash -lc "$watcher_cmd; echo; read -r -p 'Press Enter to close...' _" >/dev/null 2>&1 &
-    watch_pids+=("$!")
-    return 0
-  fi
-
-  if [[ -n "${TMUX:-}" ]] && command -v tmux >/dev/null 2>&1; then
-    tmux split-window -v "$watcher_cmd"
-    return 0
-  fi
-
+  launch_watcher_terminal ghostty && return 0
+  launch_watcher_terminal kitty && return 0
+  launch_watcher_terminal alacritty && return 0
+  launch_watcher_terminal foot && return 0
+  launch_watcher_terminal tmux && return 0
   return 1
 }
 
@@ -945,8 +994,17 @@ while [[ $# -gt 0 ]]; do
     --watch)
       watch_enabled=1
       ;;
+    --watch-terminal)
+      shift
+      if [[ -z "${1:-}" ]]; then
+        echo "Missing value for --watch-terminal" >&2
+        exit 1
+      fi
+      watch_terminal="${1:-}"
+      ;;
     --watch-auto)
-      watch_auto_enabled=1
+      watch_enabled=1
+      log "warning: --watch-auto is deprecated; use --watch"
       ;;
     --keep-sessions)
       keep_sessions=1
@@ -980,6 +1038,15 @@ while [[ $# -gt 0 ]]; do
   shift
 done
 
+case "$watch_terminal" in
+  auto|ghostty|kitty|alacritty|foot|tmux)
+    ;;
+  *)
+    echo "Invalid --watch-terminal value: $watch_terminal (expected auto|ghostty|kitty|alacritty|foot|tmux)" >&2
+    exit 1
+    ;;
+esac
+
 require_command "$hty_bin"
 if [[ -z "$petiglyph_bin" ]]; then
   petiglyph_bin="$repo_root/target/debug/petiglyph"
@@ -995,7 +1062,7 @@ fi
 
 log "hty binary: $hty_bin"
 log "petiglyph binary: $petiglyph_bin"
-log "timeout: ${timeout_ms}ms, startup-wait: ${startup_wait_ms}ms, step delay: ${step_delay_ms}ms, watch: ${watch_enabled}, watch-auto: ${watch_auto_enabled}, keep sessions: ${keep_sessions}"
+log "timeout: ${timeout_ms}ms, startup-wait: ${startup_wait_ms}ms, step delay: ${step_delay_ms}ms, watch: ${watch_enabled}, watch-terminal: ${watch_terminal}, keep sessions: ${keep_sessions}"
 if (( ${#selected_journeys[@]} > 0 )); then
   log "selected journeys: ${selected_journeys[*]}"
 fi
