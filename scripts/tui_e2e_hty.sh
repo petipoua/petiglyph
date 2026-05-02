@@ -11,6 +11,11 @@ step_delay_ms=0
 watch_enabled=0
 watch_terminal="auto"
 keep_sessions=0
+render_probe_enabled=0
+render_probe_only=0
+render_probe_term="xterm-256color"
+render_probe_colorterm="truecolor"
+render_probe_duration_ms=12000
 
 declare -a sessions=()
 declare -a watch_pids=()
@@ -37,6 +42,13 @@ Options:
   --watch                 Auto-open a watcher terminal for each session (best effort)
   --watch-terminal NAME   Force watcher terminal: auto|ghostty|kitty|alacritty|foot|tmux
                           (default: auto)
+  --render-probe          Run a standalone render/erase diagnostic session
+  --render-probe-only     Run only the render probe (skip journeys)
+  --render-probe-term T   TERM value for render probe session (default: xterm-256color)
+  --render-probe-colorterm V
+                          COLORTERM for render probe session (default: truecolor)
+  --render-probe-duration-ms N
+                          Render probe duration in ms (default: 12000)
   --keep-sessions         Keep hty sessions/logs after script exits (no hty delete)
   --timeout-ms N          Wait timeout in ms for hty waits and file polling (default: 10000)
   --step-delay-ms N       Delay in ms after each send step (default: 0)
@@ -53,6 +65,7 @@ Example:
   ./scripts/tui_e2e_hty.sh --journey 2,5 --journey 7
   ./scripts/tui_e2e_hty.sh --watch --step-delay-ms 250
   ./scripts/tui_e2e_hty.sh --watch --watch-terminal alacritty --journey 7
+  ./scripts/tui_e2e_hty.sh --watch --watch-terminal ghostty --render-probe-only
 EOF
 }
 
@@ -426,6 +439,7 @@ run_session() {
     --rows 42 \
     --cols 140 \
     -- \
+    env PETIGLYPH_TUI_HTY_FULL_REPAINT=1 \
     "$@"
   # Wait briefly for the first render. Use explicit wait command because some
   # hty builds parse --wait-duration differently.
@@ -954,6 +968,95 @@ journey_multi_project_lifecycle() {
   log "journey 7/7 passed (isolated install dir: $install_dir, final ttf count: $ttf_count_two)"
 }
 
+journey_render_probe() {
+  log "render probe: exercise erase/default-background repaint behavior"
+  local workspace session probe_script
+  workspace="$(make_temp_dir "render-probe")"
+  probe_script="$workspace/render_probe.sh"
+
+  cat >"$probe_script" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+
+duration_ms="${1:-12000}"
+start_ms="$(date +%s%3N)"
+frame=0
+
+pad_line() {
+  local text="$1"
+  printf '%-130s' "$text"
+}
+
+trap 'printf "\033[0m\033[?25h\n"' EXIT
+printf '\033[?25l'
+
+while true; do
+  now_ms=""
+  elapsed_ms=0
+  bg=""
+  now_ms="$(date +%s%3N)"
+  elapsed_ms="$((now_ms - start_ms))"
+  if (( elapsed_ms >= duration_ms )); then
+    break
+  fi
+
+  frame=$((frame + 1))
+  case $((frame % 6)) in
+    0) bg="48;5;52" ;;
+    1) bg="48;5;22" ;;
+    2) bg="48;5;17" ;;
+    3) bg="48;5;53" ;;
+    4) bg="48;5;94" ;;
+    *) bg="48;5;236" ;;
+  esac
+
+  printf '\033[H\033[2J'
+  printf 'petiglyph hty render probe  frame=%03d  elapsed=%dms\n' "$frame" "$elapsed_ms"
+  printf 'TERM=%s  COLORTERM=%s\n' "${TERM:-}" "${COLORTERM:-}"
+  printf 'If black blocks vanish only when text overwrites them, suspect erase/default-bg mismatch.\n'
+  printf 'Rows: A=full fill, B=EOL erase, C=default-bg rewrite, D+=checker rewrite.\n\n'
+
+  printf '\033[%sm' "$bg"
+  pad_line "A FULL-LINE FILL (colored background)"
+  printf '\033[0m\n'
+
+  printf '\033[%sm' "$bg"
+  printf 'B EOL-ERASE TEST >>>>>>>>>>>>>>> frame=%03d ' "$frame"
+  printf '\033[K\033[0m\n'
+
+  printf '\033[49m'
+  pad_line "C DEFAULT-BG REWRITE frame=$frame"
+  printf '\033[0m\n'
+
+  for ((row = 0; row < 10; row++)); do
+    if (((row + frame) % 2 == 0)); then
+      printf '\033[48;5;236m'
+    else
+      printf '\033[49m'
+    fi
+    pad_line "D CHECKER row=$row frame=$frame"
+    printf '\033[0m\n'
+  done
+
+  printf '\n'
+  printf 'Probe auto-exits after %dms.\n' "$duration_ms"
+  sleep 0.12
+done
+EOF
+  chmod +x "$probe_script"
+
+  session="petiglyph-e2e-render-probe-$$-$(date +%s%N)"
+  run_session \
+    "$session" \
+    "$workspace" \
+    env TERM="$render_probe_term" COLORTERM="$render_probe_colorterm" \
+    bash "$probe_script" "$render_probe_duration_ms" >/dev/null
+  wait_exit "$session"
+  session_cleanup "$session"
+  current_session=""
+  log "render probe passed"
+}
+
 cleanup() {
   local ec=$?
   set +e
@@ -1005,6 +1108,37 @@ while [[ $# -gt 0 ]]; do
     --watch-auto)
       watch_enabled=1
       log "warning: --watch-auto is deprecated; use --watch"
+      ;;
+    --render-probe)
+      render_probe_enabled=1
+      ;;
+    --render-probe-only)
+      render_probe_enabled=1
+      render_probe_only=1
+      ;;
+    --render-probe-term)
+      shift
+      if [[ -z "${1:-}" ]]; then
+        echo "Missing value for --render-probe-term" >&2
+        exit 1
+      fi
+      render_probe_term="${1:-}"
+      ;;
+    --render-probe-colorterm)
+      shift
+      if [[ -z "${1:-}" ]]; then
+        echo "Missing value for --render-probe-colorterm" >&2
+        exit 1
+      fi
+      render_probe_colorterm="${1:-}"
+      ;;
+    --render-probe-duration-ms)
+      shift
+      if [[ -z "${1:-}" ]]; then
+        echo "Missing value for --render-probe-duration-ms" >&2
+        exit 1
+      fi
+      render_probe_duration_ms="${1:-}"
       ;;
     --keep-sessions)
       keep_sessions=1
@@ -1063,8 +1197,20 @@ fi
 log "hty binary: $hty_bin"
 log "petiglyph binary: $petiglyph_bin"
 log "timeout: ${timeout_ms}ms, startup-wait: ${startup_wait_ms}ms, step delay: ${step_delay_ms}ms, watch: ${watch_enabled}, watch-terminal: ${watch_terminal}, keep sessions: ${keep_sessions}"
+if (( render_probe_enabled == 1 )); then
+  log "render probe: enabled (only=${render_probe_only}, TERM=${render_probe_term}, COLORTERM=${render_probe_colorterm}, duration=${render_probe_duration_ms}ms)"
+fi
 if (( ${#selected_journeys[@]} > 0 )); then
   log "selected journeys: ${selected_journeys[*]}"
+fi
+
+if (( render_probe_enabled == 1 )); then
+  journey_render_probe
+fi
+
+if (( render_probe_only == 1 )); then
+  log "render probe only mode complete"
+  exit 0
 fi
 
 if should_run_journey 1; then

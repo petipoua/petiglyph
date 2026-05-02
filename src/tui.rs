@@ -64,6 +64,8 @@ const WELCOME_HINT_WIDTH: usize = 27;
 const DELETE_CONFIRM_CANCEL_INDEX: usize = 0;
 const DELETE_CONFIRM_DELETE_INDEX: usize = 4;
 const DELETE_CONFIRM_PATH: [(i8, i8); 5] = [(0, 0), (1, 0), (1, 1), (2, 1), (3, 1)];
+const HTY_FULL_REPAINT_ENV: &str = "PETIGLYPH_TUI_HTY_FULL_REPAINT";
+static HTY_FULL_REPAINT_ENABLED: OnceLock<bool> = OnceLock::new();
 
 #[derive(Debug, Clone, Default)]
 pub(crate) struct TuiLaunchOverrides {
@@ -3203,7 +3205,13 @@ fn draw_ui(frame: &mut Frame, app: &App) {
     let accent = Color::Cyan;
     let muted = Color::DarkGray;
 
-    frame.render_widget(Clear, area);
+    if hty_full_repaint_enabled() {
+        // hty-specific workaround: fully repaint every frame with plain ASCII
+        // so terminal default-bg quirks do not leak black tiles.
+        draw_ascii_full_repaint_frame(frame, area);
+    } else {
+        frame.render_widget(Clear, area);
+    }
 
     if !terminal_size_supported(area) {
         draw_terminal_too_small(frame, area, accent, muted);
@@ -3379,6 +3387,34 @@ fn draw_ui(frame: &mut Frame, app: &App) {
         .alignment(Alignment::Center)
         .style(Style::default().fg(muted));
     frame.render_widget(footer, root[2]);
+}
+
+fn hty_full_repaint_enabled() -> bool {
+    *HTY_FULL_REPAINT_ENABLED.get_or_init(|| {
+        std::env::var_os(HTY_FULL_REPAINT_ENV)
+            .map(|value| {
+                let value = value.to_string_lossy();
+                !(value.eq_ignore_ascii_case("0")
+                    || value.eq_ignore_ascii_case("false")
+                    || value.eq_ignore_ascii_case("off")
+                    || value.is_empty())
+            })
+            .unwrap_or(false)
+    })
+}
+
+fn draw_ascii_full_repaint_frame(frame: &mut Frame, area: Rect) {
+    let width = usize::from(area.width);
+    let height = usize::from(area.height);
+    let line = " ".repeat(width);
+    let lines = (0..height)
+        .map(|_| Line::from(line.clone()))
+        .collect::<Vec<_>>();
+    let hty_bg = Color::Rgb(40, 44, 52);
+    frame.render_widget(
+        Paragraph::new(lines).style(Style::default().bg(hty_bg).fg(hty_bg)),
+        area,
+    );
 }
 
 fn draw_delete_project_confirmation_popup(
