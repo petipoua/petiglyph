@@ -426,6 +426,12 @@ fn unified_tui_multiple_projects_can_be_selected_from_home() {
     );
     assert_eq!(app.glyphs.len(), 1);
     assert!(app.switch_notice.is_some());
+    let first_notice_debug = format!("{:?}", app.switch_notice);
+    assert!(
+        first_notice_debug.contains("from_label: \"none\"")
+            && first_notice_debug.contains("to_label: \"project-a\""),
+        "first project switch notice should use project labels: {first_notice_debug}"
+    );
 
     handle_key(&mut app, KeyCode::Down).expect("down selects next project");
     assert_eq!(app.welcome_focus, WelcomeFocus::ProjectList);
@@ -434,6 +440,12 @@ fn unified_tui_multiple_projects_can_be_selected_from_home() {
     assert_eq!(
         app.active_project.as_deref(),
         Some(workspace.join("project-b/petiglyph.toml").as_path())
+    );
+    let second_notice_debug = format!("{:?}", app.switch_notice);
+    assert!(
+        second_notice_debug.contains("from_label: \"project-a\"")
+            && second_notice_debug.contains("to_label: \"project-b\""),
+        "second switch notice should keep project-name labels: {second_notice_debug}"
     );
 
     handle_key(&mut app, KeyCode::Down).expect("down leaves project list after last project");

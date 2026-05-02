@@ -1918,4 +1918,23 @@ mod tests {
 
         fs::remove_dir_all(font_root).expect("temp dir is removed");
     }
+
+    #[test]
+    fn uninstall_tool_state_rejects_unexpected_files() {
+        let font_root = make_temp_dir("tool-uninstall-unexpected-file");
+        let install_dir = install_dir_for_project(&font_root);
+        fs::create_dir_all(&install_dir).expect("install dir is created");
+        fs::write(install_dir.join("notes.txt"), b"unexpected")
+            .expect("unexpected file is written");
+
+        let error = uninstall_tool_state_for_font_root(&font_root)
+            .expect_err("unexpected files should block tool uninstall");
+        let message = error.to_string();
+        assert!(
+            message.contains("unexpected file"),
+            "expected strict-file validation error, got: {message}"
+        );
+
+        fs::remove_dir_all(font_root).expect("temp dir is removed");
+    }
 }

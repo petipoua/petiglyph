@@ -398,6 +398,14 @@ wait_for_session_not_contains() {
   done
 }
 
+dismiss_first_install_notice() {
+  local session="$1"
+  local timeout="$2"
+  wait_for_session_contains "$session" "First Install Guidance" "$timeout"
+  send_key "$session" "space" "dismiss first-install guidance popup"
+  wait_for_session_not_contains "$session" "First Install Guidance" "$timeout"
+}
+
 wait_for_session_background_tasks_done() {
   local session="$1"
   local timeout="$2"
@@ -713,6 +721,7 @@ journey_multi_project_lifecycle() {
   wait_for_matching_file_count_ge "$install_dir" "*.ttf" 1 "$timeout_ms"
   wait_session_idle "$session" 300 "$timeout_ms"
   wait_for_session_background_tasks_done "$session" "$timeout_ms"
+  dismiss_first_install_notice "$session" "$timeout_ms"
   ttf_count_one="$(count_matching_files "$install_dir" "*.ttf")"
 
   cp "$jpg_source" "$project_one_dir/icons/c-jpg.jpg"

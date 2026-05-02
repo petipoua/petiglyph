@@ -303,6 +303,75 @@ fn cli_tool_uninstall_json_is_idempotent() {
 
 #[cfg(target_os = "linux")]
 #[test]
+fn cli_tool_uninstall_json_removes_managed_install_state() {
+    let workspace = make_temp_dir("tool-uninstall-removes-state");
+    let (project_dir, _) = create_project_with_icon(&workspace, "tool-uninstall-demo");
+    let home = workspace.join("home");
+    fs::create_dir_all(&home).expect("home dir is created");
+    let fake_path = make_fake_fc_cache_path(&workspace);
+
+    let install = run_petiglyph(
+        &project_dir,
+        &["install-font", "--json"],
+        Some(&home),
+        Some(&fake_path),
+    );
+    assert!(
+        install.status.success(),
+        "install-font --json should succeed"
+    );
+
+    let uninstall = run_petiglyph(
+        &workspace,
+        &["uninstall", "--json"],
+        Some(&home),
+        Some(&fake_path),
+    );
+    assert!(
+        uninstall.status.success(),
+        "uninstall --json should succeed"
+    );
+    assert!(
+        uninstall.stderr.is_empty(),
+        "uninstall --json should keep stderr clean on success"
+    );
+
+    let payload = parse_json_stdout(&uninstall);
+    assert_api_envelope(&payload, "uninstall", true);
+    assert_eq!(payload["data"]["outcome"].as_str(), Some("removed"));
+    assert!(
+        payload["data"]["removed_ttf_count"].as_u64().unwrap_or(0) >= 1,
+        "tool uninstall should remove at least one managed ttf"
+    );
+    assert!(
+        payload["data"]["removed_metadata_count"]
+            .as_u64()
+            .unwrap_or(0)
+            >= 1,
+        "tool uninstall should remove managed metadata"
+    );
+    assert!(
+        payload["data"]["removed_state_file_count"]
+            .as_u64()
+            .unwrap_or(0)
+            >= 1,
+        "tool uninstall should remove managed state files"
+    );
+    let install_dir = PathBuf::from(
+        payload["data"]["install_dir"]
+            .as_str()
+            .expect("install dir should be present in uninstall payload"),
+    );
+    assert!(
+        !install_dir.exists(),
+        "tool uninstall should remove empty install directory"
+    );
+
+    fs::remove_dir_all(workspace).expect("temp dir is removed");
+}
+
+#[cfg(target_os = "linux")]
+#[test]
 fn cli_install_and_uninstall_json_lifecycle_is_idempotent() {
     let workspace = make_temp_dir("install-lifecycle");
     let (project_dir, _) = create_project_with_icon(&workspace, "demo-font");

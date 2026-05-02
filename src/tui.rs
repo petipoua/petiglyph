@@ -4376,3 +4376,107 @@ pub(crate) fn spaced_sample(sample: &str) -> String {
     }
     out
 }
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        App, AppView, KeyCode, RuntimeConfig, drag_images_here_lines, handle_key,
+        scrollbar_thumb_geometry, visible_window_bounds,
+    };
+    use std::collections::BTreeMap;
+    use std::fs;
+    use std::path::PathBuf;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    fn make_temp_dir(name: &str) -> PathBuf {
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system time is valid")
+            .as_nanos();
+        let dir = std::env::temp_dir().join(format!("petiglyph-tui-{name}-{nonce}"));
+        fs::create_dir_all(&dir).expect("temp dir is created");
+        dir
+    }
+
+    #[test]
+    fn first_install_notice_must_be_dismissed_before_global_shortcuts_resume() {
+        let project_dir = make_temp_dir("first-install-notice");
+        let manifest_path = project_dir.join("petiglyph.toml");
+        let config = RuntimeConfig {
+            project_dir: project_dir.clone(),
+            project_id: "test-first-install-popup".to_string(),
+            input_dir: project_dir.join("icons"),
+            out_dir: project_dir.join("build"),
+            font_name: "Petiglyph".to_string(),
+            glyph_size: 8,
+            base_threshold: 64,
+            threshold_overrides: BTreeMap::new(),
+            codepoint_start: 0x10_0000,
+        };
+
+        let mut app = App::new(manifest_path, config);
+        app.view = AppView::Welcome;
+        app.first_install_notice_open = true;
+
+        handle_key(&mut app, KeyCode::Char('q')).expect("popup should intercept quit");
+        assert!(!app.quit, "quit should not fire while popup is open");
+        assert!(
+            app.first_install_notice_open,
+            "non-dismiss keys should keep popup open"
+        );
+
+        handle_key(&mut app, KeyCode::Char(' ')).expect("space should dismiss popup");
+        assert!(
+            !app.first_install_notice_open,
+            "space should close first-install popup"
+        );
+
+        handle_key(&mut app, KeyCode::Char('q')).expect("quit should work once popup is closed");
+        assert!(app.quit, "quit should resume after popup dismissal");
+
+        fs::remove_dir_all(project_dir).expect("temp dir is removed");
+    }
+
+    #[test]
+    fn visible_window_bounds_center_and_clamp_selection() {
+        assert_eq!(visible_window_bounds(0, 0, 5), (0, 0));
+        assert_eq!(visible_window_bounds(5, 0, 10), (0, 5));
+        assert_eq!(visible_window_bounds(20, 0, 5), (0, 5));
+        assert_eq!(visible_window_bounds(20, 10, 5), (8, 13));
+        assert_eq!(visible_window_bounds(20, 99, 5), (15, 20));
+    }
+
+    #[test]
+    fn scrollbar_thumb_geometry_tracks_start_and_end_positions() {
+        assert_eq!(scrollbar_thumb_geometry(0, 10, 0), (0, 0));
+        assert_eq!(scrollbar_thumb_geometry(5, 10, 0), (0, 0));
+        assert_eq!(scrollbar_thumb_geometry(100, 10, 0), (0, 1));
+        assert_eq!(scrollbar_thumb_geometry(100, 10, 90), (9, 1));
+    }
+
+    #[test]
+    fn drag_images_placeholder_handles_small_and_regular_regions() {
+        assert!(
+            drag_images_here_lines(6, 2, ratatui::style::Color::Cyan).is_empty(),
+            "very small regions should skip drag placeholder rendering"
+        );
+
+        let lines = drag_images_here_lines(40, 7, ratatui::style::Color::Cyan);
+        assert_eq!(lines.len(), 7, "placeholder should fill requested height");
+        let rendered = lines
+            .iter()
+            .map(|line| {
+                line.spans
+                    .iter()
+                    .map(|span| span.content.as_ref())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>();
+        assert!(
+            rendered
+                .iter()
+                .any(|line| line.contains("DRAG IMAGES HERE")),
+            "placeholder body should include drag label"
+        );
+    }
+}
