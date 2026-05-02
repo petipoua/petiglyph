@@ -1424,10 +1424,6 @@ fn draw_welcome_view(
 
     let current_project_inner = current_project_block.inner(main[1]);
     frame.render_widget(current_project_block, main[1]);
-    let current_project_layout = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([Constraint::Min(0), Constraint::Length(1)])
-        .split(current_project_inner);
 
     let show_add_images_warning = tools_active && !ttf_built && !bdf_built && app.glyphs.is_empty();
     let mut current_project_lines = vec![
@@ -1467,49 +1463,53 @@ fn draw_welcome_view(
         ]));
         current_project_lines.push(Line::from(""));
     }
-    current_project_lines.push(Line::from(vec![
-        Span::raw("  "),
-        Span::styled("Actions: ", Style::default().fg(muted)),
-        Span::styled(build_label, build_button_style),
-        Span::raw(" "),
-        Span::styled(install_label, install_button_style),
-    ]));
-    if tools_active {
-        current_project_lines.push(Line::from(""));
-    }
-
     let top_lines_height = current_project_lines.len() as u16;
-    let current_project_body_layout = Layout::default()
+    let current_project_sections = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(top_lines_height.min(current_project_layout[0].height)),
+            Constraint::Length(top_lines_height.min(current_project_inner.height)),
+            Constraint::Length(1),
             Constraint::Min(0),
         ])
-        .split(current_project_layout[0]);
+        .split(current_project_inner);
 
     frame.render_widget(
         Paragraph::new(current_project_lines).wrap(Wrap { trim: true }),
-        current_project_body_layout[0],
+        current_project_sections[0],
     );
-    if tools_active {
-        frame.render_widget(
-            Paragraph::new(drag_images_here_lines(
-                current_project_body_layout[1].width,
-                current_project_body_layout[1].height,
-                accent,
-            ))
-            .wrap(Wrap { trim: false }),
-            current_project_body_layout[1],
-        );
-    }
+    let actions_layout = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([Constraint::Min(0), Constraint::Length(16)])
+        .split(current_project_sections[1]);
+    frame.render_widget(
+        Paragraph::new(Line::from(vec![
+            Span::raw("  "),
+            Span::styled("Actions: ", Style::default().fg(muted)),
+            Span::styled(build_label, build_button_style),
+            Span::raw(" "),
+            Span::styled(install_label, install_button_style),
+        ])),
+        actions_layout[0],
+    );
     frame.render_widget(
         Paragraph::new(Line::from(vec![Span::styled(
             " Delete project ",
             delete_button_style,
         )]))
         .alignment(Alignment::Right),
-        current_project_layout[1],
+        actions_layout[1],
     );
+    if tools_active {
+        frame.render_widget(
+            Paragraph::new(drag_images_here_lines(
+                current_project_sections[2].width,
+                current_project_sections[2].height,
+                accent,
+            ))
+            .wrap(Wrap { trim: false }),
+            current_project_sections[2],
+        );
+    }
 
     let fonts_block = Block::default()
         .borders(Borders::ALL)
