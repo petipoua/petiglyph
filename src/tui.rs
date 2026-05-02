@@ -2887,6 +2887,7 @@ fn handle_paste_event(app: &mut App, payload: &str) -> Result<()> {
 
 fn handle_key_event(app: &mut App, key: KeyEvent) -> Result<()> {
     let code = key.code;
+    let previous_view = app.view;
     tui_debug_log(
         "handle_key_event.enter",
         format!("{} {}", key_debug(&key), app_debug_state(app)),
@@ -2949,12 +2950,14 @@ fn handle_key_event(app: &mut App, key: KeyEvent) -> Result<()> {
             app.welcome_input_editing = false;
             app.view = match app.view {
                 AppView::Welcome => AppView::Glyphs,
-                AppView::Glyphs => {
-                    if app.active_project.is_some() {
-                        app.welcome_focus = WelcomeFocus::BuildButton;
-                    }
-                    AppView::Welcome
-                }
+                AppView::Glyphs => AppView::Welcome,
+            }
+        }
+        KeyCode::BackTab => {
+            app.welcome_input_editing = false;
+            app.view = match app.view {
+                AppView::Welcome => AppView::Glyphs,
+                AppView::Glyphs => AppView::Welcome,
             }
         }
         KeyCode::Char('R') => {
@@ -3024,6 +3027,12 @@ fn handle_key_event(app: &mut App, key: KeyEvent) -> Result<()> {
             }
         }
         _ => {}
+    }
+    if previous_view == AppView::Glyphs
+        && app.view == AppView::Welcome
+        && app.active_project.is_some()
+    {
+        app.welcome_focus = WelcomeFocus::BuildButton;
     }
     tui_debug_log("handle_key_event.exit_global", app_debug_state(app));
     Ok(())

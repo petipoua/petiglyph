@@ -1869,6 +1869,14 @@ fn tab_cycles_panels_and_glyph_controls_stay_in_glyph_view() {
     assert_eq!(app.view, AppView::Welcome);
     assert_eq!(app.welcome_focus, WelcomeFocus::BuildButton);
 
+    // Shift+Tab should also return to Home and restore Build/Rebuild focus.
+    app.welcome_focus = WelcomeFocus::CreateInput;
+    handle_key(&mut app, KeyCode::BackTab).expect("key handling should succeed");
+    assert_eq!(app.view, AppView::Glyphs);
+    handle_key(&mut app, KeyCode::BackTab).expect("key handling should succeed");
+    assert_eq!(app.view, AppView::Welcome);
+    assert_eq!(app.welcome_focus, WelcomeFocus::BuildButton);
+
     // Threshold arrows still provide granular (+/-1) changes in Glyphs.
     app.view = AppView::Glyphs;
     handle_key(&mut app, KeyCode::Right).expect("key handling should succeed");
