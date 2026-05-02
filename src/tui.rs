@@ -1471,6 +1471,7 @@ fn draw_welcome_view(
             Constraint::Length(1),
             Constraint::Length(1),
             Constraint::Min(0),
+            Constraint::Length(1),
         ])
         .split(current_project_inner);
 
@@ -4090,11 +4091,14 @@ fn drag_images_here_lines(
     available_height: u16,
     accent: Color,
 ) -> Vec<Line<'static>> {
+    let horizontal_padding = 4usize;
+    let horizontal_pad = " ".repeat(horizontal_padding);
     if available_height < 3 {
         return Vec::new();
     }
 
-    let max_line_width = usize::from(available_width.saturating_sub(4));
+    let max_line_width =
+        usize::from(available_width.saturating_sub((horizontal_padding as u16).saturating_mul(2)));
     if max_line_width < 8 {
         return Vec::new();
     }
@@ -4112,7 +4116,7 @@ fn drag_images_here_lines(
 
     let mut lines = Vec::with_capacity(usize::from(available_height));
     lines.push(Line::from(vec![
-        Span::raw("  "),
+        Span::raw(horizontal_pad.clone()),
         Span::styled(top_border, border_style),
     ]));
 
@@ -4121,14 +4125,14 @@ fn drag_images_here_lines(
         let right_side = side_for_row(row);
         if row == label_row {
             lines.push(Line::from(vec![
-                Span::raw("  "),
+                Span::raw(horizontal_pad.clone()),
                 Span::styled(left_side, border_style),
                 Span::styled(centered_label.clone(), label_style),
                 Span::styled(right_side, border_style),
             ]));
         } else {
             lines.push(Line::from(vec![
-                Span::raw("  "),
+                Span::raw(horizontal_pad.clone()),
                 Span::styled(
                     format!("{left_side}{}{right_side}", " ".repeat(inner_width)),
                     border_style,
@@ -4138,7 +4142,7 @@ fn drag_images_here_lines(
     }
 
     lines.push(Line::from(vec![
-        Span::raw("  "),
+        Span::raw(horizontal_pad),
         Span::styled(bottom_border, border_style),
     ]));
     lines
