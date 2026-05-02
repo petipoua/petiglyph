@@ -41,8 +41,8 @@ use crate::install::{
     installed_ttf_candidates_for_manifest_font, uninstall_installed_font_file,
 };
 use crate::project::{
-    RuntimeConfig, create_project_in_dir, discover_project_manifests, load_runtime_config,
-    read_manifest, write_manifest,
+    RuntimeConfig, create_project_in_dir, delete_project_for_manifest, discover_project_manifests,
+    load_runtime_config, read_manifest, write_manifest,
 };
 
 const CLI_VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -61,6 +61,9 @@ const TUI_MAX_WIDTH: u16 = 148;
 const TUI_MAX_HEIGHT: u16 = 46;
 const DECPNM_NUMERIC_KEYPAD_MODE: &str = "\x1B>";
 const WELCOME_HINT_WIDTH: usize = 27;
+const DELETE_CONFIRM_CANCEL_INDEX: usize = 0;
+const DELETE_CONFIRM_DELETE_INDEX: usize = 6;
+const DELETE_CONFIRM_PATH: [(i8, i8); 7] = [(0, 0), (1, 0), (2, 0), (2, 1), (2, 2), (3, 2), (4, 2)];
 
 #[derive(Debug, Clone, Default)]
 pub(crate) struct TuiLaunchOverrides {
@@ -91,8 +94,42 @@ pub(crate) enum WelcomeFocus {
     CreateButton,
     BuildButton,
     InstallButton,
+    DeleteProjectButton,
     ToolList,
     InstalledFontList,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DeleteProjectConfirmSlot {
+    Cancel,
+    Hop1,
+    Hop2,
+    Hop3,
+    Hop4,
+    Hop5,
+    Delete,
+}
+
+impl DeleteProjectConfirmSlot {
+    fn from_index(index: usize) -> Self {
+        match index {
+            0 => Self::Cancel,
+            1 => Self::Hop1,
+            2 => Self::Hop2,
+            3 => Self::Hop3,
+            4 => Self::Hop4,
+            5 => Self::Hop5,
+            _ => Self::Delete,
+        }
+    }
+}
+
+fn delete_confirm_neighbor_index(current_index: usize, dx: i8, dy: i8) -> Option<usize> {
+    let &(x, y) = DELETE_CONFIRM_PATH.get(current_index)?;
+    let target = (x + dx, y + dy);
+    DELETE_CONFIRM_PATH
+        .iter()
+        .position(|&coord| coord == target)
 }
 
 #[derive(Debug, Clone)]
@@ -245,6 +282,7 @@ pub(crate) struct App {
     pub(crate) last_build: Option<BuildSummary>,
     pub(crate) last_sample: Option<String>,
     pub(crate) installed_font_path: Option<PathBuf>,
+    delete_project_confirm_selection: Option<usize>,
     launch_overrides: TuiLaunchOverrides,
     build_task: Option<BuildTask>,
     install_task: Option<InstallTask>,
@@ -682,7 +720,7 @@ pub(crate) fn should_dispatch_key_kind(kind: KeyEventKind) -> bool {
 
 fn app_debug_state(app: &App) -> String {
     format!(
-        "view={:?} focus={:?} selected_project={} editing={} input={:?} cursor={} visual_cursor={} build_task={} install_task={} status={:?} quit={}",
+        "view={:?} focus={:?} selected_project={} editing={} input={:?} cursor={} visual_cursor={} build_task={} install_task={} delete_confirm_selection={:?} status={:?} quit={}",
         app.view,
         app.welcome_focus,
         app.selected_project,
@@ -692,6 +730,7 @@ fn app_debug_state(app: &App) -> String {
         app.create_input.visual_cursor(),
         app.build_task.is_some(),
         app.install_task.is_some(),
+        app.delete_project_confirm_selection,
         app.status,
         app.quit
     )
@@ -703,6 +742,9 @@ fn handle_welcome_key(app: &mut App, key: KeyEvent) -> Result<()> {
         "welcome.handle.enter",
         format!("{} {}", key_debug(&key), app_debug_state(app)),
     );
+    if app.delete_project_confirm_selection.is_some() {
+        return handle_delete_project_confirmation_key(app, code);
+    }
     match code {
         KeyCode::Esc => {
             tui_debug_log("welcome.esc.before", app_debug_state(app));
@@ -753,6 +795,7 @@ fn handle_welcome_key(app: &mut App, key: KeyEvent) -> Result<()> {
                 WelcomeFocus::CreateButton => WelcomeFocus::CreateButton,
                 WelcomeFocus::BuildButton => WelcomeFocus::CreateInput,
                 WelcomeFocus::InstallButton => WelcomeFocus::CreateButton,
+                WelcomeFocus::DeleteProjectButton => WelcomeFocus::InstallButton,
                 WelcomeFocus::ToolList => match app.selected_home_tool {
                     HomeToolAction::ComposeGrid => WelcomeFocus::CreateInput,
                     HomeToolAction::AnimateGlyph => WelcomeFocus::CreateButton,
@@ -762,7 +805,7 @@ fn handle_welcome_key(app: &mut App, key: KeyEvent) -> Result<()> {
                         app.selected_installed_font -= 1;
                         WelcomeFocus::InstalledFontList
                     } else if app.active_project.is_some() {
-                        WelcomeFocus::BuildButton
+                        WelcomeFocus::DeleteProjectButton
                     } else if !app.projects.is_empty() {
                         WelcomeFocus::ProjectList
                     } else {
@@ -803,6 +846,13 @@ fn handle_welcome_key(app: &mut App, key: KeyEvent) -> Result<()> {
                         WelcomeFocus::InstalledFontList
                     }
                 }
+                WelcomeFocus::DeleteProjectButton => {
+                    if app.installed_fonts.is_empty() {
+                        WelcomeFocus::DeleteProjectButton
+                    } else {
+                        WelcomeFocus::InstalledFontList
+                    }
+                }
                 WelcomeFocus::ToolList => {
                     if app.installed_fonts.is_empty() {
                         WelcomeFocus::ToolList
@@ -833,8 +883,10 @@ fn handle_welcome_key(app: &mut App, key: KeyEvent) -> Result<()> {
                     WelcomeFocus::ToolList
                 }
                 WelcomeFocus::InstallButton => WelcomeFocus::BuildButton,
+                WelcomeFocus::DeleteProjectButton => WelcomeFocus::InstallButton,
                 WelcomeFocus::InstalledFontList => WelcomeFocus::InstalledFontList,
-                other => other,
+                WelcomeFocus::ProjectList => WelcomeFocus::ProjectList,
+                WelcomeFocus::CreateInput => WelcomeFocus::CreateInput,
             };
         }
         KeyCode::Right | KeyCode::Char('l') if !app.welcome_input_editing => {
@@ -843,6 +895,14 @@ fn handle_welcome_key(app: &mut App, key: KeyEvent) -> Result<()> {
                 WelcomeFocus::ProjectList => WelcomeFocus::BuildButton,
                 WelcomeFocus::CreateButton => WelcomeFocus::BuildButton,
                 WelcomeFocus::BuildButton => WelcomeFocus::InstallButton,
+                WelcomeFocus::InstallButton => {
+                    if app.active_project_can_be_deleted() {
+                        WelcomeFocus::DeleteProjectButton
+                    } else {
+                        WelcomeFocus::InstallButton
+                    }
+                }
+                WelcomeFocus::DeleteProjectButton => WelcomeFocus::DeleteProjectButton,
                 WelcomeFocus::ToolList => match app.selected_home_tool {
                     HomeToolAction::ComposeGrid => {
                         app.selected_home_tool = HomeToolAction::AnimateGlyph;
@@ -851,7 +911,6 @@ fn handle_welcome_key(app: &mut App, key: KeyEvent) -> Result<()> {
                     HomeToolAction::AnimateGlyph => WelcomeFocus::BuildButton,
                 },
                 WelcomeFocus::InstalledFontList => WelcomeFocus::InstalledFontList,
-                other => other,
             };
         }
         KeyCode::Enter => match app.welcome_focus {
@@ -883,6 +942,10 @@ fn handle_welcome_key(app: &mut App, key: KeyEvent) -> Result<()> {
                 app.welcome_input_editing = false;
                 trigger_install_action(app)?;
             }
+            WelcomeFocus::DeleteProjectButton => {
+                app.welcome_input_editing = false;
+                app.begin_delete_project_confirmation()?;
+            }
             WelcomeFocus::ToolList => {
                 app.welcome_input_editing = false;
                 trigger_home_tool_action(app)?;
@@ -905,6 +968,61 @@ fn handle_welcome_key(app: &mut App, key: KeyEvent) -> Result<()> {
         }
     }
     tui_debug_log("welcome.handle.exit", app_debug_state(app));
+    Ok(())
+}
+
+fn handle_delete_project_confirmation_key(app: &mut App, code: KeyCode) -> Result<()> {
+    match code {
+        KeyCode::Esc | KeyCode::Char('n') | KeyCode::Char('q') => {
+            app.cancel_delete_project_confirmation();
+        }
+        KeyCode::Left | KeyCode::Char('h') => {
+            if let Some(selection) = app.delete_project_confirm_selection.as_mut() {
+                if let Some(next) = delete_confirm_neighbor_index(*selection, -1, 0) {
+                    *selection = next;
+                }
+            }
+            app.status = None;
+        }
+        KeyCode::Right | KeyCode::Char('l') => {
+            if let Some(selection) = app.delete_project_confirm_selection.as_mut() {
+                if let Some(next) = delete_confirm_neighbor_index(*selection, 1, 0) {
+                    *selection = next;
+                }
+            }
+            app.status = None;
+        }
+        KeyCode::Up | KeyCode::Char('k') => {
+            if let Some(selection) = app.delete_project_confirm_selection.as_mut() {
+                if let Some(next) = delete_confirm_neighbor_index(*selection, 0, -1) {
+                    *selection = next;
+                }
+            }
+            app.status = None;
+        }
+        KeyCode::Down | KeyCode::Char('j') => {
+            if let Some(selection) = app.delete_project_confirm_selection.as_mut() {
+                if let Some(next) = delete_confirm_neighbor_index(*selection, 0, 1) {
+                    *selection = next;
+                }
+            }
+            app.status = None;
+        }
+        KeyCode::Enter | KeyCode::Char('y') => match app.delete_project_confirm_selection {
+            Some(DELETE_CONFIRM_CANCEL_INDEX) => {
+                app.cancel_delete_project_confirmation();
+            }
+            Some(DELETE_CONFIRM_DELETE_INDEX) => {
+                app.confirm_delete_project()?;
+            }
+            Some(_) => {
+                app.status = Some("follow the arrow path with turns to reach Delete".to_string());
+            }
+            None => {}
+        },
+        _ => {}
+    }
+    tui_debug_log("welcome.delete_confirm.exit", app_debug_state(app));
     Ok(())
 }
 
@@ -1126,6 +1244,22 @@ fn draw_welcome_view(
             install_action_name(app.current_project_is_installed())
         ),
     };
+    let delete_button_style = if !app.active_project_can_be_deleted()
+        || app.install_in_progress()
+        || app.build_in_progress()
+    {
+        disabled_button_style
+    } else if app.welcome_focus == WelcomeFocus::DeleteProjectButton {
+        Style::default()
+            .fg(Color::White)
+            .bg(Color::Red)
+            .add_modifier(Modifier::BOLD)
+    } else {
+        Style::default()
+            .fg(Color::LightRed)
+            .bg(Color::DarkGray)
+            .add_modifier(Modifier::BOLD)
+    };
     let compose_button_style = if app.active_project.is_none() {
         disabled_button_style
     } else if app.welcome_focus == WelcomeFocus::ToolList
@@ -1257,11 +1391,23 @@ fn draw_welcome_view(
         Span::styled(install_label, install_button_style),
     ]));
 
+    let current_project_inner = current_project_block.inner(main[1]);
+    frame.render_widget(current_project_block, main[1]);
+    let current_project_layout = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Min(0), Constraint::Length(1)])
+        .split(current_project_inner);
     frame.render_widget(
-        Paragraph::new(current_project_lines)
-            .block(current_project_block)
-            .wrap(Wrap { trim: true }),
-        main[1],
+        Paragraph::new(current_project_lines).wrap(Wrap { trim: true }),
+        current_project_layout[0],
+    );
+    frame.render_widget(
+        Paragraph::new(Line::from(vec![Span::styled(
+            " Delete project ",
+            delete_button_style,
+        )]))
+        .alignment(Alignment::Right),
+        current_project_layout[1],
     );
 
     let fonts_block = Block::default()
@@ -1457,6 +1603,7 @@ impl App {
             last_build: None,
             last_sample: None,
             installed_font_path: None,
+            delete_project_confirm_selection: None,
             launch_overrides,
             build_task: None,
             install_task: None,
@@ -1499,6 +1646,7 @@ impl App {
             last_build,
             last_sample,
             installed_font_path,
+            delete_project_confirm_selection: None,
             launch_overrides,
             build_task: None,
             install_task: None,
@@ -1542,6 +1690,18 @@ impl App {
             };
         }
 
+        if self.welcome_focus == WelcomeFocus::DeleteProjectButton
+            && !self.active_project_can_be_deleted()
+        {
+            self.welcome_focus = if self.active_project.is_some() {
+                WelcomeFocus::InstallButton
+            } else if !self.projects.is_empty() {
+                WelcomeFocus::ProjectList
+            } else {
+                WelcomeFocus::CreateInput
+            };
+        }
+
         Ok(())
     }
 
@@ -1573,6 +1733,87 @@ impl App {
         self.selected_installed_font = self
             .selected_installed_font
             .min(self.installed_fonts.len() - 1);
+    }
+
+    fn active_project_can_be_deleted(&self) -> bool {
+        let Some(active_manifest) = &self.active_project else {
+            return false;
+        };
+        let Some(project_dir) = active_manifest.parent() else {
+            return false;
+        };
+
+        if project_dir == self.workspace_root {
+            return false;
+        }
+        if !project_dir.starts_with(&self.workspace_root) {
+            return false;
+        }
+
+        self.projects
+            .iter()
+            .any(|project| project.manifest_path == *active_manifest)
+    }
+
+    fn cancel_delete_project_confirmation(&mut self) {
+        self.delete_project_confirm_selection = None;
+        self.status = Some("project deletion canceled".to_string());
+    }
+
+    fn begin_delete_project_confirmation(&mut self) -> Result<()> {
+        if self.install_in_progress() || self.build_in_progress() {
+            self.status = Some(
+                "a background task is in progress; wait before deleting a project".to_string(),
+            );
+            return Ok(());
+        }
+        if !self.active_project_can_be_deleted() {
+            self.status =
+                Some("only nested workspace projects can be deleted from Home".to_string());
+            return Ok(());
+        }
+        self.welcome_input_editing = false;
+        self.delete_project_confirm_selection = Some(DELETE_CONFIRM_CANCEL_INDEX);
+        self.status = None;
+        Ok(())
+    }
+
+    fn confirm_delete_project(&mut self) -> Result<()> {
+        let Some(active_manifest) = self.active_project.clone() else {
+            self.status = Some("no active project selected".to_string());
+            self.delete_project_confirm_selection = None;
+            return Ok(());
+        };
+
+        if !self.active_project_can_be_deleted() {
+            self.status = Some("active project is not deletable from this workspace".to_string());
+            self.delete_project_confirm_selection = None;
+            return Ok(());
+        }
+
+        let deleted_project_name = active_manifest
+            .parent()
+            .and_then(Path::file_name)
+            .and_then(|name| name.to_str())
+            .unwrap_or("project")
+            .to_string();
+
+        delete_project_for_manifest(&active_manifest)?;
+        self.delete_project_confirm_selection = None;
+        self.active_project = None;
+        self.manifest_path = self.workspace_root.join("petiglyph.toml");
+        self.project_dir = self.workspace_root.clone();
+        self.reload_config()?;
+        self.glyphs.clear();
+        self.selected = 0;
+        self.refresh_workspace_discovery()?;
+        self.welcome_focus = if self.projects.is_empty() {
+            WelcomeFocus::CreateInput
+        } else {
+            WelcomeFocus::ProjectList
+        };
+        self.status = Some(format!("deleted project `{deleted_project_name}`"));
+        Ok(())
     }
 
     fn submit_create(&mut self) -> Result<()> {
@@ -1841,8 +2082,8 @@ impl App {
         let launch_overrides = self.launch_overrides.clone();
         let (sender, receiver) = mpsc::channel();
         thread::spawn(move || {
-            let result = build_project_task(manifest_path, launch_overrides)
-                .map_err(|err| err.to_string());
+            let result =
+                build_project_task(manifest_path, launch_overrides).map_err(|err| err.to_string());
             let _ = sender.send(result);
         });
 
@@ -1935,8 +2176,6 @@ impl App {
         self.status = None;
         Ok(())
     }
-
-
 
     fn poll_build_task(&mut self) {
         let mut disconnected = false;
@@ -2252,8 +2491,6 @@ fn build_and_install(
     })
 }
 
-
-
 fn uninstall_installed_font_task(
     installed_ttf: PathBuf,
     file_name: String,
@@ -2267,8 +2504,6 @@ fn uninstall_installed_font_task(
     };
     Ok(InstallTaskOutput::Uninstall { status_message })
 }
-
-
 
 fn cached_build_state(config: &RuntimeConfig) -> (Option<BuildSummary>, Option<String>) {
     let ttf_path = expected_ttf_path(config);
@@ -2504,6 +2739,16 @@ fn handle_key_event(app: &mut App, key: KeyEvent) -> Result<()> {
     );
     let is_global_panel_jump = matches!(code, KeyCode::Tab | KeyCode::BackTab)
         || (matches!(code, KeyCode::Char('2')) && !app.welcome_input_editing);
+
+    if app.view == AppView::Welcome && app.delete_project_confirm_selection.is_some() {
+        tui_debug_log(
+            "handle_key_event.route_delete_confirm",
+            app_debug_state(app),
+        );
+        let result = handle_welcome_key(app, key);
+        tui_debug_log("handle_key_event.exit_delete_confirm", app_debug_state(app));
+        return result;
+    }
 
     if app.view == AppView::Welcome && !is_global_panel_jump {
         tui_debug_log("handle_key_event.route_welcome", app_debug_state(app));
@@ -2754,6 +2999,7 @@ fn draw_ui(frame: &mut Frame, app: &App) {
         AppView::Welcome => draw_welcome_view(frame, app, body_area, accent, muted),
         AppView::Glyphs => draw_glyphs_view(frame, app, body_area, accent, muted),
     }
+    draw_delete_project_confirmation_popup(frame, app, area, accent, muted);
 
     // Footer
     let mut footer_spans = vec![
@@ -2782,6 +3028,8 @@ fn draw_ui(frame: &mut Frame, app: &App) {
     if app.view == AppView::Welcome {
         let enter_help = if app.welcome_input_editing {
             "stop typing  "
+        } else if app.delete_project_confirm_selection.is_some() {
+            "confirm  "
         } else if app.welcome_focus == WelcomeFocus::ProjectList {
             "open project  "
         } else if app.welcome_focus == WelcomeFocus::BuildButton {
@@ -2796,6 +3044,8 @@ fn draw_ui(frame: &mut Frame, app: &App) {
             } else {
                 "install  "
             }
+        } else if app.welcome_focus == WelcomeFocus::DeleteProjectButton {
+            "delete project  "
         } else if app.welcome_focus == WelcomeFocus::InstalledFontList {
             "uninstall  "
         } else if app.welcome_focus == WelcomeFocus::ToolList {
@@ -2817,6 +3067,11 @@ fn draw_ui(frame: &mut Frame, app: &App) {
             footer_spans.extend(vec![
                 Span::styled(" Esc ", Style::default().fg(accent)),
                 Span::raw("stop typing  "),
+            ]);
+        } else if app.delete_project_confirm_selection.is_some() {
+            footer_spans.extend(vec![
+                Span::styled(" Esc ", Style::default().fg(accent)),
+                Span::raw("cancel delete  "),
             ]);
         }
     }
@@ -2867,6 +3122,167 @@ fn draw_ui(frame: &mut Frame, app: &App) {
     frame.render_widget(footer, root[3]);
 }
 
+fn draw_delete_project_confirmation_popup(
+    frame: &mut Frame,
+    app: &App,
+    area: Rect,
+    accent: Color,
+    muted: Color,
+) {
+    let Some(selection) = app.delete_project_confirm_selection else {
+        return;
+    };
+
+    let project_label = app
+        .active_project
+        .as_ref()
+        .and_then(|manifest| manifest.parent())
+        .and_then(Path::file_name)
+        .and_then(|name| name.to_str())
+        .unwrap_or("current project");
+    let popup = centered_popup_rect(area, 94, 14);
+    frame.render_widget(Clear, popup);
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(Style::default().fg(Color::LightRed))
+        .title(Span::styled(
+            " Confirm Deletion ",
+            Style::default().fg(accent).add_modifier(Modifier::BOLD),
+        ));
+    let selected_button = DeleteProjectConfirmSlot::from_index(selection);
+    let selected_style = Style::default()
+        .fg(Color::Black)
+        .bg(Color::Yellow)
+        .add_modifier(Modifier::BOLD);
+    let danger_style = Style::default()
+        .fg(Color::White)
+        .bg(Color::Red)
+        .add_modifier(Modifier::BOLD);
+    let idle_style = Style::default().fg(Color::White).bg(Color::DarkGray);
+    let hop_style = Style::default().fg(Color::Black).bg(Color::DarkGray);
+    let slot_text = "        ";
+    let h_gap = "  ";
+    let left_pad = "  ";
+    let branch_indent = format!(
+        "{}{}{}{}{}",
+        left_pad,
+        " ".repeat(" CANCEL ".chars().count()),
+        h_gap,
+        " ".repeat(slot_text.chars().count()),
+        h_gap
+    );
+
+    let top_row = Line::from(vec![
+        Span::raw(left_pad),
+        Span::styled(
+            " CANCEL ",
+            if selected_button == DeleteProjectConfirmSlot::Cancel {
+                selected_style
+            } else {
+                idle_style
+            },
+        ),
+        Span::raw(h_gap),
+        Span::styled(
+            slot_text,
+            if selected_button == DeleteProjectConfirmSlot::Hop1 {
+                selected_style
+            } else {
+                hop_style
+            },
+        ),
+        Span::raw(h_gap),
+        Span::styled(
+            slot_text,
+            if selected_button == DeleteProjectConfirmSlot::Hop2 {
+                selected_style
+            } else {
+                hop_style
+            },
+        ),
+    ]);
+
+    let middle_row = Line::from(vec![
+        Span::raw(&branch_indent),
+        Span::styled(
+            slot_text,
+            if selected_button == DeleteProjectConfirmSlot::Hop3 {
+                selected_style
+            } else {
+                hop_style
+            },
+        ),
+    ]);
+
+    let bottom_row = Line::from(vec![
+        Span::raw(&branch_indent),
+        Span::styled(
+            slot_text,
+            if selected_button == DeleteProjectConfirmSlot::Hop4 {
+                selected_style
+            } else {
+                hop_style
+            },
+        ),
+        Span::raw(h_gap),
+        Span::styled(
+            slot_text,
+            if selected_button == DeleteProjectConfirmSlot::Hop5 {
+                selected_style
+            } else {
+                hop_style
+            },
+        ),
+        Span::raw(h_gap),
+        Span::styled(
+            " DELETE ",
+            if selected_button == DeleteProjectConfirmSlot::Delete {
+                danger_style
+            } else {
+                idle_style
+            },
+        ),
+    ]);
+
+    let lines = vec![
+        Line::from(""),
+        Line::from(vec![
+            Span::raw("  "),
+            Span::styled(
+                format!("Delete project `{project_label}`?"),
+                Style::default().fg(Color::White),
+            ),
+        ]),
+        Line::from(vec![
+            Span::raw("  "),
+            Span::styled(
+                "Reach DELETE by following the slot path with turns.",
+                Style::default().fg(Color::White),
+            ),
+        ]),
+        Line::from(vec![
+            Span::raw("  "),
+            Span::styled(
+                "Use arrows (or h/j/k/l). Enter confirms selected action. Esc cancels.",
+                Style::default().fg(muted),
+            ),
+        ]),
+        Line::from(""),
+        top_row,
+        Line::from(""),
+        middle_row,
+        Line::from(""),
+        bottom_row,
+    ];
+    frame.render_widget(
+        Paragraph::new(lines)
+            .block(block)
+            .wrap(Wrap { trim: false }),
+        popup,
+    );
+}
+
 fn format_status_from_error(manifest_path: &Path, error_text: &str) -> String {
     if let Some(warning) = incompatible_artifact_warning(error_text, Some(manifest_path)) {
         return warning;
@@ -2884,6 +3300,18 @@ fn centered_bounded_viewport(area: Rect) -> Rect {
     let x = area.x + area.width.saturating_sub(viewport_width) / 2;
     let y = area.y + area.height.saturating_sub(viewport_height) / 2;
     Rect::new(x, y, viewport_width, viewport_height)
+}
+
+fn centered_popup_rect(area: Rect, max_width: u16, height: u16) -> Rect {
+    let width = area
+        .width
+        .min(area.width.saturating_sub(6).min(max_width).max(42));
+    let height = area
+        .height
+        .min(height.min(area.height.saturating_sub(2)).max(6));
+    let x = area.x + area.width.saturating_sub(width) / 2;
+    let y = area.y + area.height.saturating_sub(height) / 2;
+    Rect::new(x, y, width, height)
 }
 
 fn draw_terminal_too_small(frame: &mut Frame, area: Rect, accent: Color, muted: Color) {

@@ -413,6 +413,10 @@ fn unified_tui_multiple_projects_can_be_selected_from_home() {
     assert_eq!(app.welcome_focus, WelcomeFocus::BuildButton);
     handle_key(&mut app, KeyCode::Right).expect("right moves to install button");
     assert_eq!(app.welcome_focus, WelcomeFocus::InstallButton);
+    handle_key(&mut app, KeyCode::Right).expect("right moves to delete project button");
+    assert_eq!(app.welcome_focus, WelcomeFocus::DeleteProjectButton);
+    handle_key(&mut app, KeyCode::Left).expect("left returns to install button");
+    assert_eq!(app.welcome_focus, WelcomeFocus::InstallButton);
     handle_key(&mut app, KeyCode::Up).expect("up returns to create button");
     assert_eq!(app.welcome_focus, WelcomeFocus::CreateButton);
     handle_key(&mut app, KeyCode::Up).expect("up returns to project list");
@@ -590,6 +594,7 @@ fn projects_card_hint_keeps_fixed_width_and_stays_local() {
     let tool_hint = format_projects_card_hint(WelcomeFocus::ToolList, false);
     let build_hint = format_projects_card_hint(WelcomeFocus::BuildButton, false);
     let install_hint = format_projects_card_hint(WelcomeFocus::InstallButton, false);
+    let delete_hint = format_projects_card_hint(WelcomeFocus::DeleteProjectButton, false);
     let uninstall_hint = format_projects_card_hint(WelcomeFocus::InstalledFontList, false);
     let list_hint = format_projects_card_hint(WelcomeFocus::ProjectList, false);
 
@@ -598,6 +603,7 @@ fn projects_card_hint_keeps_fixed_width_and_stays_local() {
     assert_eq!(input_hint.chars().count(), tool_hint.chars().count());
     assert_eq!(input_hint.chars().count(), build_hint.chars().count());
     assert_eq!(input_hint.chars().count(), install_hint.chars().count());
+    assert_eq!(input_hint.chars().count(), delete_hint.chars().count());
     assert_eq!(input_hint.chars().count(), uninstall_hint.chars().count());
     assert_eq!(input_hint.chars().count(), list_hint.chars().count());
     assert!(input_hint.contains("press Enter to type"));
@@ -606,7 +612,99 @@ fn projects_card_hint_keeps_fixed_width_and_stays_local() {
     assert!(tool_hint.trim().is_empty());
     assert!(build_hint.trim().is_empty());
     assert!(install_hint.trim().is_empty());
+    assert!(delete_hint.trim().is_empty());
     assert!(uninstall_hint.trim().is_empty());
+}
+
+#[test]
+fn delete_project_flow_requires_arrow_hops_to_reach_delete() {
+    let workspace = make_temp_dir("home-delete-confirm");
+    let project_dir = workspace.join("delete-me");
+    let icons_dir = project_dir.join("icons");
+    fs::create_dir_all(&icons_dir).expect("icons dir is created");
+    write_test_png(&icons_dir.join("icon.png"));
+    let manifest_path = project_dir.join("petiglyph.toml");
+    write_manifest(&manifest_path, &Manifest::default()).expect("manifest is written");
+
+    let mut app = App::new_workspace(workspace.clone(), None, TuiLaunchOverrides::default())
+        .expect("workspace TUI app initializes");
+    handle_key(&mut app, KeyCode::Enter).expect("open project");
+    assert_eq!(app.active_project.as_deref(), Some(manifest_path.as_path()));
+
+    app.welcome_focus = WelcomeFocus::DeleteProjectButton;
+    handle_key(&mut app, KeyCode::Enter).expect("open delete confirmation");
+    assert!(
+        app.status.is_none(),
+        "opening confirm should not set status, got {:?}",
+        app.status
+    );
+
+    handle_key(&mut app, KeyCode::Enter).expect("enter on cancel should cancel");
+    assert!(project_dir.exists());
+    assert!(
+        app.status
+            .as_deref()
+            .is_some_and(|status| status.contains("canceled"))
+    );
+
+    app.welcome_focus = WelcomeFocus::DeleteProjectButton;
+    handle_key(&mut app, KeyCode::Enter).expect("reopen delete confirmation for hop validation");
+    assert!(app.status.is_none());
+    handle_key(&mut app, KeyCode::Right).expect("move to first hop");
+    handle_key(&mut app, KeyCode::Right).expect("move to second hop");
+    handle_key(&mut app, KeyCode::Right).expect("right should not bypass turn");
+    handle_key(&mut app, KeyCode::Enter).expect("enter on second hop should be blocked");
+    assert!(project_dir.exists());
+    assert!(
+        app.status
+            .as_deref()
+            .is_some_and(|status| status.contains("path with turns"))
+    );
+
+    let hop_path = [KeyCode::Down, KeyCode::Down, KeyCode::Right, KeyCode::Right];
+    for key in hop_path {
+        handle_key(&mut app, key).expect("hop movement should work");
+    }
+
+    handle_key(&mut app, KeyCode::Enter).expect("confirm deletion at delete button");
+    assert!(!project_dir.exists());
+    assert_eq!(app.active_project, None);
+    assert_eq!(app.welcome_focus, WelcomeFocus::CreateInput);
+    assert!(
+        app.status
+            .as_deref()
+            .is_some_and(|status| status.contains("deleted project"))
+    );
+
+    fs::remove_dir_all(workspace).expect("temp workspace is removed");
+}
+
+#[test]
+fn delete_project_confirmation_can_be_canceled() {
+    let workspace = make_temp_dir("home-delete-cancel");
+    let project_dir = workspace.join("keep-me");
+    let icons_dir = project_dir.join("icons");
+    fs::create_dir_all(&icons_dir).expect("icons dir is created");
+    write_test_png(&icons_dir.join("icon.png"));
+    let manifest_path = project_dir.join("petiglyph.toml");
+    write_manifest(&manifest_path, &Manifest::default()).expect("manifest is written");
+
+    let mut app = App::new_workspace(workspace.clone(), None, TuiLaunchOverrides::default())
+        .expect("workspace TUI app initializes");
+    handle_key(&mut app, KeyCode::Enter).expect("open project");
+    app.welcome_focus = WelcomeFocus::DeleteProjectButton;
+    handle_key(&mut app, KeyCode::Enter).expect("open confirmation");
+    handle_key(&mut app, KeyCode::Esc).expect("cancel confirmation");
+
+    assert!(project_dir.exists());
+    assert_eq!(app.active_project.as_deref(), Some(manifest_path.as_path()));
+    assert!(
+        app.status
+            .as_deref()
+            .is_some_and(|status| status.contains("canceled"))
+    );
+
+    fs::remove_dir_all(workspace).expect("temp workspace is removed");
 }
 
 #[test]
@@ -708,8 +806,8 @@ fn home_installed_font_buttons_can_be_navigated() {
     assert_eq!(app.welcome_focus, WelcomeFocus::InstalledFontList);
     assert_eq!(app.selected_installed_font, 0);
 
-    handle_key(&mut app, KeyCode::Up).expect("up from first installed font returns to build");
-    assert_eq!(app.welcome_focus, WelcomeFocus::BuildButton);
+    handle_key(&mut app, KeyCode::Up).expect("up from first installed font returns to delete");
+    assert_eq!(app.welcome_focus, WelcomeFocus::DeleteProjectButton);
 
     fs::remove_dir_all(project_dir).expect("temp project dir is removed");
 }

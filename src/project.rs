@@ -160,6 +160,30 @@ pub(crate) fn create_project_in_dir(base_dir: &Path, project_name: &str) -> Resu
     Ok(manifest_path)
 }
 
+pub(crate) fn delete_project_for_manifest(manifest_path: &Path) -> Result<PathBuf> {
+    if !manifest_path.is_file() {
+        bail!("project manifest not found: {}", manifest_path.display());
+    }
+
+    let Some(project_dir) = manifest_path.parent() else {
+        bail!(
+            "failed to resolve project directory for {}",
+            manifest_path.display()
+        );
+    };
+    if project_dir == Path::new(".") {
+        bail!("refusing to delete current directory project root");
+    }
+
+    fs::remove_dir_all(project_dir).with_context(|| {
+        format!(
+            "failed to delete project directory {}",
+            project_dir.display()
+        )
+    })?;
+    Ok(project_dir.to_path_buf())
+}
+
 pub(crate) fn create_project(project_name: &str, no_launch: bool) -> Result<()> {
     let current_dir = env::current_dir().context("failed to read current directory")?;
     let manifest_path = create_project_in_dir(&current_dir, project_name)?;
