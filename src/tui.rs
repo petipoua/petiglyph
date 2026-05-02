@@ -19,6 +19,7 @@ use ratatui::{Frame, Terminal};
 use std::collections::BTreeSet;
 use std::env;
 use std::fs::{self, OpenOptions};
+use std::hash::{Hash, Hasher};
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::sync::{
@@ -65,6 +66,7 @@ const DELETE_CONFIRM_CANCEL_INDEX: usize = 0;
 const DELETE_CONFIRM_DELETE_INDEX: usize = 4;
 const DELETE_CONFIRM_PATH: [(i8, i8); 5] = [(0, 0), (1, 0), (1, 1), (2, 1), (3, 1)];
 const HTY_FULL_REPAINT_ENV: &str = "PETIGLYPH_TUI_HTY_FULL_REPAINT";
+const GLYPH_SOURCE_COUNT_REFRESH_MS: u64 = 300;
 static HTY_FULL_REPAINT_ENABLED: OnceLock<bool> = OnceLock::new();
 
 #[derive(Debug, Clone, Default)]
@@ -91,6 +93,7 @@ pub(crate) struct InstalledFontSample {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum WelcomeFocus {
+    VerbosePathsToggle,
     ProjectList,
     CreateInput,
     CreateButton,
@@ -181,6 +184,7 @@ pub(crate) fn tui_workspace(
         app.poll_build_task();
         app.poll_font_task();
         app.clear_expired_switch_notice();
+        app.refresh_live_glyph_source_count();
         session.terminal.draw(|frame| draw_ui(frame, &app))?;
         if log_next_draw_after_esc {
             tui_debug_log("draw.after_esc", app_debug_state(&app));
@@ -268,6 +272,7 @@ pub(crate) struct App {
     pub(crate) create_input: Input,
     pub(crate) welcome_focus: WelcomeFocus,
     pub(crate) welcome_input_editing: bool,
+    pub(crate) verbose_paths: bool,
     pub(crate) installed_fonts: Vec<InstalledFontSample>,
     pub(crate) selected_installed_font: usize,
     pub(crate) switch_notice: Option<ProjectSwitchNotice>,
@@ -285,6 +290,9 @@ pub(crate) struct App {
     launch_overrides: TuiLaunchOverrides,
     build_task: Option<BuildTask>,
     install_task: Option<InstallTask>,
+    live_glyph_source_count: Option<usize>,
+    live_glyph_source_probe_fingerprint: Option<u64>,
+    live_glyph_source_probe_at: Option<Instant>,
 }
 
 #[derive(Debug, Clone)]
@@ -720,11 +728,12 @@ pub(crate) fn should_dispatch_key_kind(kind: KeyEventKind) -> bool {
 
 fn app_debug_state(app: &App) -> String {
     format!(
-        "view={:?} focus={:?} selected_project={} editing={} input={:?} cursor={} visual_cursor={} build_task={} install_task={} delete_confirm_selection={:?} status={:?} quit={}",
+        "view={:?} focus={:?} selected_project={} editing={} verbose_paths={} input={:?} cursor={} visual_cursor={} build_task={} install_task={} delete_confirm_selection={:?} status={:?} quit={}",
         app.view,
         app.welcome_focus,
         app.selected_project,
         app.welcome_input_editing,
+        app.verbose_paths,
         app.create_input.value(),
         app.create_input.cursor(),
         app.create_input.visual_cursor(),
@@ -780,9 +789,14 @@ fn handle_welcome_key(app: &mut App, key: KeyEvent) -> Result<()> {
         }
         KeyCode::Up | KeyCode::Char('k') if !app.welcome_input_editing => {
             app.welcome_focus = match app.welcome_focus {
+                WelcomeFocus::VerbosePathsToggle => WelcomeFocus::VerbosePathsToggle,
                 WelcomeFocus::ProjectList => {
-                    app.selected_project = app.selected_project.saturating_sub(1);
-                    WelcomeFocus::ProjectList
+                    if app.selected_project > 0 {
+                        app.selected_project -= 1;
+                        WelcomeFocus::ProjectList
+                    } else {
+                        WelcomeFocus::VerbosePathsToggle
+                    }
                 }
                 WelcomeFocus::CreateInput if !app.projects.is_empty() => {
                     app.selected_project = app.projects.len() - 1;
@@ -792,11 +806,11 @@ fn handle_welcome_key(app: &mut App, key: KeyEvent) -> Result<()> {
                     app.selected_project = app.projects.len() - 1;
                     WelcomeFocus::ProjectList
                 }
-                WelcomeFocus::CreateInput => WelcomeFocus::CreateInput,
+                WelcomeFocus::CreateInput => WelcomeFocus::VerbosePathsToggle,
                 WelcomeFocus::CreateButton => WelcomeFocus::CreateButton,
-                WelcomeFocus::BuildButton => WelcomeFocus::CreateInput,
-                WelcomeFocus::InstallButton => WelcomeFocus::CreateButton,
-                WelcomeFocus::DeleteProjectButton => WelcomeFocus::InstallButton,
+                WelcomeFocus::BuildButton => WelcomeFocus::VerbosePathsToggle,
+                WelcomeFocus::InstallButton => WelcomeFocus::VerbosePathsToggle,
+                WelcomeFocus::DeleteProjectButton => WelcomeFocus::VerbosePathsToggle,
                 WelcomeFocus::ToolList => match app.selected_home_tool {
                     HomeToolAction::ComposeGrid => WelcomeFocus::CreateInput,
                     HomeToolAction::AnimateGlyph => WelcomeFocus::CreateButton,
@@ -810,13 +824,22 @@ fn handle_welcome_key(app: &mut App, key: KeyEvent) -> Result<()> {
                     } else if !app.projects.is_empty() {
                         WelcomeFocus::ProjectList
                     } else {
-                        WelcomeFocus::CreateInput
+                        WelcomeFocus::VerbosePathsToggle
                     }
                 }
             };
         }
         KeyCode::Down | KeyCode::Char('j') if !app.welcome_input_editing => {
             app.welcome_focus = match app.welcome_focus {
+                WelcomeFocus::VerbosePathsToggle => {
+                    if app.active_project.is_some() {
+                        WelcomeFocus::InstallButton
+                    } else if !app.projects.is_empty() {
+                        WelcomeFocus::ProjectList
+                    } else {
+                        WelcomeFocus::CreateInput
+                    }
+                }
                 WelcomeFocus::ProjectList => {
                     if app.selected_project + 1 < app.projects.len() {
                         app.selected_project += 1;
@@ -879,6 +902,7 @@ fn handle_welcome_key(app: &mut App, key: KeyEvent) -> Result<()> {
         }
         KeyCode::Left | KeyCode::Char('h') if !app.welcome_input_editing => {
             app.welcome_focus = match app.welcome_focus {
+                WelcomeFocus::VerbosePathsToggle => WelcomeFocus::VerbosePathsToggle,
                 WelcomeFocus::ToolList => match app.selected_home_tool {
                     HomeToolAction::ComposeGrid => WelcomeFocus::ToolList,
                     HomeToolAction::AnimateGlyph => {
@@ -887,14 +911,7 @@ fn handle_welcome_key(app: &mut App, key: KeyEvent) -> Result<()> {
                     }
                 },
                 WelcomeFocus::CreateButton => WelcomeFocus::CreateInput,
-                WelcomeFocus::BuildButton => {
-                    if home_project_actions_enabled {
-                        app.selected_home_tool = HomeToolAction::AnimateGlyph;
-                        WelcomeFocus::ToolList
-                    } else {
-                        WelcomeFocus::CreateButton
-                    }
-                }
+                WelcomeFocus::BuildButton => WelcomeFocus::CreateButton,
                 WelcomeFocus::InstallButton => WelcomeFocus::BuildButton,
                 WelcomeFocus::DeleteProjectButton => WelcomeFocus::InstallButton,
                 WelcomeFocus::InstalledFontList => WelcomeFocus::InstalledFontList,
@@ -904,6 +921,7 @@ fn handle_welcome_key(app: &mut App, key: KeyEvent) -> Result<()> {
         }
         KeyCode::Right | KeyCode::Char('l') if !app.welcome_input_editing => {
             app.welcome_focus = match app.welcome_focus {
+                WelcomeFocus::VerbosePathsToggle => WelcomeFocus::VerbosePathsToggle,
                 WelcomeFocus::CreateInput => WelcomeFocus::CreateButton,
                 WelcomeFocus::ProjectList => {
                     if home_project_actions_enabled {
@@ -953,6 +971,18 @@ fn handle_welcome_key(app: &mut App, key: KeyEvent) -> Result<()> {
             };
         }
         KeyCode::Enter => match app.welcome_focus {
+            WelcomeFocus::VerbosePathsToggle => {
+                app.welcome_input_editing = false;
+                app.verbose_paths = !app.verbose_paths;
+                app.status = Some(format!(
+                    "verbose paths {}",
+                    if app.verbose_paths {
+                        "enabled"
+                    } else {
+                        "disabled"
+                    }
+                ));
+            }
             WelcomeFocus::ProjectList => {
                 app.welcome_input_editing = false;
                 if let Some(project) = app.projects.get(app.selected_project) {
@@ -1084,6 +1114,7 @@ fn draw_welcome_view(
         .direction(Direction::Vertical)
         .constraints([
             Constraint::Length(3),  // scan scope hint
+            Constraint::Length(1),  // settings row
             Constraint::Length(21), // projects + current project
             Constraint::Min(0),     // installed petiglyph fonts
         ])
@@ -1122,11 +1153,36 @@ fn draw_welcome_view(
         .wrap(Wrap { trim: true }),
         tip_layout[1],
     );
+    let verbose_button_style = if app.welcome_focus == WelcomeFocus::VerbosePathsToggle {
+        Style::default()
+            .fg(Color::Black)
+            .bg(accent)
+            .add_modifier(Modifier::BOLD)
+    } else if app.verbose_paths {
+        Style::default()
+            .fg(Color::Black)
+            .bg(Color::Green)
+            .add_modifier(Modifier::BOLD)
+    } else {
+        Style::default()
+            .fg(Color::White)
+            .bg(Color::DarkGray)
+            .add_modifier(Modifier::DIM)
+    };
+    let verbose_state_label = if app.verbose_paths { "ON" } else { "OFF" };
+    frame.render_widget(
+        Paragraph::new(Line::from(vec![Span::styled(
+            format!(" Verbose: {verbose_state_label} "),
+            verbose_button_style,
+        )]))
+        .alignment(Alignment::Right),
+        body[1],
+    );
 
     let main = Layout::default()
         .direction(Direction::Horizontal)
         .constraints([Constraint::Percentage(54), Constraint::Percentage(46)])
-        .split(body[1]);
+        .split(body[2]);
 
     let projects_block = Block::default()
         .borders(Borders::ALL)
@@ -1163,7 +1219,7 @@ fn draw_welcome_view(
             } else {
                 Style::default().fg(Color::White)
             };
-            project_rows.push(Line::from(vec![
+            let mut row = vec![
                 Span::styled(
                     if is_selected { "> " } else { "  " },
                     if is_selected {
@@ -1197,23 +1253,26 @@ fn draw_welcome_view(
                         Style::default().fg(Color::White)
                     },
                 ),
-                Span::styled(
+            ];
+            if app.verbose_paths {
+                row.push(Span::styled(
                     "  ",
                     if is_selected {
                         row_style
                     } else {
                         Style::default().fg(muted)
                     },
-                ),
-                Span::styled(
+                ));
+                row.push(Span::styled(
                     project.manifest_path.display().to_string(),
                     if is_selected {
                         row_style
                     } else {
                         Style::default().fg(muted)
                     },
-                ),
-            ]));
+                ));
+            }
+            project_rows.push(Line::from(row));
         }
     }
     let input_style = if app.welcome_focus == WelcomeFocus::CreateInput {
@@ -1463,12 +1522,20 @@ fn draw_welcome_view(
             let ttf_built = ttf_path.is_file();
             let bdf_built = bdf_path.is_file();
             let ttf_status = if ttf_built {
-                Span::styled(format!("built: {}", ttf_path.display()), ok_style)
+                if app.verbose_paths {
+                    Span::styled(format!("built: {}", ttf_path.display()), ok_style)
+                } else {
+                    Span::styled("built", ok_style)
+                }
             } else {
                 Span::styled("not built yet", unbuilt_style)
             };
             let bdf_status = if bdf_built {
-                Span::styled(format!("built: {}", bdf_path.display()), ok_style)
+                if app.verbose_paths {
+                    Span::styled(format!("built: {}", bdf_path.display()), ok_style)
+                } else {
+                    Span::styled("built", ok_style)
+                }
             } else {
                 Span::styled("not built yet", unbuilt_style)
             };
@@ -1495,6 +1562,13 @@ fn draw_welcome_view(
     frame.render_widget(current_project_block, main[1]);
 
     let show_add_images_warning = tools_active && !ttf_built && !bdf_built && app.glyphs.is_empty();
+    let glyph_count_label = if tools_active {
+        app.live_glyph_source_count
+            .map(|count| count.to_string())
+            .unwrap_or_else(|| app.glyphs.len().to_string())
+    } else {
+        "n/a".to_string()
+    };
     let mut current_project_lines = vec![
         Line::from(vec![
             Span::raw("  "),
@@ -1503,7 +1577,10 @@ fn draw_welcome_view(
         Line::from(""),
         Line::from(vec![
             Span::raw("  "),
-            Span::styled("Outputs", section_style.add_modifier(Modifier::BOLD)),
+            Span::styled(
+                format!("Glyphs: {glyph_count_label}"),
+                section_style.add_modifier(Modifier::BOLD),
+            ),
         ]),
         Line::from(vec![
             Span::raw("    "),
@@ -1635,7 +1712,7 @@ fn draw_welcome_view(
             ),
         ]));
     } else {
-        let sample_wrap_width = usize::from(body[2].width.saturating_sub(8).max(16));
+        let sample_wrap_width = usize::from(body[3].width.saturating_sub(8).max(16));
         for (idx, font) in app.installed_fonts.iter().enumerate() {
             if idx == app.selected_installed_font {
                 selected_font_row = font_rows.len();
@@ -1679,11 +1756,13 @@ fn draw_welcome_view(
                 Span::raw("  "),
                 Span::styled(uninstall_label, uninstall_button_style),
             ]));
-            font_rows.push(Line::from(vec![
-                Span::raw("    "),
-                Span::styled("path: ", Style::default().fg(muted)),
-                Span::raw(font.path.display().to_string()),
-            ]));
+            if app.verbose_paths {
+                font_rows.push(Line::from(vec![
+                    Span::raw("    "),
+                    Span::styled("path: ", Style::default().fg(muted)),
+                    Span::raw(font.path.display().to_string()),
+                ]));
+            }
             font_rows.push(Line::from(vec![
                 Span::raw("    "),
                 Span::styled("sample:", Style::default().fg(muted)),
@@ -1700,8 +1779,8 @@ fn draw_welcome_view(
             font_rows.push(Line::from(""));
         }
     }
-    let fonts_inner = fonts_block.inner(body[2]);
-    frame.render_widget(fonts_block, body[2]);
+    let fonts_inner = fonts_block.inner(body[3]);
+    frame.render_widget(fonts_block, body[3]);
 
     let fonts_layout = Layout::default()
         .direction(Direction::Vertical)
@@ -1814,6 +1893,7 @@ impl App {
             create_input: Input::default(),
             welcome_focus: WelcomeFocus::CreateInput,
             welcome_input_editing: false,
+            verbose_paths: false,
             installed_fonts: Vec::new(),
             selected_installed_font: 0,
             switch_notice: None,
@@ -1831,6 +1911,9 @@ impl App {
             launch_overrides,
             build_task: None,
             install_task: None,
+            live_glyph_source_count: None,
+            live_glyph_source_probe_fingerprint: None,
+            live_glyph_source_probe_at: None,
         }
     }
 
@@ -1858,6 +1941,7 @@ impl App {
             create_input: Input::default(),
             welcome_focus: WelcomeFocus::CreateInput,
             welcome_input_editing: false,
+            verbose_paths: false,
             installed_fonts: Vec::new(),
             selected_installed_font: 0,
             switch_notice: None,
@@ -1875,6 +1959,9 @@ impl App {
             launch_overrides,
             build_task: None,
             install_task: None,
+            live_glyph_source_count: None,
+            live_glyph_source_probe_fingerprint: None,
+            live_glyph_source_probe_at: None,
         }
     }
 
@@ -2144,6 +2231,9 @@ impl App {
         if self.active_project.is_none() {
             self.glyphs.clear();
             self.selected = 0;
+            self.live_glyph_source_count = None;
+            self.live_glyph_source_probe_fingerprint = None;
+            self.live_glyph_source_probe_at = Some(Instant::now());
             self.status = Some("create a project in Home or relaunch with --manifest".to_string());
             return Ok(());
         }
@@ -2153,6 +2243,9 @@ impl App {
         if !self.config.input_dir.exists() {
             self.glyphs.clear();
             self.selected = 0;
+            self.live_glyph_source_count = Some(0);
+            self.live_glyph_source_probe_fingerprint = Some(0);
+            self.live_glyph_source_probe_at = Some(Instant::now());
             self.status = Some(format!(
                 "icons directory not found yet: {}",
                 self.config.input_dir.display()
@@ -2174,6 +2267,9 @@ impl App {
         if sources.is_empty() {
             self.glyphs.clear();
             self.selected = 0;
+            self.live_glyph_source_count = Some(0);
+            self.live_glyph_source_probe_fingerprint = Some(0);
+            self.live_glyph_source_probe_at = Some(Instant::now());
             self.status = Some(format!(
                 "add or drag image files into {}",
                 self.config.input_dir.display()
@@ -2200,6 +2296,10 @@ impl App {
 
         self.glyphs = glyphs;
         self.selected = self.selected.min(self.glyphs.len().saturating_sub(1));
+        self.live_glyph_source_count = Some(self.glyphs.len());
+        self.live_glyph_source_probe_fingerprint =
+            Some(glyph_source_fingerprint(&self.config.input_dir)?);
+        self.live_glyph_source_probe_at = Some(Instant::now());
         self.status = Some(format!(
             "loaded {} glyph{} from {}",
             self.glyphs.len(),
@@ -2207,6 +2307,35 @@ impl App {
             self.config.input_dir.display()
         ));
         Ok(())
+    }
+
+    fn refresh_live_glyph_source_count(&mut self) {
+        if self.active_project.is_none() {
+            self.live_glyph_source_count = None;
+            self.live_glyph_source_probe_fingerprint = None;
+            self.live_glyph_source_probe_at = Some(Instant::now());
+            return;
+        }
+
+        let now = Instant::now();
+        if self.live_glyph_source_probe_at.is_some_and(|at| {
+            now.duration_since(at) < Duration::from_millis(GLYPH_SOURCE_COUNT_REFRESH_MS)
+        }) {
+            return;
+        }
+        self.live_glyph_source_probe_at = Some(now);
+
+        let Ok(next_fingerprint) = glyph_source_fingerprint(&self.config.input_dir) else {
+            return;
+        };
+
+        if self.live_glyph_source_probe_fingerprint == Some(next_fingerprint) {
+            return;
+        }
+
+        self.live_glyph_source_probe_fingerprint = Some(next_fingerprint);
+        self.live_glyph_source_count =
+            Some(count_supported_sources(&self.config.input_dir).unwrap_or(self.glyphs.len()));
     }
 
     fn import_dropped_images(&mut self, payload: &str) -> Result<()> {
@@ -2626,11 +2755,15 @@ impl App {
             return "none".to_string();
         };
 
-        let folder = active_project
-            .parent()
-            .unwrap_or_else(|| Path::new("."))
-            .display();
-        format!("{} ({folder})", self.config.font_name)
+        if self.verbose_paths {
+            let folder = active_project
+                .parent()
+                .unwrap_or_else(|| Path::new("."))
+                .display();
+            format!("{} ({folder})", self.config.font_name)
+        } else {
+            self.config.font_name.clone()
+        }
     }
 
     fn active_project_switch_label(&self) -> String {
@@ -3000,6 +3133,19 @@ fn handle_key_event(app: &mut App, key: KeyEvent) -> Result<()> {
     if app.first_install_notice_open {
         return handle_first_install_notice_key(app, code);
     }
+    if matches!(code, KeyCode::Char('v') | KeyCode::Char('V')) && !app.welcome_input_editing {
+        app.verbose_paths = !app.verbose_paths;
+        app.status = Some(format!(
+            "verbose paths {}",
+            if app.verbose_paths {
+                "enabled"
+            } else {
+                "disabled"
+            }
+        ));
+        tui_debug_log("handle_key_event.exit_global", app_debug_state(app));
+        return Ok(());
+    }
     let is_global_panel_jump = matches!(code, KeyCode::Tab | KeyCode::BackTab)
         || (matches!(code, KeyCode::Char('2')) && !app.welcome_input_editing);
 
@@ -3278,6 +3424,8 @@ fn draw_ui(frame: &mut Frame, app: &App) {
         Span::raw("jump panel  "),
         Span::styled(" R ", Style::default().fg(accent)),
         Span::raw("rescan  "),
+        Span::styled(" v ", Style::default().fg(accent)),
+        Span::raw("verbose paths  "),
         Span::styled(" b ", Style::default().fg(accent)),
         Span::raw(if app.current_project_is_built() {
             "rebuild  "
@@ -3297,6 +3445,8 @@ fn draw_ui(frame: &mut Frame, app: &App) {
             "stop typing  "
         } else if app.delete_project_confirm_selection.is_some() {
             "confirm  "
+        } else if app.welcome_focus == WelcomeFocus::VerbosePathsToggle {
+            "toggle verbose paths  "
         } else if app.welcome_focus == WelcomeFocus::ProjectList {
             "open project  "
         } else if app.welcome_focus == WelcomeFocus::BuildButton {
@@ -3806,7 +3956,17 @@ fn draw_glyphs_view(
             Line::from(vec![
                 Span::raw("  File: "),
                 Span::styled(
-                    active.glyph.source_path.to_string_lossy().to_string(),
+                    if app.verbose_paths {
+                        active.glyph.source_path.to_string_lossy().to_string()
+                    } else {
+                        active
+                            .glyph
+                            .source_path
+                            .file_name()
+                            .and_then(|name| name.to_str())
+                            .map(ToOwned::to_owned)
+                            .unwrap_or_else(|| active.glyph.glyph_name.clone())
+                    },
                     Style::default().fg(Color::White),
                 ),
             ]),
@@ -3930,6 +4090,53 @@ fn looks_like_path_payload(payload: &str) -> bool {
         return false;
     }
     trimmed.contains('/') || trimmed.starts_with("file://") || trimmed.contains('\\')
+}
+
+fn count_supported_sources(input_dir: &Path) -> Result<usize> {
+    if !input_dir.exists() {
+        return Ok(0);
+    }
+
+    let mut count = 0usize;
+    for entry in WalkDir::new(input_dir).follow_links(true) {
+        let entry =
+            entry.with_context(|| format!("failed while scanning {}", input_dir.display()))?;
+        if entry.file_type().is_file() && is_supported_source(entry.path()) {
+            count += 1;
+        }
+    }
+
+    Ok(count)
+}
+
+fn glyph_source_fingerprint(input_dir: &Path) -> Result<u64> {
+    if !input_dir.exists() {
+        return Ok(0);
+    }
+
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    for entry in WalkDir::new(input_dir).follow_links(true) {
+        let entry =
+            entry.with_context(|| format!("failed while scanning {}", input_dir.display()))?;
+        if !entry.file_type().is_file() || !is_supported_source(entry.path()) {
+            continue;
+        }
+
+        entry.path().hash(&mut hasher);
+        let metadata = entry
+            .metadata()
+            .with_context(|| format!("failed to read metadata for {}", entry.path().display()))?;
+        metadata.len().hash(&mut hasher);
+        let modified = metadata
+            .modified()
+            .ok()
+            .and_then(|time| time.duration_since(UNIX_EPOCH).ok())
+            .map(|value| value.as_nanos())
+            .unwrap_or_default();
+        modified.hash(&mut hasher);
+    }
+
+    Ok(hasher.finish())
 }
 
 fn collect_dropped_paths(payload: &str) -> Vec<PathBuf> {
@@ -4440,6 +4647,121 @@ mod tests {
 
         handle_key(&mut app, KeyCode::Char('q')).expect("quit should work once popup is closed");
         assert!(app.quit, "quit should resume after popup dismissal");
+
+        fs::remove_dir_all(project_dir).expect("temp dir is removed");
+    }
+
+    #[test]
+    fn verbose_paths_toggle_switches_with_v_shortcut() {
+        let project_dir = make_temp_dir("verbose-toggle");
+        let manifest_path = project_dir.join("petiglyph.toml");
+        let config = RuntimeConfig {
+            project_dir: project_dir.clone(),
+            project_id: "test-verbose-toggle".to_string(),
+            input_dir: project_dir.join("icons"),
+            out_dir: project_dir.join("build"),
+            font_name: "Petiglyph".to_string(),
+            glyph_size: 8,
+            base_threshold: 64,
+            threshold_overrides: BTreeMap::new(),
+            codepoint_start: 0x10_0000,
+        };
+
+        let mut app = App::new(manifest_path, config);
+        assert!(!app.verbose_paths, "verbose paths should default to off");
+
+        handle_key(&mut app, KeyCode::Char('v')).expect("v should toggle verbose paths on");
+        assert!(app.verbose_paths, "verbose paths should toggle on");
+
+        handle_key(&mut app, KeyCode::Char('V')).expect("V should toggle verbose paths off");
+        assert!(!app.verbose_paths, "verbose paths should toggle off");
+
+        fs::remove_dir_all(project_dir).expect("temp dir is removed");
+    }
+
+    #[test]
+    fn verbose_paths_toggle_does_not_fire_while_typing_project_name() {
+        let project_dir = make_temp_dir("verbose-toggle-input");
+        let manifest_path = project_dir.join("petiglyph.toml");
+        let config = RuntimeConfig {
+            project_dir: project_dir.clone(),
+            project_id: "test-verbose-toggle-input".to_string(),
+            input_dir: project_dir.join("icons"),
+            out_dir: project_dir.join("build"),
+            font_name: "Petiglyph".to_string(),
+            glyph_size: 8,
+            base_threshold: 64,
+            threshold_overrides: BTreeMap::new(),
+            codepoint_start: 0x10_0000,
+        };
+
+        let mut app = App::new(manifest_path, config);
+        app.view = AppView::Welcome;
+        app.welcome_focus = super::WelcomeFocus::CreateInput;
+        app.welcome_input_editing = true;
+
+        handle_key(&mut app, KeyCode::Char('v')).expect("typing should accept v");
+        assert!(
+            !app.verbose_paths,
+            "verbose paths should not toggle during project-name typing"
+        );
+        assert_eq!(
+            app.create_input.value(),
+            "v",
+            "v should be inserted into input"
+        );
+
+        fs::remove_dir_all(project_dir).expect("temp dir is removed");
+    }
+
+    #[test]
+    fn verbose_paths_toggle_is_focusable_with_arrows_and_enter() {
+        let project_dir = make_temp_dir("verbose-toggle-focus");
+        let manifest_path = project_dir.join("petiglyph.toml");
+        let config = RuntimeConfig {
+            project_dir: project_dir.clone(),
+            project_id: "test-verbose-toggle-focus".to_string(),
+            input_dir: project_dir.join("icons"),
+            out_dir: project_dir.join("build"),
+            font_name: "Petiglyph".to_string(),
+            glyph_size: 8,
+            base_threshold: 64,
+            threshold_overrides: BTreeMap::new(),
+            codepoint_start: 0x10_0000,
+        };
+
+        let mut app = App::new(manifest_path, config);
+        app.view = AppView::Welcome;
+        assert!(!app.verbose_paths, "verbose paths should start off");
+
+        for focus in [
+            super::WelcomeFocus::BuildButton,
+            super::WelcomeFocus::InstallButton,
+            super::WelcomeFocus::DeleteProjectButton,
+        ] {
+            app.welcome_focus = focus;
+            handle_key(&mut app, KeyCode::Up)
+                .expect("up should move from current-project actions to settings");
+            assert_eq!(
+                app.welcome_focus,
+                super::WelcomeFocus::VerbosePathsToggle,
+                "settings toggle should be focusable from current-project actions"
+            );
+            handle_key(&mut app, KeyCode::Down)
+                .expect("down from settings should return to install action");
+            assert_eq!(
+                app.welcome_focus,
+                super::WelcomeFocus::InstallButton,
+                "down from settings should land on install (not delete)"
+            );
+        }
+
+        app.welcome_focus = super::WelcomeFocus::VerbosePathsToggle;
+        handle_key(&mut app, KeyCode::Enter).expect("enter should toggle settings row");
+        assert!(
+            app.verbose_paths,
+            "enter on settings should toggle verbose paths"
+        );
 
         fs::remove_dir_all(project_dir).expect("temp dir is removed");
     }
