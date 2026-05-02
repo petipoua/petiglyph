@@ -2480,7 +2480,7 @@ fn build_and_install(
     manifest_path: PathBuf,
     launch_overrides: TuiLaunchOverrides,
 ) -> Result<InstallTaskOutput> {
-    let mut config = load_runtime_config(
+    let config = load_runtime_config(
         &manifest_path,
         launch_overrides.input_dir,
         None,
@@ -2491,7 +2491,7 @@ fn build_and_install(
     if config.glyph_size == 0 {
         bail!("glyph_size must be > 0");
     }
-    config.font_name =
+    let install_font_name =
         effective_font_name(&manifest_path, &config.font_name, DEFAULT_INSTALL_NAME_MODE)?;
 
     let summary = build_outputs(&config)?;
@@ -2499,7 +2499,7 @@ fn build_and_install(
         .with_context(|| format!("failed to read {}", summary.sample_path.display()))?;
     let installed = install_built_font(
         &manifest_path,
-        &config.font_name,
+        &install_font_name,
         &config.project_id,
         &summary.ttf_path,
         summary.glyph_count,
@@ -3917,9 +3917,21 @@ fn drag_images_here_lines(available_width: u16, accent: Color) -> Vec<Line<'stat
         ]),
         Line::from(vec![
             Span::raw("  "),
+            Span::styled(empty.clone(), border_style),
+        ]),
+        Line::from(vec![
+            Span::raw("  "),
+            Span::styled(empty.clone(), border_style),
+        ]),
+        Line::from(vec![
+            Span::raw("  "),
             Span::styled("|", border_style),
             Span::styled(centered_label, label_style),
             Span::styled("|", border_style),
+        ]),
+        Line::from(vec![
+            Span::raw("  "),
+            Span::styled(empty.clone(), border_style),
         ]),
         Line::from(vec![Span::raw("  "), Span::styled(empty, border_style)]),
         Line::from(vec![
