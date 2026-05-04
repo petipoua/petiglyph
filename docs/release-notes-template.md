@@ -21,6 +21,9 @@
 
 Commands with JSON support:
 
+- `list`
+- `delete`
+- `set-threshold`
 - `build`
 - `sample`
 - `install-font`

@@ -112,6 +112,75 @@ fn make_fake_fc_cache_path(workspace: &Path) -> String {
 }
 
 #[test]
+fn cli_list_json_returns_projects_and_fonts() {
+    let workspace = make_temp_dir("list-json");
+    let home = workspace.join("home");
+    fs::create_dir_all(&home).expect("home dir is created");
+
+    let (project_dir, manifest_path) = create_project_with_icon(&workspace, "list-demo");
+
+    let output = run_petiglyph(&workspace, &["list", "--json"], Some(&home), None);
+    assert!(output.status.success(), "list --json should succeed");
+
+    let payload = parse_json_stdout(&output);
+    assert_api_envelope(&payload, "list", true);
+
+    let projects = payload["data"]["projects"].as_array().expect("projects array");
+    assert_eq!(projects.len(), 1, "should detect the created project");
+    assert_eq!(
+        projects[0]["manifest_path"].as_str(),
+        Some(manifest_path.to_string_lossy().as_ref()),
+        "manifest path should match"
+    );
+    assert!(payload["data"]["installed_fonts"].as_array().is_some());
+
+    fs::remove_dir_all(project_dir).expect("project dir is removed");
+    fs::remove_dir_all(workspace).expect("temp dir is removed");
+}
+
+#[test]
+fn cli_delete_json_removes_project() {
+    let workspace = make_temp_dir("delete-json");
+    let (project_dir, manifest_path) = create_project_with_icon(&workspace, "delete-demo");
+
+    assert!(project_dir.exists(), "project dir should exist before delete");
+
+    let output = run_petiglyph(&workspace, &["delete", "--json", "--manifest", manifest_path.to_str().unwrap()], None, None);
+    assert!(output.status.success(), "delete --json should succeed");
+
+    let payload = parse_json_stdout(&output);
+    assert_api_envelope(&payload, "delete", true);
+    assert_eq!(
+        payload["data"]["deleted_dir"].as_str(),
+        Some(project_dir.to_string_lossy().as_ref())
+    );
+
+    assert!(!project_dir.exists(), "project dir should be deleted");
+
+    fs::remove_dir_all(workspace).expect("temp dir is removed");
+}
+
+#[test]
+fn cli_set_threshold_json_updates_manifest() {
+    let workspace = make_temp_dir("set-threshold-json");
+    let (project_dir, manifest_path) = create_project_with_icon(&workspace, "threshold-demo");
+
+    let output = run_petiglyph(&project_dir, &["set-threshold", "alpha.png", "128", "--json"], None, None);
+    assert!(output.status.success(), "set-threshold --json should succeed");
+
+    let payload = parse_json_stdout(&output);
+    assert_api_envelope(&payload, "set-threshold", true);
+    assert_eq!(payload["data"]["image_name"].as_str(), Some("alpha.png"));
+    assert_eq!(payload["data"]["threshold"].as_u64(), Some(128));
+
+    let manifest_content = fs::read_to_string(&manifest_path).expect("manifest should be readable");
+    assert!(manifest_content.contains("\"alpha.png\" = 128"), "manifest should contain the override");
+
+    fs::remove_dir_all(project_dir).expect("project dir is removed");
+    fs::remove_dir_all(workspace).expect("temp dir is removed");
+}
+
+#[test]
 fn cli_no_subcommand_errors_without_manifest() {
     let workspace = make_temp_dir("no-manifest");
 

@@ -12,8 +12,9 @@ use crate::install::{
     effective_font_name, install_built_font, uninstall_project_font, uninstall_tool_state,
 };
 use crate::project::{
-    RuntimeConfig, create_project, discover_project_manifests, format_codepoint,
-    load_runtime_config, manifest_path_from_option,
+    RuntimeConfig, create_project, delete_project_for_manifest, discover_project_manifests,
+    format_codepoint, load_runtime_config, manifest_path_from_option, read_manifest,
+    write_manifest,
 };
 use crate::tui::{tui, tui_workspace};
 
@@ -39,6 +40,34 @@ enum CliCommand {
         /// Skip the post-create prompt and do not launch the TUI.
         #[arg(long)]
         no_launch: bool,
+    },
+    /// List projects in the workspace and globally installed petiglyph fonts.
+    List {
+        /// Emit machine-readable JSON to stdout.
+        #[arg(long)]
+        json: bool,
+    },
+    /// Delete a petiglyph project directory.
+    Delete {
+        /// Path to the manifest file. When omitted, auto-detect from the current directory or one level below.
+        #[arg(short, long)]
+        manifest: Option<PathBuf>,
+        /// Emit machine-readable JSON to stdout.
+        #[arg(long)]
+        json: bool,
+    },
+    /// Set a custom monochrome threshold override for a specific glyph source image.
+    SetThreshold {
+        /// The filename of the source image in the icons folder (e.g., 'alpha.png').
+        image_name: String,
+        /// The threshold value to set (0-255).
+        threshold: u8,
+        /// Path to the manifest file. When omitted, auto-detect from the current directory or one level below.
+        #[arg(short, long)]
+        manifest: Option<PathBuf>,
+        /// Emit machine-readable JSON to stdout.
+        #[arg(long)]
+        json: bool,
     },
     /// Launch the petiglyph TUI for a project.
     Tui {
@@ -185,6 +214,38 @@ struct ApiErrorPayload {
 }
 
 #[derive(Debug, Serialize)]
+struct ListCommandData {
+    workspace_dir: String,
+    projects: Vec<ListProjectData>,
+    installed_fonts: Vec<ListInstalledFontData>,
+}
+
+#[derive(Debug, Serialize)]
+struct ListProjectData {
+    manifest_path: String,
+    font_name: String,
+}
+
+#[derive(Debug, Serialize)]
+struct ListInstalledFontData {
+    file_name: String,
+    path: String,
+}
+
+#[derive(Debug, Serialize)]
+struct DeleteCommandData {
+    manifest: String,
+    deleted_dir: String,
+}
+
+#[derive(Debug, Serialize)]
+struct SetThresholdCommandData {
+    manifest: String,
+    image_name: String,
+    threshold: u8,
+}
+
+#[derive(Debug, Serialize)]
 pub(crate) struct BuildCommandData {
     manifest: String,
     input_dir: String,
@@ -315,6 +376,26 @@ fn run_cli(cli: Cli) -> std::result::Result<(), CliRunError> {
         Some(CliCommand::Create { name, no_launch }) => {
             create_project(&name, no_launch).map_err(CliRunError::Plain)
         }
+        Some(CliCommand::List { json }) => {
+            run_automation_command("list", json, list_command, print_list_result)
+        }
+        Some(CliCommand::Delete { manifest, json }) => run_automation_command(
+            "delete",
+            json,
+            || delete_command(manifest_path_from_option(manifest)?),
+            print_delete_result,
+        ),
+        Some(CliCommand::SetThreshold {
+            image_name,
+            threshold,
+            manifest,
+            json,
+        }) => run_automation_command(
+            "set-threshold",
+            json,
+            || set_threshold_command(manifest_path_from_option(manifest)?, &image_name, threshold),
+            print_set_threshold_result,
+        ),
         Some(CliCommand::Tui {
             manifest,
             input_dir,
@@ -554,6 +635,41 @@ fn build_command_data(
     }
 }
 
+fn print_list_result(data: &ListCommandData) {
+    println!("workspace: {}", data.workspace_dir);
+    println!();
+    println!("projects:");
+    if data.projects.is_empty() {
+        println!("  (none found)");
+    } else {
+        for project in &data.projects {
+            println!("  - {} ({})", project.font_name, project.manifest_path);
+        }
+    }
+    println!();
+    println!("installed fonts:");
+    if data.installed_fonts.is_empty() {
+        println!("  (none found)");
+    } else {
+        for font in &data.installed_fonts {
+            println!("  - {} ({})", font.file_name, font.path);
+        }
+    }
+}
+
+fn print_delete_result(data: &DeleteCommandData) {
+    println!("project deleted");
+    println!("  manifest: {}", data.manifest);
+    println!("  directory: {}", data.deleted_dir);
+}
+
+fn print_set_threshold_result(data: &SetThresholdCommandData) {
+    println!("threshold updated");
+    println!("  manifest: {}", data.manifest);
+    println!("  image: {}", data.image_name);
+    println!("  threshold: {}", data.threshold);
+}
+
 fn print_build_result(data: &BuildCommandData) {
     println!("build complete");
     println!("  manifest: {}", data.manifest);
@@ -668,6 +784,79 @@ fn print_doctor_result(data: &DoctorReport) {
             finding.severity, finding.status, finding.code, finding.message
         );
     }
+}
+
+fn list_command() -> Result<ListCommandData> {
+    let current_dir = std::env::current_dir().context("failed to read current directory")?;
+    let manifests = discover_project_manifests(&current_dir)?;
+    let mut projects = Vec::new();
+    for manifest_path in manifests {
+        if let Ok(manifest) = read_manifest(&manifest_path) {
+            projects.push(ListProjectData {
+                manifest_path: manifest_path.display().to_string(),
+                font_name: manifest.font_name,
+            });
+        }
+    }
+
+    let mut installed_fonts = Vec::new();
+    if let Ok(install_dir) = crate::install::managed_install_dir() {
+        if install_dir.is_dir() {
+            if let Ok(entries) = std::fs::read_dir(&install_dir) {
+                for entry in entries.flatten() {
+                    let path = entry.path();
+                    let is_ttf = path
+                        .extension()
+                        .and_then(|ext| ext.to_str())
+                        .map(|ext| ext.eq_ignore_ascii_case("ttf"))
+                        .unwrap_or(false);
+                    if path.is_file() && is_ttf {
+                        let file_name = path
+                            .file_name()
+                            .and_then(|n| n.to_str())
+                            .unwrap_or("unknown.ttf")
+                            .to_string();
+                        installed_fonts.push(ListInstalledFontData {
+                            file_name,
+                            path: path.display().to_string(),
+                        });
+                    }
+                }
+            }
+            installed_fonts.sort_by(|a, b| a.file_name.cmp(&b.file_name));
+        }
+    }
+
+    Ok(ListCommandData {
+        workspace_dir: current_dir.display().to_string(),
+        projects,
+        installed_fonts,
+    })
+}
+
+fn delete_command(manifest_path: PathBuf) -> Result<DeleteCommandData> {
+    let project_dir = delete_project_for_manifest(&manifest_path)?;
+    Ok(DeleteCommandData {
+        manifest: manifest_path.display().to_string(),
+        deleted_dir: project_dir.display().to_string(),
+    })
+}
+
+fn set_threshold_command(
+    manifest_path: PathBuf,
+    image_name: &str,
+    threshold: u8,
+) -> Result<SetThresholdCommandData> {
+    let mut manifest = read_manifest(&manifest_path)?;
+    manifest
+        .threshold_overrides
+        .insert(image_name.to_string(), threshold);
+    write_manifest(&manifest_path, &manifest)?;
+    Ok(SetThresholdCommandData {
+        manifest: manifest_path.display().to_string(),
+        image_name: image_name.to_string(),
+        threshold,
+    })
 }
 
 fn build_font(
