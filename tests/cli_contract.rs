@@ -374,15 +374,15 @@ fn cli_tool_uninstall_json_is_idempotent() {
     let home = workspace.join("home");
     fs::create_dir_all(&home).expect("home dir is created");
 
-    let output = run_petiglyph(&workspace, &["uninstall", "--json"], Some(&home), None);
-    assert!(output.status.success(), "uninstall --json should succeed");
+    let output = run_petiglyph(&workspace, &["nuke-everything", "--json"], Some(&home), None);
+    assert!(output.status.success(), "nuke-everything --json should succeed");
     assert!(
         output.stderr.is_empty(),
-        "uninstall --json should keep stderr clean on success"
+        "nuke-everything --json should keep stderr clean on success"
     );
 
     let payload = parse_json_stdout(&output);
-    assert_api_envelope(&payload, "uninstall", true);
+    assert_api_envelope(&payload, "nuke-everything", true);
     assert_eq!(payload["data"]["outcome"].as_str(), Some("already_absent"));
     assert_eq!(payload["data"]["removed_ttf_count"].as_u64(), Some(0));
     assert_eq!(payload["data"]["removed_metadata_count"].as_u64(), Some(0));
@@ -416,21 +416,21 @@ fn cli_tool_uninstall_json_removes_managed_install_state() {
 
     let uninstall = run_petiglyph(
         &workspace,
-        &["uninstall", "--json"],
+        &["nuke-everything", "--json"],
         Some(&home),
         Some(&fake_path),
     );
     assert!(
         uninstall.status.success(),
-        "uninstall --json should succeed"
+        "nuke-everything --json should succeed"
     );
     assert!(
         uninstall.stderr.is_empty(),
-        "uninstall --json should keep stderr clean on success"
+        "nuke-everything --json should keep stderr clean on success"
     );
 
     let payload = parse_json_stdout(&uninstall);
-    assert_api_envelope(&payload, "uninstall", true);
+    assert_api_envelope(&payload, "nuke-everything", true);
     assert_eq!(payload["data"]["outcome"].as_str(), Some("removed"));
     assert!(
         payload["data"]["removed_ttf_count"].as_u64().unwrap_or(0) >= 1,
