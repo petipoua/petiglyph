@@ -69,6 +69,17 @@ enum CliCommand {
         #[arg(long)]
         json: bool,
     },
+    /// Clear a custom monochrome threshold override for a specific glyph source image.
+    ClearThreshold {
+        /// The filename of the source image in the icons folder (e.g., 'alpha.png').
+        image_name: String,
+        /// Path to the manifest file. When omitted, auto-detect from the current directory or one level below.
+        #[arg(short, long)]
+        manifest: Option<PathBuf>,
+        /// Emit machine-readable JSON to stdout.
+        #[arg(long)]
+        json: bool,
+    },
     /// Launch the petiglyph TUI for a project.
     Tui {
         /// Path to the manifest file. When omitted, auto-detect from the current directory or one level below.
@@ -246,6 +257,13 @@ struct SetThresholdCommandData {
 }
 
 #[derive(Debug, Serialize)]
+struct ClearThresholdCommandData {
+    manifest: String,
+    image_name: String,
+    was_present: bool,
+}
+
+#[derive(Debug, Serialize)]
 pub(crate) struct BuildCommandData {
     manifest: String,
     input_dir: String,
@@ -395,6 +413,16 @@ fn run_cli(cli: Cli) -> std::result::Result<(), CliRunError> {
             json,
             || set_threshold_command(manifest_path_from_option(manifest)?, &image_name, threshold),
             print_set_threshold_result,
+        ),
+        Some(CliCommand::ClearThreshold {
+            image_name,
+            manifest,
+            json,
+        }) => run_automation_command(
+            "clear-threshold",
+            json,
+            || clear_threshold_command(manifest_path_from_option(manifest)?, &image_name),
+            print_clear_threshold_result,
         ),
         Some(CliCommand::Tui {
             manifest,
@@ -670,6 +698,16 @@ fn print_set_threshold_result(data: &SetThresholdCommandData) {
     println!("  threshold: {}", data.threshold);
 }
 
+fn print_clear_threshold_result(data: &ClearThresholdCommandData) {
+    if data.was_present {
+        println!("threshold cleared");
+    } else {
+        println!("no threshold override found to clear");
+    }
+    println!("  manifest: {}", data.manifest);
+    println!("  image: {}", data.image_name);
+}
+
 fn print_build_result(data: &BuildCommandData) {
     println!("build complete");
     println!("  manifest: {}", data.manifest);
@@ -856,6 +894,22 @@ fn set_threshold_command(
         manifest: manifest_path.display().to_string(),
         image_name: image_name.to_string(),
         threshold,
+    })
+}
+
+fn clear_threshold_command(
+    manifest_path: PathBuf,
+    image_name: &str,
+) -> Result<ClearThresholdCommandData> {
+    let mut manifest = read_manifest(&manifest_path)?;
+    let was_present = manifest.threshold_overrides.remove(image_name).is_some();
+    if was_present {
+        write_manifest(&manifest_path, &manifest)?;
+    }
+    Ok(ClearThresholdCommandData {
+        manifest: manifest_path.display().to_string(),
+        image_name: image_name.to_string(),
+        was_present,
     })
 }
 

@@ -522,34 +522,62 @@ dismiss_delete_project_confirmation_if_open() {
   fi
 }
 
+delete_active_project() {
+  local session="$1"
+  local prefix="$2"
+  local timeout="$3"
+  local idx
+
+  # 5 'up' presses normalizes focus to VerbosePathsToggle
+  for idx in 1 2 3 4 5; do
+    send_key "$session" "up" "$prefix: normalize to top ($idx/5)"
+  done
+  
+  send_key "$session" "down" "$prefix: move to install button"
+  send_key "$session" "right" "$prefix: move to delete project button"
+  send_key "$session" "enter" "$prefix: open delete confirmation"
+  
+  # Navigate the slot puzzle: Right, Down, Right, Right
+  send_key "$session" "right" "$prefix: puzzle right 1"
+  send_key "$session" "down" "$prefix: puzzle down"
+  send_key "$session" "right" "$prefix: puzzle right 2"
+  send_key "$session" "right" "$prefix: puzzle right 3"
+  send_key "$session" "enter" "$prefix: confirm delete"
+  
+  wait_session_idle "$session" 300 "$timeout"
+  wait_for_session_background_tasks_done "$session" "$timeout"
+}
+
 focus_installed_fonts_list() {
   local session="$1"
   local prefix="$2"
-  local project_count="$3"
-  local down_steps=$((project_count + 2))
+  local target_font_index="$3" # 1-based index (1 for the first font in the list)
   local idx
 
-  # Traverse vertically to avoid accidentally entering the delete-project slot puzzle.
-  # Normalize to project list first, then take exact steps into installed-font list.
+  # 5 'up' presses normalizes focus to VerbosePathsToggle
   for idx in 1 2 3 4 5; do
-    send_key "$session" "up" "$prefix: normalize to project list ($idx/5)"
+    send_key "$session" "up" "$prefix: normalize to top ($idx/5)"
   done
-  for ((idx = 1; idx <= down_steps; idx++)); do
-    send_key "$session" "down" "$prefix: move toward installed fonts list ($idx/$down_steps)"
+  
+  # From VerbosePathsToggle, 'down' goes to InstallButton if there is an active project.
+  send_key "$session" "down" "$prefix: move to install button"
+  # From InstallButton, 'down' goes to InstalledFontList (index 0).
+  send_key "$session" "down" "$prefix: move to installed font list"
+
+  # Move down to the target index (target_font_index is 1-based, we are at 1).
+  for ((idx = 1; idx < target_font_index; idx++)); do
+    send_key "$session" "down" "$prefix: move down in installed fonts list"
   done
 }
 
 focus_create_input_for_single_project_workspace() {
   local session="$1"
   local prefix="$2"
-  # Journey 7 has exactly one project at this point.
-  # Normalize to project list, then one step down reaches create input.
-  send_key "$session" "up" "$prefix: normalize to project list (1/5)"
-  send_key "$session" "up" "$prefix: normalize to project list (2/5)"
-  send_key "$session" "up" "$prefix: normalize to project list (3/5)"
-  send_key "$session" "up" "$prefix: normalize to project list (4/5)"
-  send_key "$session" "up" "$prefix: normalize to project list (5/5)"
-  send_key "$session" "down" "$prefix: focus create input"
+  # From the Install button, move left 4 times to guarantee reaching Create input
+  send_key "$session" "left" "$prefix: move left toward create input (1/4)"
+  send_key "$session" "left" "$prefix: move left toward create input (2/4)"
+  send_key "$session" "left" "$prefix: move left toward create input (3/4)"
+  send_key "$session" "left" "$prefix: move left toward create input (4/4)"
 }
 
 wait_for_session_background_tasks_done() {
@@ -600,8 +628,8 @@ select_jpg_fixture() {
 assert_current_project_outputs_built() {
   local session="$1"
   local timeout="$2"
-  wait_for_session_contains "$session" "TTF: built:" "$timeout"
-  wait_for_session_not_contains "$session" "TTF: pending:" "$timeout"
+  wait_for_session_contains "$session" "TTF: built" "$timeout"
+  wait_for_session_not_contains "$session" "TTF: not built yet" "$timeout"
 }
 
 create_project_with_icon() {
@@ -933,7 +961,7 @@ journey_multi_project_lifecycle() {
   wait_for_session_background_tasks_done "$session" "$timeout_ms"
   send_text "$session" "1" "project two: return to home view"
 
-  focus_installed_fonts_list "$session" "project two" 2
+  focus_installed_fonts_list "$session" "project two" 1
   send_key "$session" "enter" "project two: uninstall selected font from list"
   dismiss_delete_project_confirmation_if_open "$session"
   wait_for_matching_file_count_eq "$install_dir" "*.ttf" 1 "$timeout_ms"
@@ -951,6 +979,13 @@ journey_multi_project_lifecycle() {
   wait_for_session_background_tasks_done "$session" "$timeout_ms"
   ttf_count_two="$(count_matching_files "$install_dir" "*.ttf")"
 
+  delete_active_project "$session" "project two" "$timeout_ms"
+  
+  # After deleting project two, project one remains. The focus is on the project list.
+  # Press enter to open project one.
+  send_key "$session" "enter" "project one: open remaining project"
+  delete_active_project "$session" "project one" "$timeout_ms"
+
   send_text "$session" "q" "quit journey 7 session"
   wait_exit "$session"
   session_cleanup "$session"
@@ -962,6 +997,15 @@ journey_multi_project_lifecycle() {
   }
   (( ttf_count_two >= 2 )) || {
     echo "Expected at least two installed TTFs after project two final install (got $ttf_count_two)" >&2
+    return 1
+  }
+
+  [[ ! -d "$project_two_dir" ]] || {
+    echo "Expected project two directory to be deleted: $project_two_dir" >&2
+    return 1
+  }
+  [[ ! -d "$project_one_dir" ]] || {
+    echo "Expected project one directory to be deleted: $project_one_dir" >&2
     return 1
   }
 

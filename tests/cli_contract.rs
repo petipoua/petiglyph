@@ -181,6 +181,30 @@ fn cli_set_threshold_json_updates_manifest() {
 }
 
 #[test]
+fn cli_clear_threshold_json_updates_manifest() {
+    let workspace = make_temp_dir("clear-threshold-json");
+    let (project_dir, manifest_path) = create_project_with_icon(&workspace, "clear-threshold-demo");
+
+    // First set the threshold
+    run_petiglyph(&project_dir, &["set-threshold", "alpha.png", "128", "--json"], None, None);
+
+    // Then clear it
+    let output = run_petiglyph(&project_dir, &["clear-threshold", "alpha.png", "--json"], None, None);
+    assert!(output.status.success(), "clear-threshold --json should succeed");
+
+    let payload = parse_json_stdout(&output);
+    assert_api_envelope(&payload, "clear-threshold", true);
+    assert_eq!(payload["data"]["image_name"].as_str(), Some("alpha.png"));
+    assert_eq!(payload["data"]["was_present"].as_bool(), Some(true));
+
+    let manifest_content = fs::read_to_string(&manifest_path).expect("manifest should be readable");
+    assert!(!manifest_content.contains("\"alpha.png\" = 128"), "manifest should no longer contain the override");
+
+    fs::remove_dir_all(project_dir).expect("project dir is removed");
+    fs::remove_dir_all(workspace).expect("temp dir is removed");
+}
+
+#[test]
 fn cli_no_subcommand_errors_without_manifest() {
     let workspace = make_temp_dir("no-manifest");
 
