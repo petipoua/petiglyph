@@ -663,91 +663,135 @@ fn build_command_data(
     }
 }
 
+struct CliColors {
+    bold_green: &'static str,
+    bold_red: &'static str,
+    yellow: &'static str,
+    red: &'static str,
+    green: &'static str,
+    cyan: &'static str,
+    bold: &'static str,
+    reset: &'static str,
+}
+
+impl CliColors {
+    fn new() -> Self {
+        if io::stdout().is_terminal() {
+            Self {
+                bold_green: "\x1b[1;32m",
+                bold_red: "\x1b[1;31m",
+                yellow: "\x1b[33m",
+                red: "\x1b[31m",
+                green: "\x1b[32m",
+                cyan: "\x1b[36m",
+                bold: "\x1b[1m",
+                reset: "\x1b[0m",
+            }
+        } else {
+            Self {
+                bold_green: "",
+                bold_red: "",
+                yellow: "",
+                red: "",
+                green: "",
+                cyan: "",
+                bold: "",
+                reset: "",
+            }
+        }
+    }
+}
+
 fn print_list_result(data: &ListCommandData) {
-    println!("workspace: {}", data.workspace_dir);
+    let colors = CliColors::new();
+    println!("{}workspace:{}\n  {}", colors.cyan, colors.reset, data.workspace_dir);
     println!();
-    println!("projects:");
+    println!("{}projects:{}", colors.cyan, colors.reset);
     if data.projects.is_empty() {
         println!("  (none found)");
     } else {
         for project in &data.projects {
-            println!("  - {} ({})", project.font_name, project.manifest_path);
+            println!("  - {}{}{} ({})", colors.bold, project.font_name, colors.reset, project.manifest_path);
         }
     }
     println!();
-    println!("installed fonts:");
+    println!("{}installed fonts:{}", colors.cyan, colors.reset);
     if data.installed_fonts.is_empty() {
         println!("  (none found)");
     } else {
         for font in &data.installed_fonts {
-            println!("  - {} ({})", font.file_name, font.path);
+            println!("  - {}{}{} ({})", colors.bold, font.file_name, colors.reset, font.path);
         }
     }
 }
 
 fn print_delete_result(data: &DeleteCommandData) {
-    println!("project deleted");
-    println!("  manifest: {}", data.manifest);
+    let colors = CliColors::new();
+    println!("petiglyph: {}project deleted{}", colors.bold_red, colors.reset);
+    println!("  manifest:  {}", data.manifest);
     println!("  directory: {}", data.deleted_dir);
 }
 
 fn print_set_threshold_result(data: &SetThresholdCommandData) {
-    println!("threshold updated");
-    println!("  manifest: {}", data.manifest);
-    println!("  image: {}", data.image_name);
-    println!("  threshold: {}", data.threshold);
+    let colors = CliColors::new();
+    println!("petiglyph: {}threshold updated{}", colors.bold_green, colors.reset);
+    println!("  manifest:  {}", data.manifest);
+    println!("  image:     {}{}{}", colors.bold, data.image_name, colors.reset);
+    println!("  threshold: {}{}{}", colors.bold, data.threshold, colors.reset);
 }
 
 fn print_clear_threshold_result(data: &ClearThresholdCommandData) {
+    let colors = CliColors::new();
     if data.was_present {
-        println!("threshold cleared");
+        println!("petiglyph: {}threshold cleared{}", colors.bold_green, colors.reset);
     } else {
-        println!("no threshold override found to clear");
+        println!("petiglyph: {}no threshold override found to clear{}", colors.yellow, colors.reset);
     }
-    println!("  manifest: {}", data.manifest);
-    println!("  image: {}", data.image_name);
+    println!("  manifest:  {}", data.manifest);
+    println!("  image:     {}{}{}", colors.bold, data.image_name, colors.reset);
 }
 
 fn print_build_result(data: &BuildCommandData) {
-    println!("build complete");
-    println!("  manifest: {}", data.manifest);
-    println!("  input-dir: {}", data.input_dir);
-    println!("  out-dir: {}", data.out_dir);
-    println!("  font: {}", data.font_name);
-    println!("  glyphs: {}", data.glyph_count);
-    println!("  threshold: {}", data.threshold);
+    let colors = CliColors::new();
+    println!("petiglyph: {}build complete{}", colors.bold_green, colors.reset);
+    println!("  font:                {}{}{}", colors.bold, data.font_name, colors.reset);
+    println!("  glyphs:              {}{}{}", colors.bold, data.glyph_count, colors.reset);
+    println!("  threshold:           {}", data.threshold);
     println!("  threshold-overrides: {}", data.threshold_overrides);
-    println!("  glyph-size: {}", data.glyph_size);
-    println!("  codepoint-start: {}", data.codepoint_start);
-    println!("  bdf: {}", data.bdf);
-    println!("  ttf: {}", data.ttf);
-    println!("  map: {}", data.map);
-    println!("  sample: {}", data.sample);
-    println!("  previews: {}", data.previews);
+    println!("  glyph-size:          {}", data.glyph_size);
+    println!("  codepoint-start:     {}", data.codepoint_start);
+    println!("  manifest:            {}", data.manifest);
+    println!("  input-dir:           {}", data.input_dir);
+    println!("  out-dir:             {}", data.out_dir);
+    println!("  bdf:                 {}", data.bdf);
+    println!("  ttf:                 {}", data.ttf);
+    println!("  map:                 {}", data.map);
+    println!("  sample:              {}", data.sample);
+    println!("  previews:            {}", data.previews);
 }
 
 fn print_sample_result(data: &SampleCommandData) {
-    println!("petiglyph sample");
-    println!("font: {}", data.build.font_name);
-    println!("glyphs: {}", data.build.glyph_count);
-    println!("threshold: {}", data.build.threshold);
-    println!("threshold-overrides: {}", data.build.threshold_overrides);
-    println!("glyph-size: {}", data.build.glyph_size);
-    println!("ttf: {}", data.build.ttf);
-    println!("installed: {}", data.installed_ttf);
-    println!("sample: {}", data.build.sample);
+    let colors = CliColors::new();
+    println!("{}petiglyph sample{}", colors.bold_green, colors.reset);
+    println!("  font:                {}{}{}", colors.bold, data.build.font_name, colors.reset);
+    println!("  glyphs:              {}", data.build.glyph_count);
+    println!("  threshold:           {}", data.build.threshold);
+    println!("  threshold-overrides: {}", data.build.threshold_overrides);
+    println!("  glyph-size:          {}", data.build.glyph_size);
+    println!("  ttf:                 {}", data.build.ttf);
+    println!("  installed:           {}", data.installed_ttf);
+    println!("  sample:              {}", data.build.sample);
     if let Some(coverage) = &data.coverage {
+        let cov = coverage.checked_codepoints.saturating_sub(coverage.missing_codepoints);
+        let cov_color = if coverage.missing_codepoints > 0 { colors.yellow } else { colors.green };
         println!(
-            "coverage: {}/{} codepoints resolved to managed petiglyph fonts",
-            coverage
-                .checked_codepoints
-                .saturating_sub(coverage.missing_codepoints),
-            coverage.checked_codepoints
+            "  coverage:            {}{}/{}{} codepoints resolved to managed petiglyph fonts",
+            cov_color, cov, coverage.checked_codepoints, colors.reset
         );
         if coverage.missing_codepoints > 0 {
             println!(
-                "warning: {} sample glyph(s) may render as '?'",
-                coverage.missing_codepoints
+                "  {}warning:{}             {} sample glyph(s) may render as '?'",
+                colors.yellow, colors.reset, coverage.missing_codepoints
             );
         }
     }
@@ -756,70 +800,87 @@ fn print_sample_result(data: &SampleCommandData) {
 }
 
 fn print_install_result(data: &InstallFontCommandData) {
-    println!("font installed");
-    println!("  source: {}", data.build.ttf);
-    println!("  installed: {}", data.installed_ttf);
-    println!("  install-dir: {}", data.install_dir);
-    println!(
-        "  replaced-previous-ttfs: {}",
-        data.replaced_previous_ttf_count
-    );
+    let colors = CliColors::new();
+    println!("petiglyph: {}font installed{}", colors.bold_green, colors.reset);
+    println!("  source:                 {}", data.build.ttf);
+    println!("  installed:              {}", data.installed_ttf);
+    println!("  install-dir:            {}", data.install_dir);
+    println!("  replaced-previous-ttfs: {}", data.replaced_previous_ttf_count);
 }
 
 fn print_uninstall_result(data: &UninstallFontCommandData) {
+    let colors = CliColors::new();
     match data.outcome {
         UninstallOutcome::Removed => {
-            println!("font uninstalled");
-            println!("  manifest: {}", data.manifest);
-            println!("  install-dir: {}", data.install_dir);
+            println!("petiglyph: {}font uninstalled{}", colors.bold_green, colors.reset);
             println!("  removed-ttfs: {}", data.removed_ttf_count);
         }
         UninstallOutcome::AlreadyAbsent => {
-            println!("font already absent");
-            println!("  manifest: {}", data.manifest);
-            println!("  install-dir: {}", data.install_dir);
+            println!("petiglyph: {}font already absent{}", colors.yellow, colors.reset);
         }
     }
+    println!("  manifest:     {}", data.manifest);
+    println!("  install-dir:  {}", data.install_dir);
 }
 
 fn print_uninstall_tool_result(data: &UninstallToolCommandData) {
+    let colors = CliColors::new();
     match data.outcome {
         UninstallOutcome::Removed => {
-            println!("petiglyph tool state uninstalled");
-            println!("  install-dir: {}", data.install_dir);
-            println!("  removed-ttfs: {}", data.removed_ttf_count);
-            println!("  removed-metadata: {}", data.removed_metadata_count);
+            println!("petiglyph: {}tool state uninstalled{}", colors.bold_green, colors.reset);
+            println!("  removed-ttfs:        {}", data.removed_ttf_count);
+            println!("  removed-metadata:    {}", data.removed_metadata_count);
             println!("  removed-state-files: {}", data.removed_state_file_count);
         }
         UninstallOutcome::AlreadyAbsent => {
-            println!("petiglyph tool state already absent");
-            println!("  install-dir: {}", data.install_dir);
+            println!("petiglyph: {}tool state already absent{}", colors.yellow, colors.reset);
         }
     }
+    println!("  install-dir:         {}", data.install_dir);
 }
 
 fn print_doctor_result(data: &DoctorReport) {
+    let colors = CliColors::new();
+
     if data.healthy {
-        println!("petiglyph doctor: healthy");
+        println!("petiglyph doctor: {}healthy{}", colors.bold_green, colors.reset);
     } else {
-        println!("petiglyph doctor: issues detected");
+        println!("petiglyph doctor: {}issues detected{}", colors.bold_red, colors.reset);
     }
+
+    let w_color = if data.warnings > 0 { colors.yellow } else { "" };
+    let e_color = if data.errors > 0 { colors.red } else { "" };
+    let r_color = if data.repaired > 0 { colors.green } else { "" };
+
+    println!("  warnings:    {}{}{}", w_color, data.warnings, colors.reset);
+    println!("  errors:      {}{}{}", e_color, data.errors, colors.reset);
+    println!("  repaired:    {}{}{}", r_color, data.repaired, colors.reset);
     println!("  install-dir: {}", data.install_dir);
-    println!("  registry: {}", data.registry_path);
+    println!("  registry:    {}", data.registry_path);
     if let Some(manifest) = &data.manifest {
-        println!("  manifest: {}", manifest);
+        println!("  manifest:    {}", manifest);
     }
     if let Some(project_id) = &data.project_id {
-        println!("  project-id: {}", project_id);
+        println!("  project-id:  {}", project_id);
     }
-    println!("  warnings: {}", data.warnings);
-    println!("  errors: {}", data.errors);
-    println!("  repaired: {}", data.repaired);
     println!();
     for finding in &data.findings {
+        let sev_color = match finding.severity {
+            crate::doctor::DoctorSeverity::Info => colors.cyan,
+            crate::doctor::DoctorSeverity::Warning => colors.yellow,
+            crate::doctor::DoctorSeverity::Error => colors.red,
+        };
+        let status_color = match finding.status {
+            crate::doctor::DoctorStatus::Ok => colors.green,
+            crate::doctor::DoctorStatus::Issue => colors.red,
+            crate::doctor::DoctorStatus::Repaired => colors.green,
+        };
         println!(
-            "- [{:?}/{:?}] {}: {}",
-            finding.severity, finding.status, finding.code, finding.message
+            "- [{}{:?}{}/{}{:?}{}] {}{}{}: {}",
+            sev_color, finding.severity, colors.reset,
+            status_color, finding.status, colors.reset,
+            colors.bold, finding.code, colors.reset,
+            finding.message
         );
     }
 }
