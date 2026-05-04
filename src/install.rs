@@ -877,6 +877,7 @@ pub(crate) fn expected_install_ttf_path_for_mode(
 pub(crate) fn installed_ttf_candidates_for_manifest_font(
     manifest_path: &Path,
     font_name: &str,
+    project_id: Option<&str>,
 ) -> Result<Vec<PathBuf>> {
     let install_dir = install_dir_for_manifest(manifest_path)?;
     if !install_dir.exists() {
@@ -923,10 +924,13 @@ pub(crate) fn installed_ttf_candidates_for_manifest_font(
             .zip(Path::new(&metadata.manifest_path).canonicalize().ok())
             .is_some_and(|(left, right)| left == right)
             || metadata.manifest_path == manifest_path.display().to_string();
-        if !manifest_matches {
+        let name_matches = names.contains(&metadata.font_name);
+        let id_matches = project_id.is_some_and(|pid| metadata.project_id.as_deref() == Some(pid));
+
+        if !manifest_matches && !id_matches {
             continue;
         }
-        if !names.contains(&metadata.font_name) {
+        if !name_matches {
             continue;
         }
         out.push(PathBuf::from(metadata.installed_ttf));

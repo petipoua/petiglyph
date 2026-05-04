@@ -215,9 +215,10 @@ fn resolve_installed_font_path_detects_cli_project_prefixed_name() {
     )
     .expect("project-prefixed install path resolves");
 
-    let resolved = resolve_installed_font_path_with(&manifest_path, "My Font", |path| {
-        path == prefixed_path.as_path()
-    });
+    let resolved =
+        resolve_installed_font_path_with(&manifest_path, "My Font", None, |path| {
+            path == prefixed_path.as_path()
+        });
 
     assert_ne!(plain_path, prefixed_path);
     assert_eq!(resolved.as_deref(), Some(prefixed_path.as_path()));
@@ -237,9 +238,12 @@ fn resolve_installed_font_path_prefers_project_scoped_candidate_over_legacy_plai
         expected_install_ttf_path_for_mode(&manifest_path, "My Font", DEFAULT_INSTALL_NAME_MODE)
             .expect("project-scoped install path resolves");
 
-    let resolved = resolve_installed_font_path_with(&manifest_path, "My Font", |path| {
-        path == plain_path.as_path() || path == project_scoped_path.as_path()
-    });
+    let resolved = resolve_installed_font_path_with(
+        &manifest_path,
+        "My Font",
+        None,
+        |path| path == plain_path.as_path() || path == project_scoped_path.as_path(),
+    );
 
     assert_eq!(resolved.as_deref(), Some(project_scoped_path.as_path()));
 

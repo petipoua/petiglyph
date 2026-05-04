@@ -2,7 +2,7 @@ use anyhow::{Context, Result, bail};
 use crossterm::ExecutableCommand;
 use crossterm::event::{
     self, DisableBracketedPaste, EnableBracketedPaste, Event, KeyCode, KeyEvent, KeyEventKind,
-    KeyEventState, KeyboardEnhancementFlags, PopKeyboardEnhancementFlags,
+    KeyEventState, KeyModifiers, KeyboardEnhancementFlags, PopKeyboardEnhancementFlags,
     PushKeyboardEnhancementFlags,
 };
 use crossterm::terminal::{
@@ -286,6 +286,8 @@ pub(crate) struct App {
     pub(crate) last_sample: Option<String>,
     pub(crate) installed_font_path: Option<PathBuf>,
     delete_project_confirm_selection: Option<usize>,
+    renaming_input: Option<Input>,
+    renaming_original: Option<String>,
     first_install_notice_open: bool,
     launch_overrides: TuiLaunchOverrides,
     build_task: Option<BuildTask>,
@@ -728,7 +730,7 @@ pub(crate) fn should_dispatch_key_kind(kind: KeyEventKind) -> bool {
 
 fn app_debug_state(app: &App) -> String {
     format!(
-        "view={:?} focus={:?} selected_project={} editing={} verbose_paths={} input={:?} cursor={} visual_cursor={} build_task={} install_task={} delete_confirm_selection={:?} status={:?} quit={}",
+        "view={:?} focus={:?} selected_project={} editing={} verbose_paths={} input={:?} cursor={} visual_cursor={} build_task={} install_task={} delete_confirm_selection={:?} renaming={} status={:?} quit={}",
         app.view,
         app.welcome_focus,
         app.selected_project,
@@ -740,9 +742,36 @@ fn app_debug_state(app: &App) -> String {
         app.build_task.is_some(),
         app.install_task.is_some(),
         app.delete_project_confirm_selection,
+        app.renaming_input.is_some(),
         app.status,
         app.quit
     )
+}
+
+fn handle_rename_mode_key(app: &mut App, code: KeyCode) -> Result<()> {
+    match code {
+        KeyCode::Esc => {
+            app.renaming_input = None;
+            app.renaming_original = None;
+            app.status = Some("rename canceled".to_string());
+        }
+        KeyCode::Enter => {
+            app.confirm_rename()?;
+        }
+        KeyCode::Char(ch) if is_valid_project_name_char(ch) => {
+            if let Some(input) = app.renaming_input.as_mut() {
+                input.handle_event(&Event::Key(KeyEvent::new(code, KeyModifiers::NONE)));
+            }
+        }
+        KeyCode::Backspace | KeyCode::Delete | KeyCode::Left | KeyCode::Right
+        | KeyCode::Home | KeyCode::End => {
+            if let Some(input) = app.renaming_input.as_mut() {
+                input.handle_event(&Event::Key(KeyEvent::new(code, KeyModifiers::NONE)));
+            }
+        }
+        _ => {}
+    }
+    Ok(())
 }
 
 fn handle_welcome_key(app: &mut App, key: KeyEvent) -> Result<()> {
@@ -754,6 +783,9 @@ fn handle_welcome_key(app: &mut App, key: KeyEvent) -> Result<()> {
     );
     if app.delete_project_confirm_selection.is_some() {
         return handle_delete_project_confirmation_key(app, code);
+    }
+    if app.renaming_input.is_some() {
+        return handle_rename_mode_key(app, code);
     }
     match code {
         KeyCode::Esc => {
@@ -986,7 +1018,18 @@ fn handle_welcome_key(app: &mut App, key: KeyEvent) -> Result<()> {
             WelcomeFocus::ProjectList => {
                 app.welcome_input_editing = false;
                 if let Some(project) = app.projects.get(app.selected_project) {
-                    app.set_active_project(project.manifest_path.clone())?;
+                    let is_active = app
+                        .active_project
+                        .as_ref()
+                        .is_some_and(|active| active == &project.manifest_path);
+                    if is_active {
+                        app.renaming_input =
+                            Some(Input::new(app.config.font_name.clone()));
+                        app.renaming_original = Some(app.config.font_name.clone());
+                        app.status = Some("renaming project...".to_string());
+                    } else {
+                        app.set_active_project(project.manifest_path.clone())?;
+                    }
                 }
             }
             WelcomeFocus::CreateInput => {
@@ -1210,6 +1253,7 @@ fn draw_welcome_view(
                 .is_some_and(|active| active == &project.manifest_path);
             let is_selected =
                 app.welcome_focus == WelcomeFocus::ProjectList && app.selected_project == idx;
+            let is_renaming = is_active && app.renaming_input.is_some();
             let marker = if is_active { "active" } else { "found " };
             let row_style = if is_selected {
                 Style::default()
@@ -1241,7 +1285,39 @@ fn draw_welcome_view(
                         Style::default().fg(muted)
                     },
                 ),
-                Span::styled(
+            ];
+            if is_renaming {
+                let rename_width = 24usize;
+                let input_scroll = app.renaming_input.as_ref().map_or(0, |inp| {
+                    inp.visual_scroll(rename_width)
+                });
+                let visible_input = app.renaming_input.as_ref().map_or(String::new(), |inp| {
+                    inp.value().chars().skip(input_scroll).take(rename_width).collect()
+                });
+                let input_cursor = app.renaming_input.as_ref().map_or(0, |inp| {
+                    inp.visual_cursor().saturating_sub(input_scroll)
+                });
+                let input_value = format_welcome_input_field_with_cursor(
+                    &visible_input,
+                    true,
+                    input_cursor,
+                    rename_width,
+                );
+                row.push(Span::styled(
+                    input_value,
+                    Style::default()
+                        .fg(Color::Black)
+                        .bg(Color::Yellow)
+                        .add_modifier(Modifier::BOLD),
+                ));
+                row.push(Span::styled(
+                    " [renaming...]",
+                    Style::default()
+                        .fg(Color::Yellow)
+                        .add_modifier(Modifier::BOLD),
+                ));
+            } else {
+                row.push(Span::styled(
                     &project.font_name,
                     if is_selected {
                         row_style
@@ -1252,9 +1328,9 @@ fn draw_welcome_view(
                     } else {
                         Style::default().fg(Color::White)
                     },
-                ),
-            ];
-            if app.verbose_paths {
+                ));
+            }
+            if app.verbose_paths && !is_renaming {
                 row.push(Span::styled(
                     "  ",
                     if is_selected {
@@ -1907,6 +1983,8 @@ impl App {
             last_sample: None,
             installed_font_path: None,
             delete_project_confirm_selection: None,
+            renaming_input: None,
+            renaming_original: None,
             first_install_notice_open: false,
             launch_overrides,
             build_task: None,
@@ -1929,7 +2007,8 @@ impl App {
             .to_path_buf();
         let workspace_root = workspace_root.unwrap_or_else(|| project_dir.clone());
         let (last_build, last_sample) = cached_build_state(&config);
-        let installed_font_path = cached_installed_font_path(&manifest_path, &config.font_name);
+        let installed_font_path =
+            cached_installed_font_path(&manifest_path, &config.font_name, &config.project_id);
         Self {
             manifest_path: manifest_path.clone(),
             project_dir,
@@ -1955,6 +2034,8 @@ impl App {
             last_sample,
             installed_font_path,
             delete_project_confirm_selection: None,
+            renaming_input: None,
+            renaming_original: None,
             first_install_notice_open: false,
             launch_overrides,
             build_task: None,
@@ -2144,6 +2225,71 @@ impl App {
         Ok(())
     }
 
+    fn confirm_rename(&mut self) -> Result<()> {
+        let Some(input) = self.renaming_input.take() else {
+            return Ok(());
+        };
+        let new_name = input.value().trim().to_string();
+        self.renaming_original = None;
+
+        if new_name.is_empty() {
+            self.status =
+                Some("project name cannot be empty; rename canceled".to_string());
+            return Ok(());
+        }
+
+        let old_dir = self.project_dir.clone();
+        if old_dir == self.workspace_root {
+            self.status = Some(
+                "refusing to rename the workspace root directory".to_string(),
+            );
+            return Ok(());
+        }
+
+        let new_dir = self.workspace_root.join(&new_name);
+        if new_dir.exists() {
+            self.status = Some(format!(
+                "directory already exists: {}",
+                new_dir.display()
+            ));
+            return Ok(());
+        }
+
+        let old_name = self.config.font_name.clone();
+        fs::rename(&old_dir, &new_dir)
+            .with_context(|| format!("failed to rename {} to {}", old_dir.display(), new_dir.display()))?;
+
+        let new_manifest_path = new_dir.join("petiglyph.toml");
+        let mut manifest = read_manifest(&new_manifest_path)?;
+        manifest.font_name = new_name.clone();
+        write_manifest(&new_manifest_path, &manifest)?;
+
+        let out_dir = new_dir.join(&manifest.out_dir);
+        let old_ttf = out_dir.join(format!("{old_name}.ttf"));
+        let new_ttf = out_dir.join(format!("{new_name}.ttf"));
+        if old_ttf.is_file() && !new_ttf.exists() {
+            fs::rename(&old_ttf, &new_ttf).with_context(|| {
+                format!("failed to rename {} to {}", old_ttf.display(), new_ttf.display())
+            })?;
+        }
+        let old_bdf = out_dir.join(format!("{old_name}.bdf"));
+        let new_bdf = out_dir.join(format!("{new_name}.bdf"));
+        if old_bdf.is_file() && !new_bdf.exists() {
+            fs::rename(&old_bdf, &new_bdf).with_context(|| {
+                format!("failed to rename {} to {}", old_bdf.display(), new_bdf.display())
+            })?;
+        }
+
+        self.manifest_path = new_manifest_path;
+        self.project_dir = new_dir;
+        self.active_project = Some(self.manifest_path.clone());
+        self.reload_config()?;
+        self.refresh_workspace_discovery()?;
+        self.status =
+            Some(format!("renamed project from `{old_name}` to `{new_name}`"));
+        Ok(())
+    }
+
     fn submit_create(&mut self) -> Result<()> {
         let project_name = self.create_input.value().trim().to_string();
         if project_name.is_empty() {
@@ -2223,7 +2369,11 @@ impl App {
         self.last_build = last_build;
         self.last_sample = last_sample;
         self.installed_font_path =
-            cached_installed_font_path(&self.manifest_path, &self.config.font_name);
+            cached_installed_font_path(
+                &self.manifest_path,
+                &self.config.font_name,
+                &self.config.project_id,
+            );
         Ok(())
     }
 
@@ -2931,20 +3081,29 @@ fn cached_build_state(config: &RuntimeConfig) -> (Option<BuildSummary>, Option<S
     )
 }
 
-fn cached_installed_font_path(manifest_path: &Path, font_name: &str) -> Option<PathBuf> {
-    resolve_installed_font_path_with(manifest_path, font_name, |path| path.is_file())
+fn cached_installed_font_path(
+    manifest_path: &Path,
+    font_name: &str,
+    project_id: &str,
+) -> Option<PathBuf> {
+    resolve_installed_font_path_with(manifest_path, font_name, Some(project_id), |path| {
+        path.is_file()
+    })
 }
 
 pub(crate) fn resolve_installed_font_path_with<F>(
     manifest_path: &Path,
     font_name: &str,
+    project_id: Option<&str>,
     mut is_installed: F,
 ) -> Option<PathBuf>
 where
     F: FnMut(&Path) -> bool,
 {
     let mut candidates = Vec::new();
-    if let Ok(paths) = installed_ttf_candidates_for_manifest_font(manifest_path, font_name) {
+    if let Ok(paths) =
+        installed_ttf_candidates_for_manifest_font(manifest_path, font_name, project_id)
+    {
         for path in paths {
             if !candidates.contains(&path) {
                 candidates.push(path);
@@ -3133,7 +3292,10 @@ fn handle_key_event(app: &mut App, key: KeyEvent) -> Result<()> {
     if app.first_install_notice_open {
         return handle_first_install_notice_key(app, code);
     }
-    if matches!(code, KeyCode::Char('v') | KeyCode::Char('V')) && !app.welcome_input_editing {
+    if matches!(code, KeyCode::Char('v') | KeyCode::Char('V'))
+        && !app.welcome_input_editing
+        && app.renaming_input.is_none()
+    {
         app.verbose_paths = !app.verbose_paths;
         app.status = Some(format!(
             "verbose paths {}",
@@ -3147,7 +3309,9 @@ fn handle_key_event(app: &mut App, key: KeyEvent) -> Result<()> {
         return Ok(());
     }
     let is_global_panel_jump = matches!(code, KeyCode::Tab | KeyCode::BackTab)
-        || (matches!(code, KeyCode::Char('2')) && !app.welcome_input_editing);
+        || (matches!(code, KeyCode::Char('2'))
+            && !app.welcome_input_editing
+            && app.renaming_input.is_none());
 
     if app.view == AppView::Welcome && app.delete_project_confirm_selection.is_some() {
         tui_debug_log(
@@ -3448,7 +3612,11 @@ fn draw_ui(frame: &mut Frame, app: &App) {
         } else if app.welcome_focus == WelcomeFocus::VerbosePathsToggle {
             "toggle verbose paths  "
         } else if app.welcome_focus == WelcomeFocus::ProjectList {
-            "open project  "
+            if app.renaming_input.is_some() {
+                "confirm rename  "
+            } else {
+                "open project  "
+            }
         } else if app.welcome_focus == WelcomeFocus::BuildButton {
             if app.current_project_is_built() {
                 "rebuild  "
@@ -3489,6 +3657,11 @@ fn draw_ui(frame: &mut Frame, app: &App) {
             footer_spans.extend(vec![
                 Span::styled(" Esc ", Style::default().fg(accent)),
                 Span::raw("cancel delete  "),
+            ]);
+        } else if app.renaming_input.is_some() {
+            footer_spans.extend(vec![
+                Span::styled(" Esc ", Style::default().fg(accent)),
+                Span::raw("cancel rename  "),
             ]);
         }
     }
