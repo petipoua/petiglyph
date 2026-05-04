@@ -369,13 +369,13 @@ fn unified_tui_zero_projects_starts_without_active_project() {
 
     handle_key(&mut app, KeyCode::Down).expect("down should stay on create input");
     assert_eq!(app.welcome_focus, WelcomeFocus::CreateInput);
-    handle_key(&mut app, KeyCode::Right).expect("right moves to create button");
-    assert_eq!(app.welcome_focus, WelcomeFocus::CreateButton);
-    handle_key(&mut app, KeyCode::Down).expect("down should stay on create button");
-    assert_eq!(app.welcome_focus, WelcomeFocus::CreateButton);
-    handle_key(&mut app, KeyCode::Right).expect("right should stay on create button");
-    assert_eq!(app.welcome_focus, WelcomeFocus::CreateButton);
-    handle_key(&mut app, KeyCode::Left).expect("left returns to create input");
+    handle_key(&mut app, KeyCode::Right).expect("right moves to verbose toggle when no active project");
+    assert_eq!(app.welcome_focus, WelcomeFocus::VerbosePathsToggle);
+    handle_key(&mut app, KeyCode::Left).expect("left stays on verbose toggle");
+    assert_eq!(app.welcome_focus, WelcomeFocus::VerbosePathsToggle);
+    handle_key(&mut app, KeyCode::Down).expect("down from verbose toggle goes to create input when no projects");
+    // With no projects and no active project, down from VerbosePathsToggle goes to CreateInput
+    handle_key(&mut app, KeyCode::Down).expect("down stays on create input");
     assert_eq!(app.welcome_focus, WelcomeFocus::CreateInput);
 
     fs::remove_dir_all(workspace).expect("temp workspace is removed");
@@ -475,7 +475,7 @@ fn unified_tui_multiple_projects_can_be_selected_from_home() {
     handle_key(&mut app, KeyCode::Left).expect("left returns to build");
     assert_eq!(app.welcome_focus, WelcomeFocus::BuildButton);
     handle_key(&mut app, KeyCode::Left).expect("left from build returns to create button");
-    assert_eq!(app.welcome_focus, WelcomeFocus::CreateButton);
+    assert_eq!(app.welcome_focus, WelcomeFocus::CreateInput);
     handle_key(&mut app, KeyCode::Up).expect("up returns to project list");
     assert_eq!(app.welcome_focus, WelcomeFocus::ProjectList);
     assert_eq!(app.selected_project, 1);
@@ -488,32 +488,39 @@ fn unified_tui_multiple_projects_can_be_selected_from_home() {
     handle_key(&mut app, KeyCode::Left).expect("left returns to build button");
     assert_eq!(app.welcome_focus, WelcomeFocus::BuildButton);
     handle_key(&mut app, KeyCode::Left).expect("left from build returns to create button");
-    assert_eq!(app.welcome_focus, WelcomeFocus::CreateButton);
+    assert_eq!(app.welcome_focus, WelcomeFocus::CreateInput);
     handle_key(&mut app, KeyCode::Up).expect("up returns to project list");
     assert_eq!(app.welcome_focus, WelcomeFocus::ProjectList);
     handle_key(&mut app, KeyCode::Down).expect("down from project list reaches create input");
     assert_eq!(app.welcome_focus, WelcomeFocus::CreateInput);
-    handle_key(&mut app, KeyCode::Right).expect("right returns to create button");
-    assert_eq!(app.welcome_focus, WelcomeFocus::CreateButton);
-    handle_key(&mut app, KeyCode::Right).expect("right jumps from create button to build");
+    handle_key(&mut app, KeyCode::Right).expect("right jumps from create input to build");
     assert_eq!(app.welcome_focus, WelcomeFocus::BuildButton);
-    handle_key(&mut app, KeyCode::Left).expect("left from build returns to create button");
-    assert_eq!(app.welcome_focus, WelcomeFocus::CreateButton);
-    handle_key(&mut app, KeyCode::Left).expect("left returns to create input");
+    handle_key(&mut app, KeyCode::Right).expect("right moves to install");
+    assert_eq!(app.welcome_focus, WelcomeFocus::InstallButton);
+    handle_key(&mut app, KeyCode::Left).expect("left from install returns to build");
+    assert_eq!(app.welcome_focus, WelcomeFocus::BuildButton);
+    handle_key(&mut app, KeyCode::Left).expect("left from build returns to create input");
     assert_eq!(app.welcome_focus, WelcomeFocus::CreateInput);
-    handle_key(&mut app, KeyCode::Right).expect("right moves to create button");
-    assert_eq!(app.welcome_focus, WelcomeFocus::CreateButton);
-    handle_key(&mut app, KeyCode::Down).expect("down moves to animate glyph button");
+    handle_key(&mut app, KeyCode::Left).expect("left stays on create input");
+    assert_eq!(app.welcome_focus, WelcomeFocus::CreateInput);
+    handle_key(&mut app, KeyCode::Right).expect("right moves to build");
+    assert_eq!(app.welcome_focus, WelcomeFocus::BuildButton);
+    handle_key(&mut app, KeyCode::Left).expect("left from build returns to create input");
+    assert_eq!(app.welcome_focus, WelcomeFocus::CreateInput);
+    handle_key(&mut app, KeyCode::Down).expect("down moves to compose grid button");
+    assert_eq!(app.welcome_focus, WelcomeFocus::ToolList);
+    assert_eq!(app.selected_home_tool, HomeToolAction::ComposeGrid);
+    handle_key(&mut app, KeyCode::Right).expect("right moves to animate glyph button");
     assert_eq!(app.welcome_focus, WelcomeFocus::ToolList);
     assert_eq!(app.selected_home_tool, HomeToolAction::AnimateGlyph);
     handle_key(&mut app, KeyCode::Right).expect("right moves to build button");
     assert_eq!(app.welcome_focus, WelcomeFocus::BuildButton);
-    handle_key(&mut app, KeyCode::Left).expect("left from build returns to create button");
-    assert_eq!(app.welcome_focus, WelcomeFocus::CreateButton);
-    handle_key(&mut app, KeyCode::Down).expect("down returns to animate glyph button");
+    handle_key(&mut app, KeyCode::Left).expect("left from build returns to create input");
+    assert_eq!(app.welcome_focus, WelcomeFocus::CreateInput);
+    handle_key(&mut app, KeyCode::Down).expect("down returns to compose grid button");
     assert_eq!(app.welcome_focus, WelcomeFocus::ToolList);
-    assert_eq!(app.selected_home_tool, HomeToolAction::AnimateGlyph);
-    handle_key(&mut app, KeyCode::Left).expect("left returns to compose grid button");
+    assert_eq!(app.selected_home_tool, HomeToolAction::ComposeGrid);
+    handle_key(&mut app, KeyCode::Left).expect("left stays on compose grid");
     assert_eq!(app.welcome_focus, WelcomeFocus::ToolList);
     assert_eq!(app.selected_home_tool, HomeToolAction::ComposeGrid);
     handle_key(&mut app, KeyCode::Up).expect("up returns to create input");
@@ -534,20 +541,7 @@ fn welcome_input_edit_mode_types_hjkl_without_navigation() {
     assert_eq!(app.welcome_focus, WelcomeFocus::CreateInput);
     assert!(!app.welcome_input_editing);
 
-    handle_key(&mut app, KeyCode::Char('l')).expect("welcome navigation moves to create button");
-    assert_eq!(app.welcome_focus, WelcomeFocus::CreateButton);
-    handle_key(&mut app, KeyCode::Char('j')).expect("welcome navigation should stay on create");
-    assert_eq!(app.welcome_focus, WelcomeFocus::CreateButton);
-    handle_key(&mut app, KeyCode::Char('j')).expect("welcome navigation should stay on create");
-    assert_eq!(app.welcome_focus, WelcomeFocus::CreateButton);
-    assert!(app.create_input.value().is_empty());
-
-    handle_key(&mut app, KeyCode::Up).expect("up arrow returns focus to create button");
-    assert_eq!(app.welcome_focus, WelcomeFocus::CreateButton);
-    handle_key(&mut app, KeyCode::Left).expect("left arrow returns focus to input");
-    assert_eq!(app.welcome_focus, WelcomeFocus::CreateInput);
-
-    handle_key(&mut app, KeyCode::Enter).expect("enter starts typing mode");
+    handle_key(&mut app, KeyCode::Enter).expect("enter starts editing on create input");
     assert!(app.welcome_input_editing);
     assert_eq!(app.welcome_focus, WelcomeFocus::CreateInput);
 
@@ -557,9 +551,11 @@ fn welcome_input_edit_mode_types_hjkl_without_navigation() {
     assert_eq!(app.create_input.value(), "lhjk23");
     assert_eq!(app.welcome_focus, WelcomeFocus::CreateInput);
 
-    handle_key(&mut app, KeyCode::Enter).expect("enter exits typing mode");
+    // clear the input so Enter won't submit_create, just cancels editing
+    app.create_input = app.create_input.clone().with_value(String::new());
+    handle_key(&mut app, KeyCode::Enter).expect("enter exits typing mode without creating when input is empty");
     assert!(!app.welcome_input_editing);
-    assert_eq!(app.welcome_focus, WelcomeFocus::CreateButton);
+    assert_eq!(app.welcome_focus, WelcomeFocus::CreateInput);
 
     fs::remove_dir_all(workspace).expect("temp workspace is removed");
 }
@@ -655,7 +651,7 @@ fn welcome_input_field_keeps_fixed_width_in_all_focus_states() {
 fn projects_card_hint_keeps_fixed_width_and_stays_local() {
     let input_hint = format_projects_card_hint(WelcomeFocus::CreateInput, false);
     let typing_hint = format_projects_card_hint(WelcomeFocus::CreateInput, true);
-    let button_hint = format_projects_card_hint(WelcomeFocus::CreateButton, false);
+    let button_hint = format_projects_card_hint(WelcomeFocus::CreateInput, false);
     let tool_hint = format_projects_card_hint(WelcomeFocus::ToolList, false);
     let build_hint = format_projects_card_hint(WelcomeFocus::BuildButton, false);
     let install_hint = format_projects_card_hint(WelcomeFocus::InstallButton, false);
@@ -671,9 +667,9 @@ fn projects_card_hint_keeps_fixed_width_and_stays_local() {
     assert_eq!(input_hint.chars().count(), delete_hint.chars().count());
     assert_eq!(input_hint.chars().count(), uninstall_hint.chars().count());
     assert_eq!(input_hint.chars().count(), list_hint.chars().count());
-    assert!(input_hint.contains("press Enter to type"));
+    assert!(input_hint.contains("press Enter to create"));
     assert!(typing_hint.contains("typing (Enter/Esc to stop)"));
-    assert!(button_hint.trim().is_empty());
+    assert!(button_hint.contains("press Enter to create"));
     assert!(tool_hint.trim().is_empty());
     assert!(build_hint.trim().is_empty());
     assert!(install_hint.trim().is_empty());

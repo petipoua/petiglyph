@@ -96,7 +96,6 @@ pub(crate) enum WelcomeFocus {
     VerbosePathsToggle,
     ProjectList,
     CreateInput,
-    CreateButton,
     BuildButton,
     InstallButton,
     DeleteProjectButton,
@@ -658,7 +657,7 @@ pub(crate) fn format_projects_card_hint(focus: WelcomeFocus, editing: bool) -> S
 fn format_projects_card_hint_for_display(focus: WelcomeFocus, editing: bool) -> String {
     let hint = match (focus, editing) {
         (WelcomeFocus::CreateInput, true) => "typing (Enter/Esc to stop)",
-        (WelcomeFocus::CreateInput, false) => "press Enter to type",
+        (WelcomeFocus::CreateInput, false) => "press Enter to create",
         _ => "",
     };
 
@@ -834,18 +833,13 @@ fn handle_welcome_key(app: &mut App, key: KeyEvent) -> Result<()> {
                     app.selected_project = app.projects.len() - 1;
                     WelcomeFocus::ProjectList
                 }
-                WelcomeFocus::CreateButton if !app.projects.is_empty() => {
-                    app.selected_project = app.projects.len() - 1;
-                    WelcomeFocus::ProjectList
-                }
                 WelcomeFocus::CreateInput => WelcomeFocus::VerbosePathsToggle,
-                WelcomeFocus::CreateButton => WelcomeFocus::CreateButton,
                 WelcomeFocus::BuildButton => WelcomeFocus::VerbosePathsToggle,
                 WelcomeFocus::InstallButton => WelcomeFocus::VerbosePathsToggle,
                 WelcomeFocus::DeleteProjectButton => WelcomeFocus::VerbosePathsToggle,
                 WelcomeFocus::ToolList => match app.selected_home_tool {
                     HomeToolAction::ComposeGrid => WelcomeFocus::CreateInput,
-                    HomeToolAction::AnimateGlyph => WelcomeFocus::CreateButton,
+                    HomeToolAction::AnimateGlyph => WelcomeFocus::CreateInput,
                 },
                 WelcomeFocus::InstalledFontList => {
                     if app.selected_installed_font > 0 {
@@ -886,14 +880,6 @@ fn handle_welcome_key(app: &mut App, key: KeyEvent) -> Result<()> {
                         WelcomeFocus::ToolList
                     } else {
                         WelcomeFocus::CreateInput
-                    }
-                }
-                WelcomeFocus::CreateButton => {
-                    if home_project_actions_enabled {
-                        app.selected_home_tool = HomeToolAction::AnimateGlyph;
-                        WelcomeFocus::ToolList
-                    } else {
-                        WelcomeFocus::CreateButton
                     }
                 }
                 WelcomeFocus::BuildButton => {
@@ -942,8 +928,7 @@ fn handle_welcome_key(app: &mut App, key: KeyEvent) -> Result<()> {
                         WelcomeFocus::ToolList
                     }
                 },
-                WelcomeFocus::CreateButton => WelcomeFocus::CreateInput,
-                WelcomeFocus::BuildButton => WelcomeFocus::CreateButton,
+                WelcomeFocus::BuildButton => WelcomeFocus::CreateInput,
                 WelcomeFocus::InstallButton => WelcomeFocus::BuildButton,
                 WelcomeFocus::DeleteProjectButton => WelcomeFocus::InstallButton,
                 WelcomeFocus::InstalledFontList => WelcomeFocus::InstalledFontList,
@@ -954,7 +939,13 @@ fn handle_welcome_key(app: &mut App, key: KeyEvent) -> Result<()> {
         KeyCode::Right | KeyCode::Char('l') if !app.welcome_input_editing => {
             app.welcome_focus = match app.welcome_focus {
                 WelcomeFocus::VerbosePathsToggle => WelcomeFocus::VerbosePathsToggle,
-                WelcomeFocus::CreateInput => WelcomeFocus::CreateButton,
+                WelcomeFocus::CreateInput => {
+                    if home_project_actions_enabled {
+                        WelcomeFocus::BuildButton
+                    } else {
+                        WelcomeFocus::VerbosePathsToggle
+                    }
+                }
                 WelcomeFocus::ProjectList => {
                     if home_project_actions_enabled {
                         WelcomeFocus::BuildButton
@@ -962,23 +953,16 @@ fn handle_welcome_key(app: &mut App, key: KeyEvent) -> Result<()> {
                         WelcomeFocus::ProjectList
                     }
                 }
-                WelcomeFocus::CreateButton => {
-                    if home_project_actions_enabled {
-                        WelcomeFocus::BuildButton
-                    } else {
-                        WelcomeFocus::CreateButton
-                    }
-                }
                 WelcomeFocus::BuildButton => {
                     if home_project_actions_enabled {
                         WelcomeFocus::InstallButton
                     } else {
-                        WelcomeFocus::CreateButton
+                        WelcomeFocus::CreateInput
                     }
                 }
                 WelcomeFocus::InstallButton => {
                     if !home_project_actions_enabled {
-                        WelcomeFocus::CreateButton
+                        WelcomeFocus::CreateInput
                     } else if app.active_project_can_be_deleted() {
                         WelcomeFocus::DeleteProjectButton
                     } else {
@@ -995,7 +979,7 @@ fn handle_welcome_key(app: &mut App, key: KeyEvent) -> Result<()> {
                         if home_project_actions_enabled {
                             WelcomeFocus::BuildButton
                         } else {
-                            WelcomeFocus::CreateButton
+                            WelcomeFocus::CreateInput
                         }
                     }
                 },
@@ -1035,16 +1019,14 @@ fn handle_welcome_key(app: &mut App, key: KeyEvent) -> Result<()> {
             WelcomeFocus::CreateInput => {
                 if app.welcome_input_editing {
                     app.welcome_input_editing = false;
-                    app.welcome_focus = WelcomeFocus::CreateButton;
                     app.status = None;
+                    if !app.create_input.value().trim().is_empty() {
+                        app.submit_create()?;
+                    }
                 } else {
                     app.welcome_input_editing = true;
                     app.status = None;
                 }
-            }
-            WelcomeFocus::CreateButton => {
-                app.welcome_input_editing = false;
-                app.submit_create()?;
             }
             WelcomeFocus::BuildButton => {
                 app.welcome_input_editing = false;
@@ -1351,7 +1333,24 @@ fn draw_welcome_view(
             project_rows.push(Line::from(row));
         }
     }
-    let input_style = if app.welcome_focus == WelcomeFocus::CreateInput {
+    let cursor_prefix = if app.welcome_focus == WelcomeFocus::CreateInput && !app.welcome_input_editing {
+        "> "
+    } else if app.welcome_focus == WelcomeFocus::CreateInput && app.welcome_input_editing {
+        "> "
+    } else {
+        "  "
+    };
+    let cursor_style = if app.welcome_focus == WelcomeFocus::CreateInput && !app.welcome_input_editing {
+        Style::default()
+            .fg(Color::Black)
+            .bg(accent)
+            .add_modifier(Modifier::BOLD)
+    } else {
+        Style::default().fg(muted)
+    };
+    let is_create_focused =
+        app.welcome_focus == WelcomeFocus::CreateInput && !app.welcome_input_editing;
+    let create_button_style = if is_create_focused {
         Style::default()
             .fg(Color::Black)
             .bg(accent)
@@ -1359,39 +1358,44 @@ fn draw_welcome_view(
     } else {
         Style::default().fg(Color::White).bg(Color::DarkGray)
     };
-    let button_style = if app.welcome_focus == WelcomeFocus::CreateButton {
-        Style::default()
-            .fg(Color::Black)
-            .bg(accent)
-            .add_modifier(Modifier::BOLD)
+    let mut new_project_line = Vec::new();
+    new_project_line.push(Span::styled(cursor_prefix, cursor_style));
+    if app.welcome_input_editing {
+        let input_scroll = app.create_input.visual_scroll(WELCOME_INPUT_WIDTH);
+        let visible_input = app
+            .create_input
+            .value()
+            .chars()
+            .skip(input_scroll)
+            .take(WELCOME_INPUT_WIDTH)
+            .collect::<String>();
+        let input_cursor = app
+            .create_input
+            .visual_cursor()
+            .saturating_sub(input_scroll);
+        let input_value = format_welcome_input_field_with_cursor(
+            &visible_input,
+            true,
+            input_cursor,
+            WELCOME_INPUT_WIDTH,
+        );
+        new_project_line.push(Span::styled(
+            "New project: ",
+            Style::default().fg(muted),
+        ));
+        new_project_line.push(Span::styled(
+            input_value,
+            Style::default()
+                .fg(Color::Black)
+                .bg(Color::Yellow)
+                .add_modifier(Modifier::BOLD),
+        ));
     } else {
-        Style::default().fg(Color::White).bg(Color::DarkGray)
-    };
-    let input_scroll = app.create_input.visual_scroll(WELCOME_INPUT_WIDTH);
-    let visible_input = app
-        .create_input
-        .value()
-        .chars()
-        .skip(input_scroll)
-        .take(WELCOME_INPUT_WIDTH)
-        .collect::<String>();
-    let input_cursor = app
-        .create_input
-        .visual_cursor()
-        .saturating_sub(input_scroll);
-    let input_value = format_welcome_input_field_with_cursor(
-        &visible_input,
-        app.welcome_input_editing,
-        input_cursor,
-        WELCOME_INPUT_WIDTH,
-    );
-    let mut new_project_line = vec![
-        Span::raw("  "),
-        Span::styled("New project: ", Style::default().fg(muted)),
-        Span::styled(input_value, input_style),
-        Span::raw(" "),
-        Span::styled(" Create ", button_style),
-    ];
+        new_project_line.push(Span::styled(
+            " Create new project ",
+            create_button_style,
+        ));
+    }
     new_project_line.push(Span::styled(
         format_projects_card_hint_for_display(app.welcome_focus, app.welcome_input_editing),
         Style::default().fg(muted),
@@ -3636,7 +3640,7 @@ fn draw_ui(frame: &mut Frame, app: &App) {
         } else if app.welcome_focus == WelcomeFocus::ToolList {
             "run action  "
         } else {
-            "type/create  "
+            "start creating  "
         };
         footer_spans.extend(vec![
             Span::styled(" \u{2191}/\u{2193} ", Style::default().fg(accent)),
