@@ -320,6 +320,7 @@ struct UninstallToolCommandData {
     removed_ttf_count: usize,
     removed_metadata_count: usize,
     removed_state_file_count: usize,
+    binary_path: Option<String>,
 }
 
 enum CliRunError {
@@ -850,6 +851,11 @@ fn print_uninstall_tool_result(data: &UninstallToolCommandData) {
         }
     }
     println!("  install-dir:         {}", data.install_dir);
+    if let Some(path) = &data.binary_path {
+        println!();
+        println!("petiglyph binary is at: {}", path);
+        println!("  remove with: rm {}", path);
+    }
 }
 
 fn print_doctor_result(data: &DoctorReport) {
@@ -1103,6 +1109,7 @@ fn uninstall_font_command(manifest_path: PathBuf) -> Result<UninstallFontCommand
 
 fn uninstall_tool_command() -> Result<UninstallToolCommandData> {
     let uninstall = uninstall_tool_state()?;
+    let binary_path = std::env::current_exe().ok().and_then(|p| p.to_str().map(String::from));
     Ok(UninstallToolCommandData {
         platform: uninstall.platform,
         install_dir: uninstall.install_dir.display().to_string(),
@@ -1110,6 +1117,7 @@ fn uninstall_tool_command() -> Result<UninstallToolCommandData> {
         removed_ttf_count: uninstall.removed_ttf_count,
         removed_metadata_count: uninstall.removed_metadata_count,
         removed_state_file_count: uninstall.removed_state_file_count,
+        binary_path,
     })
 }
 
