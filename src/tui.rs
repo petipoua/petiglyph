@@ -1911,9 +1911,25 @@ fn draw_welcome_view(
             let sample = if font.sample.is_empty() {
                 "[sample unavailable]".to_string()
             } else if font.truncated {
-                format!("{}...", spaced_sample(&font.sample))
+                format!("{}...", &font.sample)
             } else {
-                spaced_sample(&font.sample)
+                font.sample.clone()
+            };
+            let is_composed_sample = font.sample.contains('\n');
+            let display_sample = if is_composed_sample {
+                sample
+                    .lines()
+                    .map(|line| {
+                        if line.contains(' ') {
+                            line.to_string()
+                        } else {
+                            line.chars().map(|c| c.to_string()).collect::<Vec<_>>().join(" ")
+                        }
+                    })
+                    .collect::<Vec<_>>()
+                    .join("\n")
+            } else {
+                sample
             };
             let uninstall_button_style = if app.is_selected_font_uninstall_in_progress(&font.path) {
                 app.font_task_button_style()
@@ -1966,7 +1982,7 @@ fn draw_welcome_view(
                     Style::default().fg(muted),
                 ),
             ]));
-            for line in wrap_sample_for_display(&sample, sample_wrap_width) {
+            for line in wrap_sample_for_display(&display_sample, sample_wrap_width) {
                 font_rows.push(Line::from(vec![
                     Span::raw("    "),
                     Span::styled(
@@ -5370,23 +5386,6 @@ pub(crate) fn wrap_sample_for_display(sample: &str, max_chars: usize) -> Vec<Str
     }
 
     lines
-}
-
-pub(crate) fn spaced_sample(sample: &str) -> String {
-    sample
-        .split('\n')
-        .map(|line| {
-            let mut out = String::new();
-            for (index, ch) in line.chars().enumerate() {
-                if index > 0 {
-                    out.push_str("  ");
-                }
-                out.push(ch);
-            }
-            out
-        })
-        .collect::<Vec<_>>()
-        .join("\n")
 }
 
 #[cfg(test)]

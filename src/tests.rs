@@ -28,7 +28,7 @@ use crate::tui::{
     handle_key, handle_key_event_for_test, handle_paste_event_for_test, install_action_name,
     persist_threshold_override, render_ui_for_test, requested_keyboard_enhancement_flags,
     resolve_installed_font_path_with, sample_glyphs_from_ttf_bytes, should_dispatch_key_kind,
-    spaced_sample, switch_notice_visible, wrap_sample_for_display,
+    switch_notice_visible, wrap_sample_for_display,
 };
 
 fn make_temp_dir(name: &str) -> PathBuf {
@@ -971,16 +971,6 @@ fn home_view_renders_without_panicking() {
     render_ui_for_test(&app, 148, 46).expect("home view should render");
 
     fs::remove_dir_all(project_dir).expect("temp project dir is removed");
-}
-
-#[test]
-fn spaced_sample_separates_glyphs_for_readability() {
-    assert_eq!(spaced_sample("ABC"), "A  B  C");
-}
-
-#[test]
-fn spaced_sample_preserves_newlines_for_composed_samples() {
-    assert_eq!(spaced_sample("AB\nCD"), "A  B\nC  D");
 }
 
 #[test]
