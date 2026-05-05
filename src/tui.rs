@@ -575,7 +575,7 @@ fn scan_installed_petiglyph_fonts(cwd: &Path) -> Result<Vec<InstalledFontSample>
         let sample_from_manifest = sample_from_installed_font_metadata(&install_dir, &path)
             .ok()
             .flatten();
-        let (blocks, truncated) = if let Some(blocks) = sample_from_manifest {
+        let (raw_blocks, truncated) = if let Some(blocks) = sample_from_manifest {
             (blocks, false)
         } else {
             let (sample, truncated) = fs::read(&path)
@@ -584,6 +584,7 @@ fn scan_installed_petiglyph_fonts(cwd: &Path) -> Result<Vec<InstalledFontSample>
                 .unwrap_or_default();
             (vec![sample], truncated)
         };
+        let blocks = regroup_installed_sample_blocks(raw_blocks);
 
         samples.push(InstalledFontSample {
             file_name,
@@ -659,14 +660,37 @@ fn sample_from_manifest_path(manifest_path: &Path) -> Option<Vec<String>> {
     if sample.is_empty() {
         None
     } else {
-        Some(
+        Some(regroup_installed_sample_blocks(
             sample
                 .split("\n\n")
                 .map(|s| s.to_string())
-                .filter(|s| !s.is_empty())
-                .collect(),
-        )
+                .collect::<Vec<_>>(),
+        ))
     }
+}
+
+pub(crate) fn regroup_installed_sample_blocks(blocks: Vec<String>) -> Vec<String> {
+    let mut standard_blocks = Vec::new();
+    let mut grid_blocks = Vec::new();
+
+    for block in blocks {
+        let normalized = block.trim().to_string();
+        if normalized.is_empty() {
+            continue;
+        }
+        if normalized.contains('\n') {
+            grid_blocks.push(normalized);
+        } else {
+            standard_blocks.push(normalized);
+        }
+    }
+
+    let mut grouped = Vec::new();
+    if !standard_blocks.is_empty() {
+        grouped.push(standard_blocks.join(" "));
+    }
+    grouped.extend(grid_blocks);
+    grouped
 }
 
 pub(crate) fn sample_glyphs_from_ttf_bytes(bytes: &[u8], limit: usize) -> Option<(String, bool)> {

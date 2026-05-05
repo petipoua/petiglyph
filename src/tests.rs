@@ -23,11 +23,11 @@ use crate::project::{
     format_codepoint, load_runtime_config, parse_codepoint, read_manifest, write_manifest,
 };
 use crate::tui::{
-    App, AppView, GlyphsFocus, InstalledFontSample, InteractiveGlyph,
- TuiLaunchOverrides,
+    App, AppView, GlyphsFocus, InstalledFontSample, InteractiveGlyph, TuiLaunchOverrides,
     WelcomeFocus, build_action_name, format_projects_card_hint, format_welcome_input_field,
     handle_key, handle_key_event_for_test, handle_paste_event_for_test, install_action_name,
     persist_threshold_override, render_ui_for_test, requested_keyboard_enhancement_flags,
+    regroup_installed_sample_blocks,
     resolve_installed_font_path_with, sample_glyphs_from_ttf_bytes, should_dispatch_key_kind,
     switch_notice_visible, wrap_sample_for_display,
 };
@@ -633,6 +633,29 @@ fn wrap_sample_for_display_respects_chunk_size() {
 fn wrap_sample_for_display_preserves_multiline_grid_layout() {
     let wrapped = wrap_sample_for_display("ABCD\nEF\n\nGH", 2);
     assert_eq!(wrapped, vec!["AB", "CD", "EF", "", "GH"]);
+}
+
+#[test]
+fn regroup_installed_sample_blocks_merges_unitary_and_keeps_grids_ordered() {
+    let grouped = regroup_installed_sample_blocks(vec![
+        "A B".to_string(),
+        "C D".to_string(),
+        "XY\nZW".to_string(),
+        "E F".to_string(),
+        "12\n34".to_string(),
+    ]);
+    assert_eq!(grouped, vec!["A B C D E F", "XY\nZW", "12\n34"]);
+}
+
+#[test]
+fn regroup_installed_sample_blocks_filters_empty_and_whitespace_blocks() {
+    let grouped = regroup_installed_sample_blocks(vec![
+        "   ".to_string(),
+        "\n\n".to_string(),
+        "A B".to_string(),
+        " \nC\nD\n ".to_string(),
+    ]);
+    assert_eq!(grouped, vec!["A B", "C\nD"]);
 }
 
 #[test]
