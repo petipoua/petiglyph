@@ -11,7 +11,7 @@ use crate::artifact_warning::{INCOMPATIBLE_ARTIFACT_PREFIX, incompatible_artifac
 use crate::build::{
     BuildOptions, GlyphBitmap, MappingEntry, PreprocessedGlyph, bitmap_to_bdf_rows, build_outputs,
     build_outputs_with_options, collect_source_files, coverage_map, glyph_sample_string,
-    is_supported_source,
+    is_supported_source, preprocess_sources_with_compositions,
 };
 use crate::cli::{DefaultTuiTarget, resolve_default_tui_target_for};
 use crate::install::{
@@ -19,7 +19,7 @@ use crate::install::{
     expected_install_ttf_path_for_mode, reserve_project_unicode_range,
 };
 use crate::project::{
-    Manifest, RuntimeConfig, auto_detect_manifest_path, discover_project_manifests,
+    CompositionDef, Manifest, RuntimeConfig, auto_detect_manifest_path, discover_project_manifests,
     format_codepoint, load_runtime_config, parse_codepoint, read_manifest, write_manifest,
 };
 use crate::tui::{
@@ -71,6 +71,20 @@ fn write_transparent_rect_png(path: &Path, rect_width: u32, rect_height: u32) {
     }
 
     img.save(path).expect("test image is written");
+}
+
+fn write_quadrant_png(path: &Path, size: u32) {
+    let mut img = RgbaImage::from_pixel(size, size, Rgba([255, 255, 255, 0]));
+    let half = size / 2;
+    for y in 0..size {
+        for x in 0..size {
+            let on = (x < half && y < half) || (x >= half && y >= half);
+            if on {
+                img.put_pixel(x, y, Rgba([0, 0, 0, 255]));
+            }
+        }
+    }
+    img.save(path).expect("quadrant test image is written");
 }
 
 fn nonzero_coverage_bounds(coverage: &[u8], size: u32) -> Option<(u32, u32, u32, u32)> {
@@ -215,10 +229,9 @@ fn resolve_installed_font_path_detects_cli_project_prefixed_name() {
     )
     .expect("project-prefixed install path resolves");
 
-    let resolved =
-        resolve_installed_font_path_with(&manifest_path, "My Font", None, |path| {
-            path == prefixed_path.as_path()
-        });
+    let resolved = resolve_installed_font_path_with(&manifest_path, "My Font", None, |path| {
+        path == prefixed_path.as_path()
+    });
 
     assert_ne!(plain_path, prefixed_path);
     assert_eq!(resolved.as_deref(), Some(prefixed_path.as_path()));
@@ -238,12 +251,9 @@ fn resolve_installed_font_path_prefers_project_scoped_candidate_over_legacy_plai
         expected_install_ttf_path_for_mode(&manifest_path, "My Font", DEFAULT_INSTALL_NAME_MODE)
             .expect("project-scoped install path resolves");
 
-    let resolved = resolve_installed_font_path_with(
-        &manifest_path,
-        "My Font",
-        None,
-        |path| path == plain_path.as_path() || path == project_scoped_path.as_path(),
-    );
+    let resolved = resolve_installed_font_path_with(&manifest_path, "My Font", None, |path| {
+        path == plain_path.as_path() || path == project_scoped_path.as_path()
+    });
 
     assert_eq!(resolved.as_deref(), Some(project_scoped_path.as_path()));
 
@@ -369,11 +379,13 @@ fn unified_tui_zero_projects_starts_without_active_project() {
 
     handle_key(&mut app, KeyCode::Down).expect("down should stay on create input");
     assert_eq!(app.welcome_focus, WelcomeFocus::CreateInput);
-    handle_key(&mut app, KeyCode::Right).expect("right moves to verbose toggle when no active project");
+    handle_key(&mut app, KeyCode::Right)
+        .expect("right moves to verbose toggle when no active project");
     assert_eq!(app.welcome_focus, WelcomeFocus::VerbosePathsToggle);
     handle_key(&mut app, KeyCode::Left).expect("left stays on verbose toggle");
     assert_eq!(app.welcome_focus, WelcomeFocus::VerbosePathsToggle);
-    handle_key(&mut app, KeyCode::Down).expect("down from verbose toggle goes to create input when no projects");
+    handle_key(&mut app, KeyCode::Down)
+        .expect("down from verbose toggle goes to create input when no projects");
     // With no projects and no active project, down from VerbosePathsToggle goes to CreateInput
     handle_key(&mut app, KeyCode::Down).expect("down stays on create input");
     assert_eq!(app.welcome_focus, WelcomeFocus::CreateInput);
@@ -553,7 +565,8 @@ fn welcome_input_edit_mode_types_hjkl_without_navigation() {
 
     // clear the input so Enter won't submit_create, just cancels editing
     app.create_input = app.create_input.clone().with_value(String::new());
-    handle_key(&mut app, KeyCode::Enter).expect("enter exits typing mode without creating when input is empty");
+    handle_key(&mut app, KeyCode::Enter)
+        .expect("enter exits typing mode without creating when input is empty");
     assert!(!app.welcome_input_editing);
     assert_eq!(app.welcome_focus, WelcomeFocus::CreateInput);
 
@@ -632,6 +645,12 @@ fn glyph_sample_string_skips_non_scalar_values() {
 fn wrap_sample_for_display_respects_chunk_size() {
     let wrapped = wrap_sample_for_display("ABCDE", 2);
     assert_eq!(wrapped, vec!["AB", "CD", "E"]);
+}
+
+#[test]
+fn wrap_sample_for_display_preserves_multiline_grid_layout() {
+    let wrapped = wrap_sample_for_display("ABCD\nEF\n\nGH", 2);
+    assert_eq!(wrapped, vec!["AB", "CD", "EF", "", "GH"]);
 }
 
 #[test]
@@ -794,6 +813,7 @@ fn home_tool_list_runs_advanced_placeholder_action() {
         glyph_size: 8,
         base_threshold: 64,
         threshold_overrides: BTreeMap::new(),
+        compositions: BTreeMap::new(),
         codepoint_start: 0x10_0000,
     };
 
@@ -808,9 +828,54 @@ fn home_tool_list_runs_advanced_placeholder_action() {
     assert!(
         app.status
             .as_deref()
-            .is_some_and(|status| status.contains("Compose Grid is planned"))
+            .is_some_and(|status| status.contains("press c to create a 2x2 composition"))
     );
-    assert_eq!(app.view, AppView::Welcome);
+    assert_eq!(app.view, AppView::Glyphs);
+
+    fs::remove_dir_all(project_dir).expect("temp project dir is removed");
+}
+
+#[test]
+fn glyph_view_c_shortcuts_create_and_remove_composition_in_manifest() {
+    let project_dir = make_temp_dir("glyph-compose-shortcuts");
+    let manifest_path = project_dir.join("petiglyph.toml");
+    write_manifest(&manifest_path, &Manifest::default()).expect("manifest is written");
+
+    let icons_dir = project_dir.join("icons");
+    fs::create_dir_all(&icons_dir).expect("icons dir is created");
+    write_test_png(&icons_dir.join("icon.png"));
+
+    let mut app = App::new_workspace(
+        project_dir.clone(),
+        Some(manifest_path.clone()),
+        TuiLaunchOverrides::default(),
+    )
+    .expect("workspace app initializes");
+    app.view = AppView::Glyphs;
+
+    handle_key(&mut app, KeyCode::Char('c')).expect("create composition shortcut should work");
+    let manifest = read_manifest(&manifest_path).expect("manifest reloads");
+    assert_eq!(
+        manifest.compositions.get("icon.png"),
+        Some(&CompositionDef { rows: 2, cols: 2 })
+    );
+    assert!(
+        app.status
+            .as_deref()
+            .is_some_and(|status| status.contains("created composition"))
+    );
+
+    handle_key(&mut app, KeyCode::Char('C')).expect("remove composition shortcut should work");
+    let manifest = read_manifest(&manifest_path).expect("manifest reloads");
+    assert!(
+        !manifest.compositions.contains_key("icon.png"),
+        "composition should be removed from manifest"
+    );
+    assert!(
+        app.status
+            .as_deref()
+            .is_some_and(|status| status.contains("removed composition"))
+    );
 
     fs::remove_dir_all(project_dir).expect("temp project dir is removed");
 }
@@ -834,6 +899,7 @@ fn home_installed_font_buttons_can_be_navigated() {
         glyph_size: 8,
         base_threshold: 64,
         threshold_overrides: BTreeMap::new(),
+        compositions: BTreeMap::new(),
         codepoint_start: 0x10_0000,
     };
 
@@ -897,6 +963,7 @@ fn home_view_renders_without_panicking() {
         glyph_size: 8,
         base_threshold: 64,
         threshold_overrides: BTreeMap::new(),
+        compositions: BTreeMap::new(),
         codepoint_start: 0x10_0000,
     };
 
@@ -909,6 +976,11 @@ fn home_view_renders_without_panicking() {
 #[test]
 fn spaced_sample_separates_glyphs_for_readability() {
     assert_eq!(spaced_sample("ABC"), "A  B  C");
+}
+
+#[test]
+fn spaced_sample_preserves_newlines_for_composed_samples() {
+    assert_eq!(spaced_sample("AB\nCD"), "A  B\nC  D");
 }
 
 #[test]
@@ -1031,6 +1103,7 @@ fn build_outputs_generates_non_empty_repo_icon_font() {
         glyph_size: 64,
         base_threshold: 64,
         threshold_overrides: BTreeMap::new(),
+        compositions: BTreeMap::new(),
         codepoint_start: 0x10_0000,
     };
 
@@ -1081,6 +1154,186 @@ fn build_outputs_generates_non_empty_repo_icon_font() {
 }
 
 #[test]
+fn build_outputs_composition_writes_grid_sample_and_contiguous_codepoints() {
+    let project_dir = make_temp_dir("composition-grid-sample");
+    let input_dir = project_dir.join("icons");
+    fs::create_dir_all(&input_dir).expect("icons dir is created");
+    write_quadrant_png(&input_dir.join("logo.png"), 80);
+
+    let manifest_path = project_dir.join("petiglyph.toml");
+    let mut manifest = Manifest::default();
+    manifest.project_id = Some("test-composition-grid-sample".to_string());
+    manifest
+        .compositions
+        .insert("logo.png".to_string(), CompositionDef { rows: 2, cols: 2 });
+    write_manifest(&manifest_path, &manifest).expect("manifest is written");
+
+    let config = load_runtime_config(&manifest_path, None, None, None, None, None)
+        .expect("runtime config loads");
+    let summary = build_outputs(&config).expect("build succeeds");
+
+    let mapping: Vec<MappingEntry> = serde_json::from_str(
+        &fs::read_to_string(&summary.mapping_path).expect("mapping is written"),
+    )
+    .expect("mapping parses");
+    assert_eq!(
+        mapping.len(),
+        4,
+        "2x2 composition should emit 4 glyph tiles"
+    );
+
+    let codepoints = mapping
+        .iter()
+        .map(|entry| parse_codepoint(&entry.codepoint).expect("codepoint parses"))
+        .collect::<Vec<_>>();
+    for pair in codepoints.windows(2) {
+        assert_eq!(pair[1], pair[0] + 1, "composition tiles must be contiguous");
+    }
+
+    let sample = fs::read_to_string(summary.sample_path).expect("sample is written");
+    let sample = sample.trim_end();
+    let lines = sample.lines().collect::<Vec<_>>();
+    assert_eq!(
+        lines.len(),
+        2,
+        "sample should preserve composition row layout"
+    );
+    assert_eq!(lines[0].chars().count(), 2);
+    assert_eq!(lines[1].chars().count(), 2);
+    assert!(
+        !sample.contains(' '),
+        "composed sample should be a compact grid without spaces"
+    );
+
+    fs::remove_dir_all(project_dir).expect("temp project dir is removed");
+}
+
+#[test]
+fn preprocess_composition_tiles_keep_corner_alignment_without_recentering() {
+    let project_dir = make_temp_dir("composition-corner-alignment");
+    let input_dir = project_dir.join("icons");
+    fs::create_dir_all(&input_dir).expect("icons dir is created");
+
+    let mut img = RgbaImage::from_pixel(32, 32, Rgba([255, 255, 255, 0]));
+    img.put_pixel(0, 0, Rgba([0, 0, 0, 255]));
+    img.save(input_dir.join("dot.png"))
+        .expect("dot image is written");
+
+    let mut compositions = BTreeMap::new();
+    compositions.insert("dot.png".to_string(), CompositionDef { rows: 2, cols: 2 });
+    let sources = vec![input_dir.join("dot.png")];
+    let glyphs = preprocess_sources_with_compositions(&sources, &input_dir, 16, &compositions)
+        .expect("composition preprocess succeeds");
+    assert_eq!(glyphs.len(), 4);
+
+    let top_left = glyphs
+        .iter()
+        .find(|glyph| {
+            glyph
+                .composition_tile
+                .as_ref()
+                .is_some_and(|tile| tile.row == 0 && tile.col == 0)
+        })
+        .expect("top-left tile exists");
+    let bounds = nonzero_coverage_bounds(&top_left.coverage, 16).expect("tile should be visible");
+    assert!(
+        bounds.0 <= 2 && bounds.1 <= 2,
+        "top-left tile content should stay near top-left (got bounds {:?})",
+        bounds
+    );
+
+    let top_right = glyphs
+        .iter()
+        .find(|glyph| {
+            glyph
+                .composition_tile
+                .as_ref()
+                .is_some_and(|tile| tile.row == 0 && tile.col == 1)
+        })
+        .expect("top-right tile exists");
+    assert!(
+        nonzero_coverage_bounds(&top_right.coverage, 16).is_none(),
+        "neighbor tiles should remain empty for corner-only source content"
+    );
+
+    fs::remove_dir_all(project_dir).expect("temp project dir is removed");
+}
+
+#[test]
+fn build_outputs_remaps_noncontiguous_composition_lock_into_contiguous_run() {
+    let project_dir = make_temp_dir("composition-lock-remap");
+    let input_dir = project_dir.join("icons");
+    fs::create_dir_all(&input_dir).expect("icons dir is created");
+    write_quadrant_png(&input_dir.join("icon.png"), 64);
+
+    let manifest_path = project_dir.join("petiglyph.toml");
+    let mut manifest = Manifest::default();
+    manifest.project_id = Some("test-composition-lock-remap".to_string());
+    manifest
+        .compositions
+        .insert("icon.png".to_string(), CompositionDef { rows: 2, cols: 2 });
+    write_manifest(&manifest_path, &manifest).expect("manifest is written");
+
+    let lock_path = project_dir.join("petiglyph.lock");
+    let lock = serde_json::json!({
+        "version": 1,
+        "project_id": "test-composition-lock-remap",
+        "codepoint_start": "U+100000",
+        "entries": [
+            { "source_file": "icon.png#compose:2x2:0:0", "codepoint": "U+100000", "image_fingerprint": "fnv1a64:a", "active": true },
+            { "source_file": "icon.png#compose:2x2:0:1", "codepoint": "U+100002", "image_fingerprint": "fnv1a64:b", "active": true },
+            { "source_file": "icon.png#compose:2x2:1:0", "codepoint": "U+100001", "image_fingerprint": "fnv1a64:c", "active": true },
+            { "source_file": "icon.png#compose:2x2:1:1", "codepoint": "U+100003", "image_fingerprint": "fnv1a64:d", "active": true }
+        ]
+    });
+    fs::write(
+        &lock_path,
+        serde_json::to_string_pretty(&lock).expect("lock serializes"),
+    )
+    .expect("lock is written");
+
+    let config = load_runtime_config(&manifest_path, None, None, None, None, None)
+        .expect("runtime config loads");
+    let summary = build_outputs(&config).expect("build succeeds");
+    let mapping: Vec<MappingEntry> = serde_json::from_str(
+        &fs::read_to_string(summary.mapping_path).expect("mapping is written"),
+    )
+    .expect("mapping parses");
+
+    let codepoints = mapping
+        .iter()
+        .map(|entry| parse_codepoint(&entry.codepoint).expect("codepoint parses"))
+        .collect::<Vec<_>>();
+    for pair in codepoints.windows(2) {
+        assert_eq!(pair[1], pair[0] + 1, "composition tiles must be contiguous");
+    }
+    assert!(
+        codepoints[0] > 0x10_0003,
+        "remap should allocate a fresh contiguous run when legacy mapping is fragmented"
+    );
+
+    let updated_lock: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(lock_path).expect("lock is readable"))
+            .expect("updated lock parses");
+    let retired_count = updated_lock["entries"]
+        .as_array()
+        .expect("entries is an array")
+        .iter()
+        .filter(|entry| {
+            entry["source_file"]
+                .as_str()
+                .is_some_and(|value| value.contains("#retired:"))
+        })
+        .count();
+    assert!(
+        retired_count >= 1,
+        "remapped composition should keep retired tombstones in lock"
+    );
+
+    fs::remove_dir_all(project_dir).expect("temp project dir is removed");
+}
+
+#[test]
 fn build_outputs_centers_non_square_glyphs_in_ttf_line_box() {
     let project_dir = make_temp_dir("non-square-centering");
     let input_dir = project_dir.join("icons");
@@ -1098,6 +1351,7 @@ fn build_outputs_centers_non_square_glyphs_in_ttf_line_box() {
         glyph_size: 64,
         base_threshold: 64,
         threshold_overrides: BTreeMap::new(),
+        compositions: BTreeMap::new(),
         codepoint_start: 0x10_0000,
     };
 
@@ -1161,6 +1415,7 @@ fn build_outputs_embeds_project_identity_in_ttf_unique_name() {
         glyph_size: 16,
         base_threshold: 64,
         threshold_overrides: BTreeMap::new(),
+        compositions: BTreeMap::new(),
         codepoint_start: 0x10_0000,
     };
 
@@ -1206,6 +1461,7 @@ fn sample_glyphs_from_ttf_bytes_limits_preview_to_requested_count() {
         glyph_size: 16,
         base_threshold: 64,
         threshold_overrides: BTreeMap::new(),
+        compositions: BTreeMap::new(),
         codepoint_start: 0x10_0000,
     };
     let summary = build_outputs(&config).expect("build succeeds");
@@ -1238,6 +1494,7 @@ fn build_outputs_supports_upper_unicode_edge() {
         glyph_size: 32,
         base_threshold: 64,
         threshold_overrides: BTreeMap::new(),
+        compositions: BTreeMap::new(),
         codepoint_start: 0x10_FFFE,
     };
 
@@ -1278,6 +1535,7 @@ fn build_outputs_rejects_codepoint_range_above_unicode_max() {
         glyph_size: 32,
         base_threshold: 64,
         threshold_overrides: BTreeMap::new(),
+        compositions: BTreeMap::new(),
         codepoint_start: 0x10_FFFF,
     };
 
@@ -1310,6 +1568,7 @@ fn build_outputs_rejects_codepoint_range_crossing_surrogates() {
         glyph_size: 32,
         base_threshold: 64,
         threshold_overrides: BTreeMap::new(),
+        compositions: BTreeMap::new(),
         codepoint_start: 0xD7FF,
     };
 
@@ -1366,6 +1625,7 @@ fn build_outputs_preserves_existing_codepoints_when_new_sorted_source_is_added()
         glyph_size: 16,
         base_threshold: 64,
         threshold_overrides: BTreeMap::new(),
+        compositions: BTreeMap::new(),
         codepoint_start: 0x10_0000,
     };
 
@@ -1448,6 +1708,7 @@ fn build_outputs_tombstones_removed_sources_and_does_not_reuse_their_codepoints(
         glyph_size: 16,
         base_threshold: 64,
         threshold_overrides: BTreeMap::new(),
+        compositions: BTreeMap::new(),
         codepoint_start: 0x10_0000,
     };
 
@@ -1665,6 +1926,7 @@ fn build_force_remap_recovers_from_foreign_codepoint_conflict() {
         glyph_size: 16,
         base_threshold: 64,
         threshold_overrides: BTreeMap::new(),
+        compositions: BTreeMap::new(),
         codepoint_start: 0x10_0000,
     };
 
@@ -1729,6 +1991,7 @@ fn app_new_hydrates_previous_build_outputs_from_disk() {
         glyph_size: 8,
         base_threshold: 64,
         threshold_overrides: BTreeMap::new(),
+        compositions: BTreeMap::new(),
         codepoint_start: 0x10_0000,
     };
 
@@ -1760,6 +2023,7 @@ fn handle_key_updates_and_clears_selected_threshold_override() {
         glyph_size: 8,
         base_threshold: 64,
         threshold_overrides: BTreeMap::new(),
+        compositions: BTreeMap::new(),
         codepoint_start: 0x10_0000,
     };
 
@@ -1768,9 +2032,12 @@ fn handle_key_updates_and_clears_selected_threshold_override() {
         glyph: PreprocessedGlyph {
             source_path: project_dir.join("icons/icon.png"),
             source_key: "icon.png".to_string(),
+            source_parent_key: "icon.png".to_string(),
             glyph_name: "icon".to_string(),
             size: 8,
             coverage: vec![0; 64],
+            image_fingerprint: "fnv1a64:test".to_string(),
+            composition_tile: None,
         },
         saved_threshold: None,
         working_threshold: 64,
@@ -1833,6 +2100,7 @@ fn handle_key_supports_keypad_plus_minus_aliases_for_threshold() {
         glyph_size: 8,
         base_threshold: 64,
         threshold_overrides: BTreeMap::new(),
+        compositions: BTreeMap::new(),
         codepoint_start: 0x10_0000,
     };
 
@@ -1841,9 +2109,12 @@ fn handle_key_supports_keypad_plus_minus_aliases_for_threshold() {
         glyph: PreprocessedGlyph {
             source_path: project_dir.join("icons/icon.png"),
             source_key: "icon.png".to_string(),
+            source_parent_key: "icon.png".to_string(),
             glyph_name: "icon".to_string(),
             size: 8,
             coverage: vec![0; 64],
+            image_fingerprint: "fnv1a64:test".to_string(),
+            composition_tile: None,
         },
         saved_threshold: None,
         working_threshold: 64,
@@ -1893,6 +2164,7 @@ fn tab_cycles_panels_and_glyph_controls_stay_in_glyph_view() {
         glyph_size: 8,
         base_threshold: 64,
         threshold_overrides: BTreeMap::new(),
+        compositions: BTreeMap::new(),
         codepoint_start: 0x10_0000,
     };
 
@@ -1901,9 +2173,12 @@ fn tab_cycles_panels_and_glyph_controls_stay_in_glyph_view() {
         glyph: PreprocessedGlyph {
             source_path: project_dir.join("icons/icon.png"),
             source_key: "icon.png".to_string(),
+            source_parent_key: "icon.png".to_string(),
             glyph_name: "icon".to_string(),
             size: 8,
             coverage: vec![0; 64],
+            image_fingerprint: "fnv1a64:test".to_string(),
+            composition_tile: None,
         },
         saved_threshold: None,
         working_threshold: 64,
@@ -1967,6 +2242,7 @@ fn dropped_image_on_home_imports_and_switches_to_glyphs() {
         glyph_size: 8,
         base_threshold: 64,
         threshold_overrides: BTreeMap::new(),
+        compositions: BTreeMap::new(),
         codepoint_start: 0x10_0000,
     };
 
@@ -2019,6 +2295,7 @@ fn dropped_image_with_conflicting_name_is_renamed_without_overwrite() {
         glyph_size: 8,
         base_threshold: 64,
         threshold_overrides: BTreeMap::new(),
+        compositions: BTreeMap::new(),
         codepoint_start: 0x10_0000,
     };
 
@@ -2071,6 +2348,7 @@ fn handle_key_w_is_not_a_navigation_path() {
         glyph_size: 8,
         base_threshold: 64,
         threshold_overrides: BTreeMap::new(),
+        compositions: BTreeMap::new(),
         codepoint_start: 0x10_0000,
     };
 
@@ -2111,6 +2389,7 @@ fn build_shortcut_rebuilds_and_clears_previous_outputs() {
         glyph_size: 8,
         base_threshold: 64,
         threshold_overrides: BTreeMap::new(),
+        compositions: BTreeMap::new(),
         codepoint_start: 0x10_0000,
     };
 
@@ -2188,6 +2467,7 @@ fn tui_launch_overrides_persist_through_reload_and_build() {
         codepoint_start: "U+100000".to_string(),
         project_id: Some("test-tui-overrides".to_string()),
         threshold_overrides: BTreeMap::new(),
+        compositions: BTreeMap::new(),
     };
     write_manifest(&manifest_path, &manifest).expect("manifest is written");
 

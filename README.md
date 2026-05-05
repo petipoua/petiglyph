@@ -336,9 +336,13 @@ codepoint_start = "U+100000"
 [threshold_overrides]
 "codex.png" = 72
 "factory.svg" = 51
+
+[compositions]
+"ollama.png" = { rows = 2, cols = 3 }
 ```
 
 `threshold_overrides` stores per-file threshold tuning relative to `input_dir`.
+`compositions` stores per-file tile grids; each tile becomes its own glyph and is arranged as a grid sample.
 `project_id` is managed automatically (generated if missing) and anchors install/Unicode ownership.
 
 ## TUI Keys
@@ -346,10 +350,13 @@ codepoint_start = "U+100000"
 - TUI viewport is centered and capped at `148x46`; terminals smaller than `96x28` show a size warning screen
 - `Tab`: cycle Home -> Glyphs
 - `1` / `2`: switch between Home and Glyphs panels
-- Home shows detected project folders, project creation controls, build/install actions, advanced generator placeholder buttons inside the projects card, a current-project panel for outputs/sample, and a machine-wide installed petiglyph font inventory with sample glyphs
+- Home shows detected project folders, project creation controls, build/install actions, advanced generator actions (Compose Grid / Animate Glyph), a current-project panel for outputs/sample, and a machine-wide installed petiglyph font inventory with sample glyphs
 - Home navigation: project list uses `↑` / `↓`; the create/build/install/generator controls use stacked rows with `←` / `→` moving within a row and `↑` / `↓` moving between rows; `Enter` opens the selected project or runs the focused Home action (including uninstall for the selected installed-font row)
 - `R`: rescan the workspace project list and the active project's `icons/`
 - `j` / `k` or `↑` / `↓`: select glyph (Glyphs view)
+- `Enter` / `Space`: expand or collapse a composed parent row in Glyphs view
+- `c`: create a default `2x2` composition for the selected image
+- `C`: remove the selected image composition from `petiglyph.toml`
 - `←` / `→` or `+` / `-`: adjust threshold by 1 for selected glyph (Glyphs view)
 - `PgUp` / `PgDn`: adjust threshold by 10 for selected glyph (Glyphs view)
 - `r`: clear selected glyph override (Glyphs view)

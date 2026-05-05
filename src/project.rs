@@ -19,6 +19,14 @@ pub(crate) struct Manifest {
     pub(crate) project_id: Option<String>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub(crate) threshold_overrides: BTreeMap<String, u8>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub(crate) compositions: BTreeMap<String, CompositionDef>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub(crate) struct CompositionDef {
+    pub(crate) rows: usize,
+    pub(crate) cols: usize,
 }
 
 impl Default for Manifest {
@@ -32,6 +40,7 @@ impl Default for Manifest {
             codepoint_start: "U+100000".to_string(),
             project_id: None,
             threshold_overrides: BTreeMap::new(),
+            compositions: BTreeMap::new(),
         }
     }
 }
@@ -46,6 +55,7 @@ pub(crate) struct RuntimeConfig {
     pub(crate) glyph_size: u32,
     pub(crate) base_threshold: u8,
     pub(crate) threshold_overrides: BTreeMap<String, u8>,
+    pub(crate) compositions: BTreeMap<String, CompositionDef>,
     pub(crate) codepoint_start: u32,
 }
 
@@ -288,6 +298,20 @@ pub(crate) fn load_runtime_config(
         write_manifest(manifest_path, &manifest)?;
     }
 
+    for (source_key, composition) in &manifest.compositions {
+        if source_key.trim().is_empty() {
+            bail!("composition entry has an empty source key");
+        }
+        if composition.rows == 0 || composition.cols == 0 {
+            bail!(
+                "composition {} has invalid grid {}x{}; rows/cols must be > 0",
+                source_key,
+                composition.rows,
+                composition.cols
+            );
+        }
+    }
+
     Ok(RuntimeConfig {
         project_dir: base.to_path_buf(),
         project_id,
@@ -297,6 +321,7 @@ pub(crate) fn load_runtime_config(
         glyph_size,
         base_threshold,
         threshold_overrides: manifest.threshold_overrides,
+        compositions: manifest.compositions,
         codepoint_start,
     })
 }

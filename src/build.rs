@@ -13,16 +13,28 @@ use std::thread;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use walkdir::WalkDir;
 
+use crate::compose::compose_tiles;
 use crate::install::reserve_project_unicode_range;
-use crate::project::{RuntimeConfig, format_codepoint, parse_codepoint};
+use crate::project::{CompositionDef, RuntimeConfig, format_codepoint, parse_codepoint};
 
 #[derive(Debug, Clone)]
 pub(crate) struct PreprocessedGlyph {
     pub(crate) source_path: PathBuf,
     pub(crate) source_key: String,
+    pub(crate) source_parent_key: String,
     pub(crate) glyph_name: String,
     pub(crate) size: u32,
     pub(crate) coverage: Vec<u8>,
+    pub(crate) image_fingerprint: String,
+    pub(crate) composition_tile: Option<CompositionTileInfo>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct CompositionTileInfo {
+    pub(crate) rows: usize,
+    pub(crate) cols: usize,
+    pub(crate) row: usize,
+    pub(crate) col: usize,
 }
 
 #[derive(Debug, Clone)]
@@ -102,7 +114,12 @@ pub(crate) fn build_outputs_with_options(
     options: BuildOptions,
 ) -> Result<BuildSummary> {
     let sources = collect_source_files(&config.input_dir)?;
-    let glyphs = preprocess_sources(&sources, &config.input_dir, config.glyph_size)?;
+    let glyphs = preprocess_sources_with_compositions(
+        &sources,
+        &config.input_dir,
+        config.glyph_size,
+        &config.compositions,
+    )?;
     validate_codepoint_range(config.codepoint_start, glyphs.len())?;
     let assigned_codepoints = assign_codepoints_for_build(config, &glyphs, options)?;
 
@@ -170,7 +187,7 @@ pub(crate) fn build_outputs_with_options(
     )?;
 
     let sample_path = config.out_dir.join("glyph-sample.txt");
-    let sample = glyph_sample_string_for_codepoints(&assigned_codepoints);
+    let sample = generate_smart_sample(&glyphs, &assigned_codepoints);
     fs::write(&sample_path, format!("{sample}\n"))
         .with_context(|| format!("failed to write {}", sample_path.display()))?;
 
@@ -300,14 +317,18 @@ fn save_glyph_lock(config: &RuntimeConfig, lock: &GlyphLockFile) -> Result<()> {
     fs::write(&path, raw).with_context(|| format!("failed to write {}", path.display()))
 }
 
-fn fingerprint_source(path: &Path) -> Result<String> {
-    let data = fs::read(path).with_context(|| format!("failed to read {}", path.display()))?;
+fn fingerprint_bytes(data: &[u8]) -> String {
     let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
     for byte in data {
-        hash ^= u64::from(byte);
+        hash ^= u64::from(*byte);
         hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
     }
-    Ok(format!("fnv1a64:{hash:016x}"))
+    format!("fnv1a64:{hash:016x}")
+}
+
+fn fingerprint_source(path: &Path) -> Result<String> {
+    let data = fs::read(path).with_context(|| format!("failed to read {}", path.display()))?;
+    Ok(fingerprint_bytes(&data))
 }
 
 fn next_available_codepoint(start: u32, used: &BTreeSet<u32>) -> Result<u32> {
@@ -328,6 +349,168 @@ fn next_available_codepoint(start: u32, used: &BTreeSet<u32>) -> Result<u32> {
             .checked_add(1)
             .ok_or_else(|| anyhow::anyhow!("no available Unicode codepoint left"))?;
     }
+}
+
+fn next_available_codepoint_run(
+    start: u32,
+    used: &BTreeSet<u32>,
+    span: usize,
+    allocation_end: u32,
+) -> Result<Vec<u32>> {
+    if span == 0 {
+        bail!("cannot allocate an empty codepoint run");
+    }
+    if span == 1 {
+        return Ok(vec![next_available_codepoint(start, used)?]);
+    }
+
+    let span_u32 = u32::try_from(span).context("codepoint run size overflow")?;
+    let mut candidate = start;
+    loop {
+        let last = candidate
+            .checked_add(span_u32.saturating_sub(1))
+            .ok_or_else(|| anyhow::anyhow!("no available Unicode codepoint run left"))?;
+        if last > allocation_end {
+            bail!(
+                "no contiguous Unicode run of {} codepoints available from U+{:04X} to {}",
+                span,
+                start,
+                format_codepoint(allocation_end)
+            );
+        }
+
+        let mut valid = true;
+        for offset in 0..span_u32 {
+            let cp = candidate + offset;
+            if !is_valid_unicode_scalar(cp) || used.contains(&cp) {
+                valid = false;
+                candidate = cp
+                    .checked_add(1)
+                    .ok_or_else(|| anyhow::anyhow!("no available Unicode codepoint run left"))?;
+                break;
+            }
+        }
+
+        if valid {
+            return Ok((0..span_u32).map(|offset| candidate + offset).collect());
+        }
+    }
+}
+
+fn retired_source_key(source_key: &str, old_codepoint: u32) -> String {
+    format!("{source_key}#retired:{old_codepoint:06X}")
+}
+
+#[derive(Debug, Clone, Copy)]
+struct GlyphGroupPlan {
+    start_idx: usize,
+    len: usize,
+    reusable: bool,
+    is_composition: bool,
+}
+
+fn detect_glyph_groups(
+    glyphs: &[PreprocessedGlyph],
+    entries_by_source: &BTreeMap<String, GlyphLockEntry>,
+) -> Result<(Vec<GlyphGroupPlan>, usize)> {
+    let mut groups = Vec::new();
+    let mut new_allocations = 0usize;
+    let mut idx = 0usize;
+    while idx < glyphs.len() {
+        let glyph = &glyphs[idx];
+        if let Some(tile) = &glyph.composition_tile {
+            if tile.row != 0 || tile.col != 0 {
+                bail!(
+                    "composition tile ordering is invalid for {} (first tile must be row=0,col=0)",
+                    glyph.source_parent_key
+                );
+            }
+
+            let len = tile.rows.checked_mul(tile.cols).ok_or_else(|| {
+                anyhow::anyhow!("composition grid too large for {}", glyph.source_parent_key)
+            })?;
+            if idx + len > glyphs.len() {
+                bail!(
+                    "composition glyph count mismatch for {}: expected {} tiles",
+                    glyph.source_parent_key,
+                    len
+                );
+            }
+
+            for offset in 0..len {
+                let expected_row = offset / tile.cols;
+                let expected_col = offset % tile.cols;
+                let child = &glyphs[idx + offset];
+                let Some(child_tile) = &child.composition_tile else {
+                    bail!(
+                        "composition glyph sequence interrupted for {}",
+                        glyph.source_parent_key
+                    );
+                };
+                if child.source_parent_key != glyph.source_parent_key
+                    || child_tile.rows != tile.rows
+                    || child_tile.cols != tile.cols
+                    || child_tile.row != expected_row
+                    || child_tile.col != expected_col
+                {
+                    bail!(
+                        "composition glyph sequence ordering mismatch for {}",
+                        glyph.source_parent_key
+                    );
+                }
+            }
+
+            let mut all_exist = true;
+            let mut cps = Vec::with_capacity(len);
+            for offset in 0..len {
+                let child = &glyphs[idx + offset];
+                let Some(entry) = entries_by_source.get(&child.source_key) else {
+                    all_exist = false;
+                    break;
+                };
+                cps.push(parse_codepoint(&entry.codepoint)?);
+            }
+            let reusable = if all_exist {
+                let first = cps[0];
+                cps.iter()
+                    .enumerate()
+                    .all(|(offset, cp)| *cp == first + offset as u32)
+            } else {
+                false
+            };
+
+            if !reusable {
+                new_allocations = new_allocations
+                    .checked_add(len)
+                    .ok_or_else(|| anyhow::anyhow!("glyph count is too large to allocate"))?;
+            }
+
+            groups.push(GlyphGroupPlan {
+                start_idx: idx,
+                len,
+                reusable,
+                is_composition: true,
+            });
+            idx += len;
+            continue;
+        }
+
+        let reusable = entries_by_source.contains_key(&glyph.source_key);
+        if !reusable {
+            new_allocations = new_allocations
+                .checked_add(1)
+                .ok_or_else(|| anyhow::anyhow!("glyph count is too large to allocate"))?;
+        }
+        groups.push(GlyphGroupPlan {
+            start_idx: idx,
+            len: 1,
+            reusable,
+            is_composition: false,
+        });
+        idx += 1;
+    }
+
+    Ok((groups, new_allocations))
 }
 
 fn assign_codepoints_for_build(
@@ -371,20 +554,11 @@ fn assign_codepoints_for_build(
         }
     }
 
-    let mut existing_active_sources = BTreeSet::new();
-    for glyph in glyphs {
-        existing_active_sources.insert(glyph.source_key.clone());
-    }
-    let mut missing_sources = 0usize;
-    for source_key in &existing_active_sources {
-        if !entries_by_source.contains_key(source_key) {
-            missing_sources += 1;
-        }
-    }
+    let (group_plans, new_allocations) = detect_glyph_groups(glyphs, &entries_by_source)?;
 
     let required_codepoints = used_codepoints
         .len()
-        .checked_add(missing_sources)
+        .checked_add(new_allocations)
         .ok_or_else(|| anyhow::anyhow!("glyph count is too large to allocate codepoints"))?;
     #[cfg(test)]
     let registry_root_override = Some(config.project_dir.as_path());
@@ -411,41 +585,86 @@ fn assign_codepoints_for_build(
     let allocation_end = range.range_end;
     lock.codepoint_start = format_codepoint(allocation_start);
 
-    let mut assigned = Vec::with_capacity(glyphs.len());
+    let mut assigned = vec![0u32; glyphs.len()];
     let mut active_sources = BTreeSet::new();
 
-    for glyph in glyphs {
-        active_sources.insert(glyph.source_key.clone());
-        let fingerprint = fingerprint_source(&glyph.source_path)?;
-
-        if let Some(entry) = entries_by_source.get_mut(&glyph.source_key) {
-            entry.active = true;
-            entry.image_fingerprint = fingerprint;
-            assigned.push(parse_codepoint(&entry.codepoint)?);
+    for plan in &group_plans {
+        if plan.reusable {
+            for offset in 0..plan.len {
+                let idx = plan.start_idx + offset;
+                let glyph = &glyphs[idx];
+                active_sources.insert(glyph.source_key.clone());
+                let Some(entry) = entries_by_source.get_mut(&glyph.source_key) else {
+                    bail!("missing glyph lock entry for {}", glyph.source_key);
+                };
+                entry.active = true;
+                entry.image_fingerprint = glyph.image_fingerprint.clone();
+                assigned[idx] = parse_codepoint(&entry.codepoint)?;
+            }
             continue;
         }
 
-        let codepoint = next_available_codepoint(allocation_start, &used_codepoints)?;
-        if codepoint > allocation_end {
-            bail!(
-                "Unicode range conflict: project {} exhausted its owned range {}..{}",
-                config.project_id,
-                format_codepoint(allocation_start),
-                format_codepoint(allocation_end)
-            );
-        }
-        used_codepoints.insert(codepoint);
+        let allocated = if plan.is_composition {
+            next_available_codepoint_run(
+                allocation_start,
+                &used_codepoints,
+                plan.len,
+                allocation_end,
+            )?
+        } else {
+            vec![next_available_codepoint(
+                allocation_start,
+                &used_codepoints,
+            )?]
+        };
 
-        entries_by_source.insert(
-            glyph.source_key.clone(),
-            GlyphLockEntry {
-                source_file: glyph.source_key.clone(),
-                codepoint: format_codepoint(codepoint),
-                image_fingerprint: fingerprint,
-                active: true,
-            },
-        );
-        assigned.push(codepoint);
+        for codepoint in &allocated {
+            if *codepoint > allocation_end {
+                bail!(
+                    "Unicode range conflict: project {} exhausted its owned range {}..{}",
+                    config.project_id,
+                    format_codepoint(allocation_start),
+                    format_codepoint(allocation_end)
+                );
+            }
+            used_codepoints.insert(*codepoint);
+        }
+
+        for offset in 0..plan.len {
+            let idx = plan.start_idx + offset;
+            let glyph = &glyphs[idx];
+            active_sources.insert(glyph.source_key.clone());
+            let codepoint = allocated[offset];
+
+            let existing_old = entries_by_source
+                .get(&glyph.source_key)
+                .map(|entry| (entry.codepoint.clone(), entry.image_fingerprint.clone()));
+            if let Some((old_codepoint_raw, old_fingerprint)) = existing_old {
+                let old_codepoint = parse_codepoint(&old_codepoint_raw)?;
+                if old_codepoint != codepoint {
+                    let retired_key = retired_source_key(&glyph.source_key, old_codepoint);
+                    entries_by_source
+                        .entry(retired_key.clone())
+                        .or_insert(GlyphLockEntry {
+                            source_file: retired_key,
+                            codepoint: format_codepoint(old_codepoint),
+                            image_fingerprint: old_fingerprint,
+                            active: false,
+                        });
+                }
+            }
+
+            entries_by_source.insert(
+                glyph.source_key.clone(),
+                GlyphLockEntry {
+                    source_file: glyph.source_key.clone(),
+                    codepoint: format_codepoint(codepoint),
+                    image_fingerprint: glyph.image_fingerprint.clone(),
+                    active: true,
+                },
+            );
+            assigned[idx] = codepoint;
+        }
     }
 
     for (source_key, entry) in &mut entries_by_source {
@@ -581,29 +800,82 @@ fn effective_threshold(
     overrides.get(source_key).copied().unwrap_or(base_threshold)
 }
 
+#[allow(dead_code)]
 pub(crate) fn preprocess_sources(
     sources: &[PathBuf],
     input_dir: &Path,
     glyph_size: u32,
 ) -> Result<Vec<PreprocessedGlyph>> {
+    preprocess_sources_with_compositions(sources, input_dir, glyph_size, &BTreeMap::new())
+}
+
+pub(crate) fn preprocess_sources_with_compositions(
+    sources: &[PathBuf],
+    input_dir: &Path,
+    glyph_size: u32,
+    compositions: &BTreeMap<String, CompositionDef>,
+) -> Result<Vec<PreprocessedGlyph>> {
     let mut used_names = HashSet::new();
-    let mut out = Vec::with_capacity(sources.len());
+    let mut out = Vec::new();
 
     for source in sources {
+        let source_key = source_manifest_key(source, input_dir);
+        if let Some(def) = compositions.get(&source_key) {
+            let tiles = compose_tiles(source, def.rows, def.cols, glyph_size)?;
+            let base_name = unique_glyph_name(source, &mut used_names);
+            for tile in tiles {
+                let tile_source_key =
+                    compose_tile_source_key(&source_key, tile.rows, tile.cols, tile.row, tile.col);
+                let tile_name = unique_glyph_name_for_seed(
+                    &format!("{}_r{}_c{}", base_name, tile.row + 1, tile.col + 1),
+                    &mut used_names,
+                );
+                out.push(PreprocessedGlyph {
+                    source_path: source.clone(),
+                    source_key: tile_source_key,
+                    source_parent_key: source_key.clone(),
+                    glyph_name: tile_name,
+                    size: glyph_size,
+                    coverage: tile.coverage,
+                    image_fingerprint: tile.fingerprint,
+                    composition_tile: Some(CompositionTileInfo {
+                        rows: tile.rows,
+                        cols: tile.cols,
+                        row: tile.row,
+                        col: tile.col,
+                    }),
+                });
+            }
+            continue;
+        }
+
         let source_rgba = load_source_rgba(source, glyph_size)?;
         let coverage = coverage_map(&source_rgba, glyph_size)?;
         let glyph_name = unique_glyph_name(source, &mut used_names);
-        let source_key = source_manifest_key(source, input_dir);
+        let image_fingerprint = fingerprint_source(source)?;
         out.push(PreprocessedGlyph {
             source_path: source.clone(),
-            source_key,
+            source_key: source_key.clone(),
+            source_parent_key: source_key,
             glyph_name,
             size: glyph_size,
             coverage,
+            image_fingerprint,
+            composition_tile: None,
         });
     }
 
     Ok(out)
+}
+
+fn compose_tile_source_key(
+    source_key: &str,
+    rows: usize,
+    cols: usize,
+    row: usize,
+    col: usize,
+) -> String {
+    format!("{source_key}#compose:{rows}x{cols}:{row}:{col}")
 }
 
 fn load_source_rgba(path: &Path, glyph_size: u32) -> Result<RgbaImage> {
@@ -1748,12 +2020,20 @@ fn unique_glyph_name(path: &Path, used: &mut HashSet<String>) -> String {
         .map(slugify)
         .filter(|s| !s.is_empty())
         .unwrap_or_else(|| "glyph".to_string());
+    unique_glyph_name_for_seed(&stem, used)
+}
 
+fn unique_glyph_name_for_seed(seed: &str, used: &mut HashSet<String>) -> String {
+    let stem = slugify(seed);
+    let stem = if stem.is_empty() {
+        "glyph".to_string()
+    } else {
+        stem
+    };
     if !used.contains(&stem) {
         used.insert(stem.clone());
         return stem;
     }
-
     let mut n = 2u32;
     loop {
         let candidate = format!("{stem}_{n}");
@@ -1808,6 +2088,71 @@ pub(crate) fn glyph_sample_string_for_codepoints(codepoints: &[u32]) -> String {
         }
     }
     out.trim_end().to_string()
+}
+
+fn generate_smart_sample(glyphs: &[PreprocessedGlyph], codepoints: &[u32]) -> String {
+    if glyphs.len() != codepoints.len() {
+        return glyph_sample_string_for_codepoints(codepoints);
+    }
+
+    let mut single_line = String::new();
+    let mut blocks = Vec::new();
+    let mut idx = 0usize;
+    while idx < glyphs.len() {
+        let glyph = &glyphs[idx];
+        if let Some(tile) = &glyph.composition_tile {
+            let span = tile.rows.saturating_mul(tile.cols);
+            if span == 0 || idx + span > glyphs.len() {
+                if let Some(ch) = char::from_u32(codepoints[idx]) {
+                    if !single_line.is_empty() {
+                        single_line.push(' ');
+                    }
+                    single_line.push(ch);
+                }
+                idx += 1;
+                continue;
+            }
+
+            if !single_line.is_empty() {
+                blocks.push(single_line.clone());
+                single_line.clear();
+            }
+
+            let mut rows = vec![String::new(); tile.rows];
+            for offset in 0..span {
+                let child = &glyphs[idx + offset];
+                let Some(child_tile) = &child.composition_tile else {
+                    continue;
+                };
+                if child_tile.rows != tile.rows
+                    || child_tile.cols != tile.cols
+                    || child.source_parent_key != glyph.source_parent_key
+                {
+                    continue;
+                }
+                if let Some(ch) = char::from_u32(codepoints[idx + offset]) {
+                    rows[child_tile.row].push(ch);
+                }
+            }
+            blocks.push(rows.join("\n"));
+            idx += span;
+            continue;
+        }
+
+        if let Some(ch) = char::from_u32(codepoints[idx]) {
+            if !single_line.is_empty() {
+                single_line.push(' ');
+            }
+            single_line.push(ch);
+        }
+        idx += 1;
+    }
+
+    if !single_line.is_empty() {
+        blocks.push(single_line);
+    }
+
+    blocks.join("\n")
 }
 
 #[allow(dead_code)]

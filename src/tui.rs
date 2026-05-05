@@ -34,7 +34,7 @@ use walkdir::WalkDir;
 use crate::artifact_warning::incompatible_artifact_warning;
 use crate::build::{
     BuildSummary, MappingEntry, PreprocessedGlyph, build_outputs, expected_bdf_path,
-    expected_ttf_path, is_supported_source, preprocess_sources,
+    expected_ttf_path, is_supported_source, preprocess_sources_with_compositions,
 };
 use crate::install::{
     DEFAULT_INSTALL_NAME_MODE, FontInstallNameMode, effective_font_name,
@@ -42,8 +42,9 @@ use crate::install::{
     installed_ttf_candidates_for_manifest_font, uninstall_installed_font_file,
 };
 use crate::project::{
-    RuntimeConfig, create_project_in_dir, delete_project_for_manifest, discover_project_manifests,
-    load_runtime_config, read_manifest, write_manifest,
+    CompositionDef, RuntimeConfig, create_project_in_dir, delete_project_for_manifest,
+    discover_project_manifests, format_codepoint, load_runtime_config, read_manifest,
+    write_manifest,
 };
 
 const CLI_VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -67,6 +68,8 @@ const DELETE_CONFIRM_DELETE_INDEX: usize = 4;
 const DELETE_CONFIRM_PATH: [(i8, i8); 5] = [(0, 0), (1, 0), (1, 1), (2, 1), (3, 1)];
 const HTY_FULL_REPAINT_ENV: &str = "PETIGLYPH_TUI_HTY_FULL_REPAINT";
 const GLYPH_SOURCE_COUNT_REFRESH_MS: u64 = 300;
+const INSTALL_METADATA_PREFIX: &str = ".petiglyph-install-";
+const INSTALL_METADATA_SUFFIX: &str = ".json";
 static HTY_FULL_REPAINT_ENABLED: OnceLock<bool> = OnceLock::new();
 
 #[derive(Debug, Clone, Default)]
@@ -89,6 +92,12 @@ pub(crate) struct InstalledFontSample {
     pub(crate) path: PathBuf,
     pub(crate) sample: String,
     pub(crate) truncated: bool,
+}
+
+#[derive(Debug, Clone, serde::Deserialize)]
+struct InstalledFontMetadataRecord {
+    manifest_path: String,
+    installed_ttf: String,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -254,7 +263,9 @@ pub(crate) enum HomeToolAction {
 impl HomeToolAction {
     fn description(self) -> &'static str {
         match self {
-            Self::ComposeGrid => "Planned: build combined glyphs from tiled source layouts.",
+            Self::ComposeGrid => {
+                "Build tiled glyph compositions from one source image (grid mode)."
+            }
             Self::AnimateGlyph => "Planned: build frame-based animated glyph assets.",
         }
     }
@@ -277,7 +288,9 @@ pub(crate) struct App {
     pub(crate) switch_notice: Option<ProjectSwitchNotice>,
     pub(crate) selected_home_tool: HomeToolAction,
     pub(crate) selected: usize,
+    pub(crate) selected_visible: usize,
     pub(crate) glyphs: Vec<InteractiveGlyph>,
+    expanded_compositions: BTreeSet<String>,
     pub(crate) quit: bool,
     pub(crate) status: Option<String>,
     pub(crate) view: AppView,
@@ -301,6 +314,25 @@ pub(crate) struct InteractiveGlyph {
     pub(crate) glyph: PreprocessedGlyph,
     pub(crate) saved_threshold: Option<u8>,
     pub(crate) working_threshold: u8,
+}
+
+#[derive(Debug, Clone)]
+enum VisibleGlyphRow {
+    Single {
+        glyph_idx: usize,
+    },
+    CompositionParent {
+        source_key: String,
+        rows: usize,
+        cols: usize,
+        first_child_idx: usize,
+    },
+    CompositionChild {
+        glyph_idx: usize,
+        source_key: String,
+        row: usize,
+        col: usize,
+    },
 }
 
 struct TerminalSession {
@@ -531,10 +563,17 @@ fn scan_installed_petiglyph_fonts(cwd: &Path) -> Result<Vec<InstalledFontSample>
             .unwrap_or("unknown.ttf")
             .to_string();
 
-        let (sample, truncated) = fs::read(&path)
+        let sample_from_manifest = sample_from_installed_font_metadata(&install_dir, &path)
             .ok()
-            .and_then(|bytes| sample_glyphs_from_ttf_bytes(&bytes, WELCOME_SAMPLE_LIMIT))
-            .unwrap_or_default();
+            .flatten();
+        let (sample, truncated) = if let Some(sample) = sample_from_manifest {
+            (sample, false)
+        } else {
+            fs::read(&path)
+                .ok()
+                .and_then(|bytes| sample_glyphs_from_ttf_bytes(&bytes, WELCOME_SAMPLE_LIMIT))
+                .unwrap_or_default()
+        };
 
         samples.push(InstalledFontSample {
             file_name,
@@ -545,6 +584,73 @@ fn scan_installed_petiglyph_fonts(cwd: &Path) -> Result<Vec<InstalledFontSample>
     }
 
     Ok(samples)
+}
+
+fn sample_from_installed_font_metadata(
+    install_dir: &Path,
+    installed_ttf: &Path,
+) -> Result<Option<String>> {
+    let installed_canonical = installed_ttf.canonicalize().ok();
+    let mut metadata_candidates = Vec::new();
+
+    for entry in fs::read_dir(install_dir)
+        .with_context(|| format!("failed to read {}", install_dir.display()))?
+    {
+        let entry =
+            entry.with_context(|| format!("failed to read entry in {}", install_dir.display()))?;
+        let path = entry.path();
+        if !path.is_file() {
+            continue;
+        }
+        let file_name = path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or("");
+        let is_metadata = file_name.starts_with(INSTALL_METADATA_PREFIX)
+            && file_name.ends_with(INSTALL_METADATA_SUFFIX);
+        if !is_metadata {
+            continue;
+        }
+        metadata_candidates.push(path);
+    }
+
+    for metadata_path in metadata_candidates {
+        let raw = match fs::read_to_string(&metadata_path) {
+            Ok(raw) => raw,
+            Err(_) => continue,
+        };
+        let metadata = match serde_json::from_str::<InstalledFontMetadataRecord>(&raw) {
+            Ok(metadata) => metadata,
+            Err(_) => continue,
+        };
+        let metadata_ttf = PathBuf::from(metadata.installed_ttf);
+        let ttf_matches = metadata_ttf == installed_ttf
+            || installed_canonical
+                .as_deref()
+                .zip(metadata_ttf.canonicalize().ok().as_deref())
+                .is_some_and(|(left, right)| left == right);
+        if !ttf_matches {
+            continue;
+        }
+        if let Some(sample) = sample_from_manifest_path(Path::new(&metadata.manifest_path)) {
+            return Ok(Some(sample));
+        }
+    }
+
+    Ok(None)
+}
+
+fn sample_from_manifest_path(manifest_path: &Path) -> Option<String> {
+    let manifest = read_manifest(manifest_path).ok()?;
+    let project_dir = manifest_path.parent().unwrap_or_else(|| Path::new("."));
+    let sample_path = project_dir.join(manifest.out_dir).join("glyph-sample.txt");
+    let sample = fs::read_to_string(sample_path).ok()?;
+    let sample = sample.trim_end().to_string();
+    if sample.is_empty() {
+        None
+    } else {
+        Some(sample)
+    }
 }
 
 pub(crate) fn sample_glyphs_from_ttf_bytes(bytes: &[u8], limit: usize) -> Option<(String, bool)> {
@@ -762,8 +868,12 @@ fn handle_rename_mode_key(app: &mut App, code: KeyCode) -> Result<()> {
                 input.handle_event(&Event::Key(KeyEvent::new(code, KeyModifiers::NONE)));
             }
         }
-        KeyCode::Backspace | KeyCode::Delete | KeyCode::Left | KeyCode::Right
-        | KeyCode::Home | KeyCode::End => {
+        KeyCode::Backspace
+        | KeyCode::Delete
+        | KeyCode::Left
+        | KeyCode::Right
+        | KeyCode::Home
+        | KeyCode::End => {
             if let Some(input) = app.renaming_input.as_mut() {
                 input.handle_event(&Event::Key(KeyEvent::new(code, KeyModifiers::NONE)));
             }
@@ -1007,8 +1117,7 @@ fn handle_welcome_key(app: &mut App, key: KeyEvent) -> Result<()> {
                         .as_ref()
                         .is_some_and(|active| active == &project.manifest_path);
                     if is_active {
-                        app.renaming_input =
-                            Some(Input::new(app.config.font_name.clone()));
+                        app.renaming_input = Some(Input::new(app.config.font_name.clone()));
                         app.renaming_original = Some(app.config.font_name.clone());
                         app.status = Some("renaming project...".to_string());
                     } else {
@@ -1270,15 +1379,21 @@ fn draw_welcome_view(
             ];
             if is_renaming {
                 let rename_width = 24usize;
-                let input_scroll = app.renaming_input.as_ref().map_or(0, |inp| {
-                    inp.visual_scroll(rename_width)
-                });
+                let input_scroll = app
+                    .renaming_input
+                    .as_ref()
+                    .map_or(0, |inp| inp.visual_scroll(rename_width));
                 let visible_input = app.renaming_input.as_ref().map_or(String::new(), |inp| {
-                    inp.value().chars().skip(input_scroll).take(rename_width).collect()
+                    inp.value()
+                        .chars()
+                        .skip(input_scroll)
+                        .take(rename_width)
+                        .collect()
                 });
-                let input_cursor = app.renaming_input.as_ref().map_or(0, |inp| {
-                    inp.visual_cursor().saturating_sub(input_scroll)
-                });
+                let input_cursor = app
+                    .renaming_input
+                    .as_ref()
+                    .map_or(0, |inp| inp.visual_cursor().saturating_sub(input_scroll));
                 let input_value = format_welcome_input_field_with_cursor(
                     &visible_input,
                     true,
@@ -1333,21 +1448,23 @@ fn draw_welcome_view(
             project_rows.push(Line::from(row));
         }
     }
-    let cursor_prefix = if app.welcome_focus == WelcomeFocus::CreateInput && !app.welcome_input_editing {
-        "> "
-    } else if app.welcome_focus == WelcomeFocus::CreateInput && app.welcome_input_editing {
-        "> "
-    } else {
-        "  "
-    };
-    let cursor_style = if app.welcome_focus == WelcomeFocus::CreateInput && !app.welcome_input_editing {
-        Style::default()
-            .fg(Color::Black)
-            .bg(accent)
-            .add_modifier(Modifier::BOLD)
-    } else {
-        Style::default().fg(muted)
-    };
+    let cursor_prefix =
+        if app.welcome_focus == WelcomeFocus::CreateInput && !app.welcome_input_editing {
+            "> "
+        } else if app.welcome_focus == WelcomeFocus::CreateInput && app.welcome_input_editing {
+            "> "
+        } else {
+            "  "
+        };
+    let cursor_style =
+        if app.welcome_focus == WelcomeFocus::CreateInput && !app.welcome_input_editing {
+            Style::default()
+                .fg(Color::Black)
+                .bg(accent)
+                .add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().fg(muted)
+        };
     let is_create_focused =
         app.welcome_focus == WelcomeFocus::CreateInput && !app.welcome_input_editing;
     let create_button_style = if is_create_focused {
@@ -1379,10 +1496,7 @@ fn draw_welcome_view(
             input_cursor,
             WELCOME_INPUT_WIDTH,
         );
-        new_project_line.push(Span::styled(
-            "New project: ",
-            Style::default().fg(muted),
-        ));
+        new_project_line.push(Span::styled("New project: ", Style::default().fg(muted)));
         new_project_line.push(Span::styled(
             input_value,
             Style::default()
@@ -1391,10 +1505,7 @@ fn draw_welcome_view(
                 .add_modifier(Modifier::BOLD),
         ));
     } else {
-        new_project_line.push(Span::styled(
-            " Create new project ",
-            create_button_style,
-        ));
+        new_project_line.push(Span::styled(" Create new project ", create_button_style));
     }
     new_project_line.push(Span::styled(
         format_projects_card_hint_for_display(app.welcome_focus, app.welcome_input_editing),
@@ -1843,9 +1954,17 @@ fn draw_welcome_view(
                     Span::raw(font.path.display().to_string()),
                 ]));
             }
+            let is_composed_sample = font.sample.contains('\n');
             font_rows.push(Line::from(vec![
                 Span::raw("    "),
-                Span::styled("sample:", Style::default().fg(muted)),
+                Span::styled(
+                    if is_composed_sample {
+                        "assembled composition:"
+                    } else {
+                        "sample:"
+                    },
+                    Style::default().fg(muted),
+                ),
             ]));
             for line in wrap_sample_for_display(&sample, sample_wrap_width) {
                 font_rows.push(Line::from(vec![
@@ -1979,7 +2098,9 @@ impl App {
             switch_notice: None,
             selected_home_tool: HomeToolAction::ComposeGrid,
             selected: 0,
+            selected_visible: 0,
             glyphs: Vec::new(),
+            expanded_compositions: BTreeSet::new(),
             quit: false,
             status: None,
             view: AppView::Welcome,
@@ -2030,7 +2151,9 @@ impl App {
             switch_notice: None,
             selected_home_tool: HomeToolAction::ComposeGrid,
             selected: 0,
+            selected_visible: 0,
             glyphs: Vec::new(),
+            expanded_compositions: BTreeSet::new(),
             quit: false,
             status: None,
             view: AppView::Welcome,
@@ -2148,6 +2271,90 @@ impl App {
             .min(self.installed_fonts.len() - 1);
     }
 
+    fn visible_glyph_rows(&self) -> Vec<VisibleGlyphRow> {
+        let mut rows = Vec::new();
+        let mut idx = 0usize;
+        while idx < self.glyphs.len() {
+            let glyph = &self.glyphs[idx];
+            if let Some(tile) = &glyph.glyph.composition_tile {
+                if tile.row == 0 && tile.col == 0 {
+                    let source_key = glyph.glyph.source_parent_key.clone();
+                    rows.push(VisibleGlyphRow::CompositionParent {
+                        source_key: source_key.clone(),
+                        rows: tile.rows,
+                        cols: tile.cols,
+                        first_child_idx: idx,
+                    });
+                    let span = tile.rows.saturating_mul(tile.cols);
+                    if self.expanded_compositions.contains(&source_key) {
+                        for offset in 0..span {
+                            if let Some(child) = self.glyphs.get(idx + offset)
+                                && let Some(child_tile) = &child.glyph.composition_tile
+                            {
+                                rows.push(VisibleGlyphRow::CompositionChild {
+                                    glyph_idx: idx + offset,
+                                    source_key: source_key.clone(),
+                                    row: child_tile.row,
+                                    col: child_tile.col,
+                                });
+                            }
+                        }
+                    }
+                    idx = idx.saturating_add(span.max(1));
+                    continue;
+                }
+                idx += 1;
+                continue;
+            }
+
+            rows.push(VisibleGlyphRow::Single { glyph_idx: idx });
+            idx += 1;
+        }
+        rows
+    }
+
+    fn clamp_glyph_selection(&mut self) {
+        let rows = self.visible_glyph_rows();
+        if rows.is_empty() {
+            self.selected_visible = 0;
+            self.selected = 0;
+            return;
+        }
+
+        self.selected_visible = self.selected_visible.min(rows.len() - 1);
+        self.selected = match &rows[self.selected_visible] {
+            VisibleGlyphRow::Single { glyph_idx }
+            | VisibleGlyphRow::CompositionChild { glyph_idx, .. } => *glyph_idx,
+            VisibleGlyphRow::CompositionParent {
+                first_child_idx, ..
+            } => *first_child_idx,
+        };
+    }
+
+    fn selected_visible_row(&self) -> Option<VisibleGlyphRow> {
+        let rows = self.visible_glyph_rows();
+        if rows.is_empty() {
+            return None;
+        }
+        rows.get(self.selected_visible.min(rows.len() - 1)).cloned()
+    }
+
+    fn toggle_selected_composition_expansion(&mut self) {
+        let Some(row) = self.selected_visible_row() else {
+            return;
+        };
+        let source_key = match row {
+            VisibleGlyphRow::CompositionParent { source_key, .. }
+            | VisibleGlyphRow::CompositionChild { source_key, .. } => source_key,
+            VisibleGlyphRow::Single { .. } => return,
+        };
+
+        if !self.expanded_compositions.insert(source_key.clone()) {
+            self.expanded_compositions.remove(&source_key);
+        }
+        self.clamp_glyph_selection();
+    }
+
     fn active_project_can_be_deleted(&self) -> bool {
         let Some(active_manifest) = &self.active_project else {
             return false;
@@ -2219,6 +2426,8 @@ impl App {
         self.reload_config()?;
         self.glyphs.clear();
         self.selected = 0;
+        self.selected_visible = 0;
+        self.expanded_compositions.clear();
         self.refresh_workspace_discovery()?;
         self.welcome_focus = if self.projects.is_empty() {
             WelcomeFocus::CreateInput
@@ -2237,31 +2446,30 @@ impl App {
         self.renaming_original = None;
 
         if new_name.is_empty() {
-            self.status =
-                Some("project name cannot be empty; rename canceled".to_string());
+            self.status = Some("project name cannot be empty; rename canceled".to_string());
             return Ok(());
         }
 
         let old_dir = self.project_dir.clone();
         if old_dir == self.workspace_root {
-            self.status = Some(
-                "refusing to rename the workspace root directory".to_string(),
-            );
+            self.status = Some("refusing to rename the workspace root directory".to_string());
             return Ok(());
         }
 
         let new_dir = self.workspace_root.join(&new_name);
         if new_dir.exists() {
-            self.status = Some(format!(
-                "directory already exists: {}",
-                new_dir.display()
-            ));
+            self.status = Some(format!("directory already exists: {}", new_dir.display()));
             return Ok(());
         }
 
         let old_name = self.config.font_name.clone();
-        fs::rename(&old_dir, &new_dir)
-            .with_context(|| format!("failed to rename {} to {}", old_dir.display(), new_dir.display()))?;
+        fs::rename(&old_dir, &new_dir).with_context(|| {
+            format!(
+                "failed to rename {} to {}",
+                old_dir.display(),
+                new_dir.display()
+            )
+        })?;
 
         let new_manifest_path = new_dir.join("petiglyph.toml");
         let mut manifest = read_manifest(&new_manifest_path)?;
@@ -2273,14 +2481,22 @@ impl App {
         let new_ttf = out_dir.join(format!("{new_name}.ttf"));
         if old_ttf.is_file() && !new_ttf.exists() {
             fs::rename(&old_ttf, &new_ttf).with_context(|| {
-                format!("failed to rename {} to {}", old_ttf.display(), new_ttf.display())
+                format!(
+                    "failed to rename {} to {}",
+                    old_ttf.display(),
+                    new_ttf.display()
+                )
             })?;
         }
         let old_bdf = out_dir.join(format!("{old_name}.bdf"));
         let new_bdf = out_dir.join(format!("{new_name}.bdf"));
         if old_bdf.is_file() && !new_bdf.exists() {
             fs::rename(&old_bdf, &new_bdf).with_context(|| {
-                format!("failed to rename {} to {}", old_bdf.display(), new_bdf.display())
+                format!(
+                    "failed to rename {} to {}",
+                    old_bdf.display(),
+                    new_bdf.display()
+                )
             })?;
         }
 
@@ -2289,8 +2505,7 @@ impl App {
         self.active_project = Some(self.manifest_path.clone());
         self.reload_config()?;
         self.refresh_workspace_discovery()?;
-        self.status =
-            Some(format!("renamed project from `{old_name}` to `{new_name}`"));
+        self.status = Some(format!("renamed project from `{old_name}` to `{new_name}`"));
         Ok(())
     }
 
@@ -2372,12 +2587,11 @@ impl App {
         let (last_build, last_sample) = cached_build_state(&self.config);
         self.last_build = last_build;
         self.last_sample = last_sample;
-        self.installed_font_path =
-            cached_installed_font_path(
-                &self.manifest_path,
-                &self.config.font_name,
-                &self.config.project_id,
-            );
+        self.installed_font_path = cached_installed_font_path(
+            &self.manifest_path,
+            &self.config.font_name,
+            &self.config.project_id,
+        );
         Ok(())
     }
 
@@ -2385,6 +2599,8 @@ impl App {
         if self.active_project.is_none() {
             self.glyphs.clear();
             self.selected = 0;
+            self.selected_visible = 0;
+            self.expanded_compositions.clear();
             self.live_glyph_source_count = None;
             self.live_glyph_source_probe_fingerprint = None;
             self.live_glyph_source_probe_at = Some(Instant::now());
@@ -2397,6 +2613,8 @@ impl App {
         if !self.config.input_dir.exists() {
             self.glyphs.clear();
             self.selected = 0;
+            self.selected_visible = 0;
+            self.expanded_compositions.clear();
             self.live_glyph_source_count = Some(0);
             self.live_glyph_source_probe_fingerprint = Some(0);
             self.live_glyph_source_probe_at = Some(Instant::now());
@@ -2421,6 +2639,8 @@ impl App {
         if sources.is_empty() {
             self.glyphs.clear();
             self.selected = 0;
+            self.selected_visible = 0;
+            self.expanded_compositions.clear();
             self.live_glyph_source_count = Some(0);
             self.live_glyph_source_probe_fingerprint = Some(0);
             self.live_glyph_source_probe_at = Some(Instant::now());
@@ -2431,25 +2651,42 @@ impl App {
             return Ok(());
         }
 
-        let glyphs = preprocess_sources(&sources, &self.config.input_dir, self.config.glyph_size)?
-            .into_iter()
-            .map(|glyph| {
-                let saved_threshold = self
-                    .config
-                    .threshold_overrides
-                    .get(&glyph.source_key)
-                    .copied();
-                let working_threshold = saved_threshold.unwrap_or(self.config.base_threshold);
-                InteractiveGlyph {
-                    glyph,
-                    saved_threshold,
-                    working_threshold,
-                }
-            })
-            .collect::<Vec<_>>();
+        let glyphs = preprocess_sources_with_compositions(
+            &sources,
+            &self.config.input_dir,
+            self.config.glyph_size,
+            &self.config.compositions,
+        )?
+        .into_iter()
+        .map(|glyph| {
+            let saved_threshold = self
+                .config
+                .threshold_overrides
+                .get(&glyph.source_parent_key)
+                .copied();
+            let working_threshold = saved_threshold.unwrap_or(self.config.base_threshold);
+            InteractiveGlyph {
+                glyph,
+                saved_threshold,
+                working_threshold,
+            }
+        })
+        .collect::<Vec<_>>();
 
         self.glyphs = glyphs;
-        self.selected = self.selected.min(self.glyphs.len().saturating_sub(1));
+        let active_compositions = self
+            .glyphs
+            .iter()
+            .filter_map(|g| {
+                g.glyph
+                    .composition_tile
+                    .as_ref()
+                    .map(|_| g.glyph.source_parent_key.clone())
+            })
+            .collect::<BTreeSet<_>>();
+        self.expanded_compositions
+            .retain(|source| active_compositions.contains(source));
+        self.clamp_glyph_selection();
         self.live_glyph_source_count = Some(self.glyphs.len());
         self.live_glyph_source_probe_fingerprint =
             Some(glyph_source_fingerprint(&self.config.input_dir)?);
@@ -2960,6 +3197,7 @@ fn inactive_runtime_config(workspace_root: &Path) -> RuntimeConfig {
         glyph_size: 64,
         base_threshold: 64,
         threshold_overrides: Default::default(),
+        compositions: Default::default(),
         codepoint_start: 0x10_0000,
     }
 }
@@ -3149,12 +3387,107 @@ pub(crate) fn persist_threshold_override(
     write_manifest(manifest_path, &manifest)
 }
 
+fn persist_composition_definition(
+    manifest_path: &Path,
+    source_key: &str,
+    composition: Option<CompositionDef>,
+) -> Result<()> {
+    let mut manifest = read_manifest(manifest_path)?;
+    match composition {
+        Some(def) => {
+            manifest.compositions.insert(source_key.to_string(), def);
+        }
+        None => {
+            manifest.compositions.remove(source_key);
+        }
+    }
+    write_manifest(manifest_path, &manifest)
+}
+
+fn selected_source_parent_key(app: &App) -> Option<String> {
+    let row = app.selected_visible_row()?;
+    match row {
+        VisibleGlyphRow::Single { glyph_idx } => app
+            .glyphs
+            .get(glyph_idx)
+            .map(|g| g.glyph.source_parent_key.clone()),
+        VisibleGlyphRow::CompositionParent { source_key, .. }
+        | VisibleGlyphRow::CompositionChild { source_key, .. } => Some(source_key),
+    }
+}
+
+fn apply_default_composition_to_selected(app: &mut App) -> Result<()> {
+    if app.active_project.is_none() {
+        app.status = Some(
+            "create a project in Home or relaunch with --manifest before composing".to_string(),
+        );
+        return Ok(());
+    }
+
+    let Some(source_key) = selected_source_parent_key(app) else {
+        app.status = Some("no glyph selected".to_string());
+        return Ok(());
+    };
+    if app.config.compositions.contains_key(&source_key) {
+        app.status = Some(format!(
+            "composition already exists for {source_key}; press C to remove it first"
+        ));
+        return Ok(());
+    }
+
+    persist_composition_definition(
+        &app.manifest_path,
+        &source_key,
+        Some(CompositionDef { rows: 2, cols: 2 }),
+    )?;
+    app.reload_glyphs()?;
+    app.expanded_compositions.insert(source_key.clone());
+    app.clamp_glyph_selection();
+    app.status = Some(format!(
+        "created composition for {source_key}: 2x2 (edit [compositions] in petiglyph.toml for custom sizes)"
+    ));
+    Ok(())
+}
+
+fn clear_selected_composition(app: &mut App) -> Result<()> {
+    if app.active_project.is_none() {
+        app.status = Some(
+            "create a project in Home or relaunch with --manifest before composing".to_string(),
+        );
+        return Ok(());
+    }
+    let Some(source_key) = selected_source_parent_key(app) else {
+        app.status = Some("no glyph selected".to_string());
+        return Ok(());
+    };
+    if !app.config.compositions.contains_key(&source_key) {
+        app.status = Some(format!("no composition configured for {source_key}"));
+        return Ok(());
+    }
+
+    persist_composition_definition(&app.manifest_path, &source_key, None)?;
+    app.expanded_compositions.remove(&source_key);
+    app.reload_glyphs()?;
+    app.status = Some(format!("removed composition for {source_key}"));
+    Ok(())
+}
+
+fn selected_visible_glyph_index(app: &App) -> Option<usize> {
+    match app.selected_visible_row()? {
+        VisibleGlyphRow::Single { glyph_idx }
+        | VisibleGlyphRow::CompositionChild { glyph_idx, .. } => Some(glyph_idx),
+        VisibleGlyphRow::CompositionParent { .. } => None,
+    }
+}
+
 fn selected_glyph_mut(app: &mut App) -> Option<&mut InteractiveGlyph> {
-    app.glyphs.get_mut(app.selected)
+    let idx = selected_visible_glyph_index(app)?;
+    app.glyphs.get_mut(idx)
 }
 
 fn selected_glyph(app: &App) -> Option<&InteractiveGlyph> {
-    app.glyphs.get(app.selected)
+    let idx = selected_visible_glyph_index(app)?;
+    app.glyphs.get(idx)
 }
 
 fn set_selected_threshold(app: &mut App, threshold: u8) {
@@ -3170,7 +3503,7 @@ fn set_selected_threshold(app: &mut App, threshold: u8) {
         return;
     };
 
-    let source_key = glyph.glyph.source_key.clone();
+    let source_key = glyph.glyph.source_parent_key.clone();
     let glyph_name = glyph.glyph.glyph_name.clone();
     let threshold_override = if threshold == app.config.base_threshold {
         None
@@ -3211,7 +3544,7 @@ fn remove_selected_threshold_override(app: &mut App) {
         return;
     };
 
-    let source_key = glyph.glyph.source_key.clone();
+    let source_key = glyph.glyph.source_parent_key.clone();
     let glyph_name = glyph.glyph.glyph_name.clone();
 
     match persist_threshold_override(&app.manifest_path, &source_key, None) {
@@ -3405,22 +3738,47 @@ fn handle_key_event(app: &mut App, key: KeyEvent) -> Result<()> {
         }
         KeyCode::Down => {
             if app.view == AppView::Glyphs {
-                app.selected = (app.selected + 1).min(app.glyphs.len().saturating_sub(1));
+                let row_count = app.visible_glyph_rows().len();
+                if row_count > 0 {
+                    app.selected_visible = (app.selected_visible + 1).min(row_count - 1);
+                    app.clamp_glyph_selection();
+                }
             }
         }
         KeyCode::Char('j') => {
             if app.view == AppView::Glyphs {
-                app.selected = (app.selected + 1).min(app.glyphs.len().saturating_sub(1));
+                let row_count = app.visible_glyph_rows().len();
+                if row_count > 0 {
+                    app.selected_visible = (app.selected_visible + 1).min(row_count - 1);
+                    app.clamp_glyph_selection();
+                }
             }
         }
         KeyCode::Up => {
             if app.view == AppView::Glyphs {
-                app.selected = app.selected.saturating_sub(1);
+                app.selected_visible = app.selected_visible.saturating_sub(1);
+                app.clamp_glyph_selection();
             }
         }
         KeyCode::Char('k') => {
             if app.view == AppView::Glyphs {
-                app.selected = app.selected.saturating_sub(1);
+                app.selected_visible = app.selected_visible.saturating_sub(1);
+                app.clamp_glyph_selection();
+            }
+        }
+        KeyCode::Enter | KeyCode::Char(' ') => {
+            if app.view == AppView::Glyphs {
+                app.toggle_selected_composition_expansion();
+            }
+        }
+        KeyCode::Char('c') => {
+            if app.view == AppView::Glyphs {
+                apply_default_composition_to_selected(app)?;
+            }
+        }
+        KeyCode::Char('C') => {
+            if app.view == AppView::Glyphs {
+                clear_selected_composition(app)?;
             }
         }
         KeyCode::PageUp => {
@@ -3479,8 +3837,10 @@ fn trigger_home_tool_action(app: &mut App) -> Result<()> {
                 app.status =
                     Some("select or create a project before composing combined glyphs".to_string());
             } else {
+                app.reload_glyphs()?;
+                app.view = AppView::Glyphs;
                 app.status = Some(
-                    "Compose Grid is planned for Home project tools but is not implemented yet"
+                    "Glyphs: select an image, press c to create a 2x2 composition, Enter/Space to expand, C to remove"
                         .to_string(),
                 );
             }
@@ -3673,6 +4033,10 @@ fn draw_ui(frame: &mut Frame, app: &App) {
         footer_spans.extend(vec![
             Span::styled(" \u{2191}/\u{2193} ", Style::default().fg(accent)),
             Span::raw("select  "),
+            Span::styled(" Enter/Space ", Style::default().fg(accent)),
+            Span::raw("expand  "),
+            Span::styled(" c/C ", Style::default().fg(accent)),
+            Span::raw("add/remove composition  "),
             Span::styled(" \u{2190}/\u{2192} ", Style::default().fg(accent)),
             Span::raw("thresh +/-1  "),
             Span::styled(" PgUp/PgDn ", Style::default().fg(accent)),
@@ -4073,30 +4437,82 @@ fn draw_glyphs_view(
         .border_style(Style::default().fg(muted))
         .title(Span::styled(" Glyphs ", Style::default().fg(accent)));
 
+    let visible_rows = app.visible_glyph_rows();
     let mut list_state = ListState::default();
-    if !app.glyphs.is_empty() {
-        list_state.select(Some(app.selected));
+    if !visible_rows.is_empty() {
+        list_state.select(Some(app.selected_visible.min(visible_rows.len() - 1)));
     }
 
-    let items: Vec<ListItem> = if app.glyphs.is_empty() {
+    let items: Vec<ListItem> = if visible_rows.is_empty() {
         vec![ListItem::new(" No glyphs found. ")]
     } else {
-        app.glyphs
+        visible_rows
             .iter()
-            .enumerate()
-            .map(|(idx, g)| {
-                let codepoint = app.config.codepoint_start + idx as u32;
-                let marker = if g.saved_threshold.is_some() {
-                    " *"
-                } else {
-                    "  "
-                };
-                let name = &g.glyph.glyph_name;
-                ListItem::new(Line::from(vec![
-                    Span::styled(marker, Style::default().fg(Color::Yellow)),
-                    Span::styled(format!(" U+{:04X} ", codepoint), Style::default().fg(muted)),
-                    Span::raw(name.clone()),
-                ]))
+            .map(|row| match row {
+                VisibleGlyphRow::Single { glyph_idx } => {
+                    let glyph = &app.glyphs[*glyph_idx];
+                    let marker = if glyph.saved_threshold.is_some() {
+                        " *"
+                    } else {
+                        "  "
+                    };
+                    ListItem::new(Line::from(vec![
+                        Span::styled(marker, Style::default().fg(Color::Yellow)),
+                        Span::styled(
+                            format!(" {} ", glyph_codepoint_label(app, glyph_idx)),
+                            Style::default().fg(muted),
+                        ),
+                        Span::raw(glyph.glyph.glyph_name.clone()),
+                    ]))
+                }
+                VisibleGlyphRow::CompositionParent {
+                    source_key,
+                    rows,
+                    cols,
+                    ..
+                } => {
+                    let expanded = app.expanded_compositions.contains(source_key);
+                    let arrow = if expanded { "[-]" } else { "[+]" };
+                    let label = source_display_name(source_key);
+                    ListItem::new(Line::from(vec![
+                        Span::styled("  ", Style::default().fg(Color::Yellow)),
+                        Span::styled(arrow, Style::default().fg(accent)),
+                        Span::raw(" "),
+                        Span::styled(label, Style::default().fg(Color::White)),
+                        Span::raw(" "),
+                        Span::styled(
+                            format!("(compo. {}x{})", rows, cols),
+                            Style::default().fg(Color::Yellow),
+                        ),
+                    ]))
+                }
+                VisibleGlyphRow::CompositionChild {
+                    glyph_idx,
+                    row,
+                    col,
+                    ..
+                } => {
+                    let glyph = &app.glyphs[*glyph_idx];
+                    let marker = if glyph.saved_threshold.is_some() {
+                        " *"
+                    } else {
+                        "  "
+                    };
+                    ListItem::new(Line::from(vec![
+                        Span::styled(marker, Style::default().fg(Color::Yellow)),
+                        Span::raw("    "),
+                        Span::styled(
+                            format!("{} ", glyph_codepoint_label(app, glyph_idx)),
+                            Style::default().fg(muted),
+                        ),
+                        Span::raw(format!(
+                            "[r{},c{}] {}",
+                            row + 1,
+                            col + 1,
+                            glyph.glyph.glyph_name
+                        )),
+                    ]))
+                }
             })
             .collect()
     };
@@ -4121,66 +4537,260 @@ fn draw_glyphs_view(
 
     let preview_area = preview_block.inner(chunks[1]);
 
-    let mut preview_content = if app.glyphs.is_empty() {
+    let mut preview_content = if visible_rows.is_empty() {
         vec![
             Line::from(""),
             Line::from("  Add or drag images into this project."),
         ]
     } else {
-        let active = &app.glyphs[app.selected];
-        vec![
-            Line::from(""),
-            Line::from(vec![
-                Span::raw("  File: "),
-                Span::styled(
-                    if app.verbose_paths {
-                        active.glyph.source_path.to_string_lossy().to_string()
-                    } else {
-                        active
-                            .glyph
-                            .source_path
-                            .file_name()
-                            .and_then(|name| name.to_str())
-                            .map(ToOwned::to_owned)
-                            .unwrap_or_else(|| active.glyph.glyph_name.clone())
-                    },
-                    Style::default().fg(Color::White),
-                ),
-            ]),
-            Line::from(vec![
-                Span::raw("  Threshold: "),
-                Span::styled(
-                    format!("{:3}", active.working_threshold),
-                    Style::default().fg(accent).add_modifier(Modifier::BOLD),
-                ),
-                Span::styled(
-                    if active.saved_threshold.is_some() {
-                        " (overridden)"
-                    } else {
-                        " (default)"
-                    },
-                    Style::default().fg(muted),
-                ),
-            ]),
-            Line::from(""),
-        ]
+        match &visible_rows[app.selected_visible.min(visible_rows.len() - 1)] {
+            VisibleGlyphRow::Single { glyph_idx }
+            | VisibleGlyphRow::CompositionChild { glyph_idx, .. } => {
+                let active = &app.glyphs[*glyph_idx];
+                vec![
+                    Line::from(""),
+                    Line::from(vec![
+                        Span::raw("  File: "),
+                        Span::styled(
+                            if app.verbose_paths {
+                                active.glyph.source_path.to_string_lossy().to_string()
+                            } else {
+                                active
+                                    .glyph
+                                    .source_path
+                                    .file_name()
+                                    .and_then(|name| name.to_str())
+                                    .map(ToOwned::to_owned)
+                                    .unwrap_or_else(|| active.glyph.glyph_name.clone())
+                            },
+                            Style::default().fg(Color::White),
+                        ),
+                    ]),
+                    Line::from(vec![
+                        Span::raw("  Threshold: "),
+                        Span::styled(
+                            format!("{:3}", active.working_threshold),
+                            Style::default().fg(accent).add_modifier(Modifier::BOLD),
+                        ),
+                        Span::styled(
+                            if active.saved_threshold.is_some() {
+                                " (overridden)"
+                            } else {
+                                " (default)"
+                            },
+                            Style::default().fg(muted),
+                        ),
+                    ]),
+                    Line::from(""),
+                ]
+            }
+            VisibleGlyphRow::CompositionParent {
+                source_key,
+                rows,
+                cols,
+                ..
+            } => {
+                let threshold_hint = app
+                    .glyphs
+                    .iter()
+                    .find(|g| g.glyph.source_parent_key == *source_key)
+                    .map(|g| (g.working_threshold, g.saved_threshold.is_some()));
+                let threshold_line = if let Some((threshold, overridden)) = threshold_hint {
+                    Line::from(vec![
+                        Span::raw("  Threshold: "),
+                        Span::styled(
+                            format!("{:3}", threshold),
+                            Style::default().fg(accent).add_modifier(Modifier::BOLD),
+                        ),
+                        Span::styled(
+                            if overridden {
+                                " (overridden)"
+                            } else {
+                                " (default)"
+                            },
+                            Style::default().fg(muted),
+                        ),
+                    ])
+                } else {
+                    Line::from(vec![
+                        Span::raw("  Threshold: "),
+                        Span::styled("n/a", Style::default().fg(muted)),
+                    ])
+                };
+                vec![
+                    Line::from(""),
+                    Line::from(vec![
+                        Span::raw("  Composition: "),
+                        Span::styled(
+                            source_display_name(source_key),
+                            Style::default().fg(Color::White),
+                        ),
+                        Span::raw(" "),
+                        Span::styled(
+                            format!("({rows}x{cols})"),
+                            Style::default().fg(Color::Yellow),
+                        ),
+                    ]),
+                    threshold_line,
+                    Line::from(vec![
+                        Span::raw("  Preview: "),
+                        Span::styled("Assembled composition", Style::default().fg(muted)),
+                    ]),
+                    Line::from(""),
+                ]
+            }
+        }
     };
 
-    if !app.glyphs.is_empty() {
-        let active = &app.glyphs[app.selected];
-        let mut ascii = preview_lines(
-            &active.glyph,
-            active.working_threshold,
-            preview_area.width.saturating_sub(4) / 2,
-            preview_area.height.saturating_sub(5),
-        );
-        preview_content.append(&mut ascii);
+    if !visible_rows.is_empty() {
+        match &visible_rows[app.selected_visible.min(visible_rows.len() - 1)] {
+            VisibleGlyphRow::Single { glyph_idx }
+            | VisibleGlyphRow::CompositionChild { glyph_idx, .. } => {
+                let active = &app.glyphs[*glyph_idx];
+                let mut ascii = preview_lines(
+                    &active.glyph,
+                    active.working_threshold,
+                    preview_area.width.saturating_sub(4) / 2,
+                    preview_area.height.saturating_sub(5),
+                );
+                preview_content.append(&mut ascii);
+            }
+            VisibleGlyphRow::CompositionParent {
+                source_key,
+                rows,
+                cols,
+                ..
+            } => {
+                let tiles = app
+                    .glyphs
+                    .iter()
+                    .filter(|g| g.glyph.source_parent_key == *source_key)
+                    .collect::<Vec<_>>();
+                let threshold = tiles
+                    .first()
+                    .map(|g| g.working_threshold)
+                    .unwrap_or(app.config.base_threshold);
+                let mut ascii = composition_preview_lines(
+                    &tiles,
+                    threshold,
+                    *rows,
+                    *cols,
+                    preview_area.width.saturating_sub(4) / 2,
+                    preview_area.height.saturating_sub(6),
+                );
+                preview_content.append(&mut ascii);
+            }
+        }
     }
 
     let p = Paragraph::new(preview_content)
         .block(preview_block)
         .wrap(Wrap { trim: false });
     frame.render_widget(p, chunks[1]);
+}
+
+fn glyph_codepoint_label(app: &App, glyph_idx: &usize) -> String {
+    format_codepoint(app.config.codepoint_start.saturating_add(*glyph_idx as u32))
+}
+
+fn source_display_name(source_key: &str) -> String {
+    Path::new(source_key)
+        .file_name()
+        .and_then(|name| name.to_str())
+        .map(ToOwned::to_owned)
+        .unwrap_or_else(|| source_key.to_string())
+}
+
+fn composition_preview_lines(
+    tiles: &[&InteractiveGlyph],
+    threshold: u8,
+    rows: usize,
+    cols: usize,
+    max_w: u16,
+    max_h: u16,
+) -> Vec<Line<'static>> {
+    if tiles.is_empty() || rows == 0 || cols == 0 || max_w == 0 || max_h == 0 {
+        return vec![Line::from("    [Composition preview unavailable]")];
+    }
+
+    let Some(tile_size) = tiles.first().map(|g| g.glyph.size as usize) else {
+        return vec![Line::from("    [Composition preview unavailable]")];
+    };
+    if tile_size == 0 {
+        return vec![Line::from("    [Composition preview unavailable]")];
+    }
+
+    let width = cols.saturating_mul(tile_size);
+    let height = rows.saturating_mul(tile_size);
+    if width == 0 || height == 0 {
+        return vec![Line::from("    [Composition preview unavailable]")];
+    }
+
+    let mut matrix = vec![false; width.saturating_mul(height)];
+    for tile in tiles {
+        let Some(info) = &tile.glyph.composition_tile else {
+            continue;
+        };
+        if info.rows != rows || info.cols != cols {
+            continue;
+        }
+        for y in 0..tile_size {
+            for x in 0..tile_size {
+                let src_idx = y * tile_size + x;
+                let dst_x = info.col * tile_size + x;
+                let dst_y = info.row * tile_size + y;
+                if dst_x >= width || dst_y >= height || src_idx >= tile.glyph.coverage.len() {
+                    continue;
+                }
+                let dst_idx = dst_y * width + dst_x;
+                matrix[dst_idx] = tile.glyph.coverage[src_idx] >= threshold;
+            }
+        }
+    }
+
+    render_binary_preview_lines(&matrix, width, height, max_w, max_h)
+}
+
+fn render_binary_preview_lines(
+    matrix: &[bool],
+    src_w: usize,
+    src_h: usize,
+    max_w: u16,
+    max_h: u16,
+) -> Vec<Line<'static>> {
+    const PREVIEW_X_COMP: f32 = 0.88;
+
+    if matrix.is_empty() || src_w == 0 || src_h == 0 || max_w == 0 || max_h == 0 {
+        return vec![Line::from("    [Preview too small]")];
+    }
+
+    let out_w = ((usize::max(1, usize::min(src_w, max_w as usize)) as f32) * PREVIEW_X_COMP)
+        .round()
+        .max(1.0) as usize;
+    let out_h = usize::max(1, usize::min(src_h, max_h as usize));
+    let sample_idx = |out_idx: usize, out_len: usize, src_len: usize| -> usize {
+        let numerator = (2 * out_idx + 1) * src_len;
+        let denominator = 2 * out_len;
+        (numerator / denominator).min(src_len.saturating_sub(1))
+    };
+
+    let mut rows = Vec::with_capacity(out_h);
+    for oy in 0..out_h {
+        let sy = sample_idx(oy, out_h, src_h);
+        let mut row = String::with_capacity(out_w * 2 + 4);
+        row.push_str("    ");
+        for ox in 0..out_w {
+            let sx = sample_idx(ox, out_w, src_w);
+            let on = matrix[sy * src_w + sx];
+            row.push_str(if on { "██" } else { "  " });
+        }
+        rows.push(row);
+    }
+    rows.retain(|row| row.contains('█'));
+    if rows.is_empty() {
+        return vec![Line::from("    [No visible pixels at threshold]")];
+    }
+    rows.into_iter().map(Line::from).collect()
 }
 
 fn preview_lines(
@@ -4737,35 +5347,46 @@ pub(crate) fn wrap_sample_for_display(sample: &str, max_chars: usize) -> Vec<Str
 
     let target = max_chars.max(1);
     let mut lines = Vec::new();
-    let mut current = String::new();
-    let mut count = 0usize;
-
-    for ch in sample.chars() {
-        current.push(ch);
-        count += 1;
-        if count >= target {
-            lines.push(current);
-            current = String::new();
-            count = 0;
+    for logical_line in sample.split('\n') {
+        if logical_line.is_empty() {
+            lines.push(String::new());
+            continue;
         }
-    }
 
-    if !current.is_empty() {
-        lines.push(current);
+        let mut current = String::new();
+        let mut count = 0usize;
+        for ch in logical_line.chars() {
+            current.push(ch);
+            count += 1;
+            if count >= target {
+                lines.push(current);
+                current = String::new();
+                count = 0;
+            }
+        }
+        if !current.is_empty() {
+            lines.push(current);
+        }
     }
 
     lines
 }
 
 pub(crate) fn spaced_sample(sample: &str) -> String {
-    let mut out = String::new();
-    for (index, ch) in sample.chars().enumerate() {
-        if index > 0 {
-            out.push_str("  ");
-        }
-        out.push(ch);
-    }
-    out
+    sample
+        .split('\n')
+        .map(|line| {
+            let mut out = String::new();
+            for (index, ch) in line.chars().enumerate() {
+                if index > 0 {
+                    out.push_str("  ");
+                }
+                out.push(ch);
+            }
+            out
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 #[cfg(test)]
@@ -4802,6 +5423,7 @@ mod tests {
             glyph_size: 8,
             base_threshold: 64,
             threshold_overrides: BTreeMap::new(),
+            compositions: BTreeMap::new(),
             codepoint_start: 0x10_0000,
         };
 
@@ -4841,6 +5463,7 @@ mod tests {
             glyph_size: 8,
             base_threshold: 64,
             threshold_overrides: BTreeMap::new(),
+            compositions: BTreeMap::new(),
             codepoint_start: 0x10_0000,
         };
 
@@ -4869,6 +5492,7 @@ mod tests {
             glyph_size: 8,
             base_threshold: 64,
             threshold_overrides: BTreeMap::new(),
+            compositions: BTreeMap::new(),
             codepoint_start: 0x10_0000,
         };
 
@@ -4904,6 +5528,7 @@ mod tests {
             glyph_size: 8,
             base_threshold: 64,
             threshold_overrides: BTreeMap::new(),
+            compositions: BTreeMap::new(),
             codepoint_start: 0x10_0000,
         };
 
