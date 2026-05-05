@@ -2152,7 +2152,7 @@ fn generate_smart_sample(glyphs: &[PreprocessedGlyph], codepoints: &[u32]) -> St
         blocks.push(single_line);
     }
 
-    blocks.join("\n")
+    blocks.join("\n\n")
 }
 
 #[allow(dead_code)]

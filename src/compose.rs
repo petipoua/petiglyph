@@ -31,7 +31,7 @@ pub(crate) fn compose_tiles(
 
     let source_bytes = fs::read(source_path)
         .with_context(|| format!("failed to read {}", source_path.display()))?;
-    let source = load_source_rgba(source_path, rows, cols, glyph_size)?;
+    let source = load_source_rgba_fitted(source_path, rows, cols, glyph_size)?;
     let (width, height) = source.dimensions();
     if width == 0 || height == 0 {
         bail!("source image has invalid size: {}", source_path.display());
@@ -70,20 +70,50 @@ pub(crate) fn compose_tiles(
     Ok(tiles)
 }
 
-fn load_source_rgba(path: &Path, rows: usize, cols: usize, glyph_size: u32) -> Result<RgbaImage> {
+fn load_source_rgba_fitted(
+    path: &Path,
+    rows: usize,
+    cols: usize,
+    _glyph_size: u32,
+) -> Result<RgbaImage> {
     let ext = path
         .extension()
         .and_then(|ext| ext.to_str())
         .map(|s| s.to_ascii_lowercase())
         .unwrap_or_default();
 
-    if ext == "svg" {
-        render_svg(path, rows, cols, glyph_size)
+    let source = if ext == "svg" {
+        // Render SVG at high enough resolution to avoid blur but we'll pad it after.
+        // We use a fixed large size for the render target to maintain quality.
+        render_svg(path, rows, cols, 512)?
     } else {
-        let img = image::open(path)
-            .with_context(|| format!("failed to decode image {}", path.display()))?;
-        Ok(img.to_rgba8())
-    }
+        image::open(path)
+            .with_context(|| format!("failed to decode image {}", path.display()))?
+            .to_rgba8()
+    };
+
+    let (src_w, src_h) = source.dimensions();
+    let target_aspect = cols as f32 / rows as f32;
+    let src_aspect = src_w as f32 / src_h as f32;
+
+    let (new_w, new_h) = if src_aspect > target_aspect {
+        // Source is wider than target aspect ratio (cols/rows)
+        // We need to add vertical padding.
+        let h = (src_w as f32 / target_aspect).round() as u32;
+        (src_w, h)
+    } else {
+        // Source is taller than target aspect ratio
+        // We need to add horizontal padding.
+        let w = (src_h as f32 * target_aspect).round() as u32;
+        (w, src_h)
+    };
+
+    let mut padded = ImageBuffer::new(new_w, new_h);
+    let x_offset = (new_w.saturating_sub(src_w)) / 2;
+    let y_offset = (new_h.saturating_sub(src_h)) / 2;
+
+    image::imageops::replace(&mut padded, &source, x_offset as i64, y_offset as i64);
+    Ok(padded)
 }
 
 fn render_svg(path: &Path, rows: usize, cols: usize, glyph_size: u32) -> Result<RgbaImage> {

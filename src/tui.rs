@@ -90,7 +90,7 @@ pub(crate) struct WelcomeProject {
 pub(crate) struct InstalledFontSample {
     pub(crate) file_name: String,
     pub(crate) path: PathBuf,
-    pub(crate) sample: String,
+    pub(crate) blocks: Vec<String>,
     pub(crate) truncated: bool,
 }
 
@@ -108,7 +108,6 @@ pub(crate) enum WelcomeFocus {
     BuildButton,
     InstallButton,
     DeleteProjectButton,
-    ToolList,
     InstalledFontList,
 }
 
@@ -255,20 +254,25 @@ pub(crate) enum AppView {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum HomeToolAction {
-    ComposeGrid,
-    AnimateGlyph,
+pub(crate) enum GlyphsFocus {
+    List,
+    GridButton,
+    AnimateButton,
 }
 
-impl HomeToolAction {
-    fn description(self) -> &'static str {
-        match self {
-            Self::ComposeGrid => {
-                "Build tiled glyph compositions from one source image (grid mode)."
-            }
-            Self::AnimateGlyph => "Planned: build frame-based animated glyph assets.",
-        }
-    }
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum GridConfigFocus {
+    Rows,
+    Cols,
+    Create,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct GridConfig {
+    pub(crate) source_key: String,
+    pub(crate) rows: u32,
+    pub(crate) cols: u32,
+    pub(crate) focus: GridConfigFocus,
 }
 
 pub(crate) struct App {
@@ -285,8 +289,10 @@ pub(crate) struct App {
     pub(crate) verbose_paths: bool,
     pub(crate) installed_fonts: Vec<InstalledFontSample>,
     pub(crate) selected_installed_font: usize,
+    pub(crate) selected_installed_font_sub_index: usize,
+    pub(crate) installed_font_horizontal_focus_uninstall: bool,
+    pub(crate) last_copy_notification: Option<(Instant, String)>,
     pub(crate) switch_notice: Option<ProjectSwitchNotice>,
-    pub(crate) selected_home_tool: HomeToolAction,
     pub(crate) selected: usize,
     pub(crate) selected_visible: usize,
     pub(crate) glyphs: Vec<InteractiveGlyph>,
@@ -294,6 +300,9 @@ pub(crate) struct App {
     pub(crate) quit: bool,
     pub(crate) status: Option<String>,
     pub(crate) view: AppView,
+    pub(crate) glyphs_focus: GlyphsFocus,
+    pub(crate) grid_config: Option<GridConfig>,
+    pub(crate) selecting_for_grid: bool,
     pub(crate) last_build: Option<BuildSummary>,
     pub(crate) last_sample: Option<String>,
     pub(crate) installed_font_path: Option<PathBuf>,
@@ -566,19 +575,20 @@ fn scan_installed_petiglyph_fonts(cwd: &Path) -> Result<Vec<InstalledFontSample>
         let sample_from_manifest = sample_from_installed_font_metadata(&install_dir, &path)
             .ok()
             .flatten();
-        let (sample, truncated) = if let Some(sample) = sample_from_manifest {
-            (sample, false)
+        let (blocks, truncated) = if let Some(blocks) = sample_from_manifest {
+            (blocks, false)
         } else {
-            fs::read(&path)
+            let (sample, truncated) = fs::read(&path)
                 .ok()
                 .and_then(|bytes| sample_glyphs_from_ttf_bytes(&bytes, WELCOME_SAMPLE_LIMIT))
-                .unwrap_or_default()
+                .unwrap_or_default();
+            (vec![sample], truncated)
         };
 
         samples.push(InstalledFontSample {
             file_name,
             path,
-            sample,
+            blocks,
             truncated,
         });
     }
@@ -589,7 +599,7 @@ fn scan_installed_petiglyph_fonts(cwd: &Path) -> Result<Vec<InstalledFontSample>
 fn sample_from_installed_font_metadata(
     install_dir: &Path,
     installed_ttf: &Path,
-) -> Result<Option<String>> {
+) -> Result<Option<Vec<String>>> {
     let installed_canonical = installed_ttf.canonicalize().ok();
     let mut metadata_candidates = Vec::new();
 
@@ -640,7 +650,7 @@ fn sample_from_installed_font_metadata(
     Ok(None)
 }
 
-fn sample_from_manifest_path(manifest_path: &Path) -> Option<String> {
+fn sample_from_manifest_path(manifest_path: &Path) -> Option<Vec<String>> {
     let manifest = read_manifest(manifest_path).ok()?;
     let project_dir = manifest_path.parent().unwrap_or_else(|| Path::new("."));
     let sample_path = project_dir.join(manifest.out_dir).join("glyph-sample.txt");
@@ -649,7 +659,13 @@ fn sample_from_manifest_path(manifest_path: &Path) -> Option<String> {
     if sample.is_empty() {
         None
     } else {
-        Some(sample)
+        Some(
+            sample
+                .split("\n\n")
+                .map(|s| s.to_string())
+                .filter(|s| !s.is_empty())
+                .collect(),
+        )
     }
 }
 
@@ -835,9 +851,12 @@ pub(crate) fn should_dispatch_key_kind(kind: KeyEventKind) -> bool {
 
 fn app_debug_state(app: &App) -> String {
     format!(
-        "view={:?} focus={:?} selected_project={} editing={} verbose_paths={} input={:?} cursor={} visual_cursor={} build_task={} install_task={} delete_confirm_selection={:?} renaming={} status={:?} quit={}",
+        "view={:?} welcome_focus={:?} glyphs_focus={:?} grid_config={} selecting_for_grid={} selected_project={} editing={} verbose_paths={} input={:?} cursor={} visual_cursor={} build_task={} install_task={} delete_confirm_selection={:?} renaming={} status={:?} quit={}",
         app.view,
         app.welcome_focus,
+        app.glyphs_focus,
+        app.grid_config.is_some(),
+        app.selecting_for_grid,
         app.selected_project,
         app.welcome_input_editing,
         app.verbose_paths,
@@ -851,6 +870,259 @@ fn app_debug_state(app: &App) -> String {
         app.status,
         app.quit
     )
+}
+
+fn handle_grid_config_key(app: &mut App, config: &mut GridConfig, key: KeyEvent) -> Result<()> {
+    let code = key.code;
+    match code {
+        KeyCode::Esc => {
+            app.grid_config = None;
+            app.status = Some("grid configuration canceled".to_string());
+        }
+        KeyCode::Left | KeyCode::Char('h') => {
+            config.focus = match config.focus {
+                GridConfigFocus::Rows => GridConfigFocus::Rows,
+                GridConfigFocus::Cols => GridConfigFocus::Rows,
+                GridConfigFocus::Create => GridConfigFocus::Cols,
+            };
+        }
+        KeyCode::Right | KeyCode::Char('l') => {
+            config.focus = match config.focus {
+                GridConfigFocus::Rows => GridConfigFocus::Cols,
+                GridConfigFocus::Cols => GridConfigFocus::Create,
+                GridConfigFocus::Create => GridConfigFocus::Create,
+            };
+        }
+        KeyCode::Up | KeyCode::Char('k') => match config.focus {
+            GridConfigFocus::Rows => config.rows = config.rows.saturating_add(1).max(1),
+            GridConfigFocus::Cols => config.cols = config.cols.saturating_add(1).max(1),
+            GridConfigFocus::Create => {}
+        },
+        KeyCode::Down | KeyCode::Char('j') => match config.focus {
+            GridConfigFocus::Rows => config.rows = config.rows.saturating_sub(1).max(1),
+            GridConfigFocus::Cols => config.cols = config.cols.saturating_sub(1).max(1),
+            GridConfigFocus::Create => {}
+        },
+        KeyCode::Char(ch) if ch.is_ascii_digit() => {
+            let digit = ch.to_digit(10).unwrap_or(0);
+            match config.focus {
+                GridConfigFocus::Rows => {
+                    if config.rows < 10 {
+                        config.rows = config.rows * 10 + digit;
+                    } else {
+                        config.rows = digit;
+                    }
+                    if config.rows == 0 {
+                        config.rows = 1;
+                    }
+                }
+                GridConfigFocus::Cols => {
+                    if config.cols < 10 {
+                        config.cols = config.cols * 10 + digit;
+                    } else {
+                        config.cols = digit;
+                    }
+                    if config.cols == 0 {
+                        config.cols = 1;
+                    }
+                }
+                GridConfigFocus::Create => {}
+            }
+        }
+        KeyCode::Backspace => {
+            match config.focus {
+                GridConfigFocus::Rows => config.rows /= 10,
+                GridConfigFocus::Cols => config.cols /= 10,
+                GridConfigFocus::Create => {}
+            }
+            if config.rows == 0 {
+                config.rows = 1;
+            }
+            if config.cols == 0 {
+                config.cols = 1;
+            }
+        }
+        KeyCode::Enter => {
+            if config.focus == GridConfigFocus::Create {
+                let source_key = config.source_key.clone();
+                let rows = config.rows as usize;
+                let cols = config.cols as usize;
+
+                persist_composition_definition(
+                    &app.manifest_path,
+                    &source_key,
+                    Some(CompositionDef { rows, cols }),
+                )?;
+                app.reload_glyphs()?;
+                app.expanded_compositions.insert(source_key.clone());
+                app.grid_config = None;
+                app.status = Some(format!(
+                    "Created {}x{} grid for {}",
+                    rows,
+                    cols,
+                    source_display_name(&source_key)
+                ));
+            } else {
+                config.focus = GridConfigFocus::Create;
+            }
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
+fn copy_to_clipboard(text: String) {
+    let child = if std::env::var("WAYLAND_DISPLAY").is_ok() {
+        std::process::Command::new("wl-copy")
+            .stdin(std::process::Stdio::piped())
+            .spawn()
+    } else {
+        std::process::Command::new("xclip")
+            .arg("-selection")
+            .arg("clipboard")
+            .stdin(std::process::Stdio::piped())
+            .spawn()
+    };
+
+    if let Ok(mut child) = child {
+        if let Some(mut stdin) = child.stdin.take() {
+            let _ = stdin.write_all(text.as_bytes());
+        }
+        let _ = child.wait();
+    }
+}
+
+fn handle_glyphs_key(app: &mut App, key: KeyEvent) -> Result<()> {
+    let code = key.code;
+
+    if is_keypad_plus_alias(&key) {
+        adjust_selected_threshold_by(app, 1);
+        return Ok(());
+    }
+    if is_keypad_minus_alias(&key) {
+        adjust_selected_threshold_by(app, -1);
+        return Ok(());
+    }
+
+    if let Some(mut config) = app.grid_config.clone() {
+        let res = handle_grid_config_key(app, &mut config, key);
+        app.grid_config = if app.grid_config.is_some() {
+            Some(config)
+        } else {
+            None
+        };
+        return res;
+    }
+
+    match code {
+        KeyCode::Esc => {
+            if app.selecting_for_grid {
+                app.selecting_for_grid = false;
+                app.status = Some("grid selection canceled".to_string());
+            } else {
+                app.view = AppView::Welcome;
+                app.welcome_focus = WelcomeFocus::BuildButton;
+            }
+        }
+        KeyCode::Char('q') => {
+            app.quit = true;
+        }
+        KeyCode::Down | KeyCode::Char('j') => {
+            if app.glyphs_focus == GlyphsFocus::List {
+                let row_count = app.visible_glyph_rows().len();
+                if row_count > 0 {
+                    app.selected_visible = (app.selected_visible + 1).min(row_count - 1);
+                    app.clamp_glyph_selection();
+                }
+            } else if app.glyphs_focus == GlyphsFocus::GridButton
+                || app.glyphs_focus == GlyphsFocus::AnimateButton
+            {
+                app.glyphs_focus = GlyphsFocus::List;
+                app.selected_visible = 0;
+                app.clamp_glyph_selection();
+            }
+        }
+        KeyCode::Up | KeyCode::Char('k') => {
+            if app.glyphs_focus == GlyphsFocus::List {
+                if app.selected_visible == 0 {
+                    app.glyphs_focus = GlyphsFocus::GridButton;
+                } else {
+                    app.selected_visible = app.selected_visible.saturating_sub(1);
+                    app.clamp_glyph_selection();
+                }
+            }
+        }
+        KeyCode::Left | KeyCode::Char('h') | KeyCode::Char('-') => {
+            if app.glyphs_focus == GlyphsFocus::List {
+                adjust_selected_threshold_by(app, -1);
+            } else if app.glyphs_focus == GlyphsFocus::AnimateButton {
+                app.glyphs_focus = GlyphsFocus::GridButton;
+            }
+        }
+        KeyCode::Right | KeyCode::Char('l') | KeyCode::Char('+') | KeyCode::Char('=') => {
+            if app.glyphs_focus == GlyphsFocus::List {
+                adjust_selected_threshold_by(app, 1);
+            } else if app.glyphs_focus == GlyphsFocus::GridButton {
+                app.glyphs_focus = GlyphsFocus::AnimateButton;
+            }
+        }
+        KeyCode::Enter | KeyCode::Char(' ') => match app.glyphs_focus {
+            GlyphsFocus::List => {
+                if app.selecting_for_grid {
+                    if let Some(source_key) = selected_source_parent_key(app) {
+                        app.grid_config = Some(GridConfig {
+                            source_key,
+                            rows: 2,
+                            cols: 2,
+                            focus: GridConfigFocus::Rows,
+                        });
+                        app.selecting_for_grid = false;
+                        app.status = Some(
+                            "Configure grid: use arrows to change rows/cols, Right to Create"
+                                .to_string(),
+                        );
+                    }
+                } else {
+                    app.toggle_selected_composition_expansion();
+                }
+            }
+            GlyphsFocus::GridButton => {
+                app.selecting_for_grid = true;
+                app.glyphs_focus = GlyphsFocus::List;
+                app.status =
+                    Some("Select a glyph to use as grid source and press Enter".to_string());
+            }
+            GlyphsFocus::AnimateButton => {
+                app.status = Some(
+                    "Animate Glyph is planned for Glyphs tools but is not implemented yet"
+                        .to_string(),
+                );
+            }
+        },
+        KeyCode::Char('c') => {
+            apply_default_composition_to_selected(app)?;
+        }
+        KeyCode::Char('C') => {
+            clear_selected_composition(app)?;
+        }
+        KeyCode::PageUp => {
+            if let Some(glyph) = selected_glyph(app) {
+                let next = glyph.working_threshold.saturating_add(10);
+                set_selected_threshold(app, next);
+            }
+        }
+        KeyCode::PageDown => {
+            if let Some(glyph) = selected_glyph(app) {
+                let next = glyph.working_threshold.saturating_sub(10);
+                set_selected_threshold(app, next);
+            }
+        }
+        KeyCode::Char('r') => {
+            remove_selected_threshold_override(app);
+        }
+        _ => {}
+    }
+    Ok(())
 }
 
 fn handle_rename_mode_key(app: &mut App, code: KeyCode) -> Result<()> {
@@ -947,13 +1219,17 @@ fn handle_welcome_key(app: &mut App, key: KeyEvent) -> Result<()> {
                 WelcomeFocus::BuildButton => WelcomeFocus::VerbosePathsToggle,
                 WelcomeFocus::InstallButton => WelcomeFocus::VerbosePathsToggle,
                 WelcomeFocus::DeleteProjectButton => WelcomeFocus::VerbosePathsToggle,
-                WelcomeFocus::ToolList => match app.selected_home_tool {
-                    HomeToolAction::ComposeGrid => WelcomeFocus::CreateInput,
-                    HomeToolAction::AnimateGlyph => WelcomeFocus::CreateInput,
-                },
                 WelcomeFocus::InstalledFontList => {
-                    if app.selected_installed_font > 0 {
+                    if app.selected_installed_font_sub_index > 0 {
+                        app.selected_installed_font_sub_index -= 1;
+                        app.installed_font_horizontal_focus_uninstall = false;
+                        WelcomeFocus::InstalledFontList
+                    } else if app.selected_installed_font > 0 {
                         app.selected_installed_font -= 1;
+                        app.selected_installed_font_sub_index = app
+                            .installed_font_sub_row_count(app.selected_installed_font)
+                            .saturating_sub(1);
+                        app.installed_font_horizontal_focus_uninstall = false;
                         WelcomeFocus::InstalledFontList
                     } else if app.active_project.is_some() {
                         WelcomeFocus::BuildButton
@@ -985,9 +1261,11 @@ fn handle_welcome_key(app: &mut App, key: KeyEvent) -> Result<()> {
                     }
                 }
                 WelcomeFocus::CreateInput => {
-                    if home_project_actions_enabled {
-                        app.selected_home_tool = HomeToolAction::ComposeGrid;
-                        WelcomeFocus::ToolList
+                    if !app.installed_fonts.is_empty() {
+                        app.selected_installed_font = 0;
+                        app.selected_installed_font_sub_index = 0;
+                        app.installed_font_horizontal_focus_uninstall = false;
+                        WelcomeFocus::InstalledFontList
                     } else {
                         WelcomeFocus::CreateInput
                     }
@@ -996,6 +1274,9 @@ fn handle_welcome_key(app: &mut App, key: KeyEvent) -> Result<()> {
                     if app.installed_fonts.is_empty() {
                         WelcomeFocus::BuildButton
                     } else {
+                        app.selected_installed_font = 0;
+                        app.selected_installed_font_sub_index = 0;
+                        app.installed_font_horizontal_focus_uninstall = false;
                         WelcomeFocus::InstalledFontList
                     }
                 }
@@ -1003,6 +1284,9 @@ fn handle_welcome_key(app: &mut App, key: KeyEvent) -> Result<()> {
                     if app.installed_fonts.is_empty() {
                         WelcomeFocus::InstallButton
                     } else {
+                        app.selected_installed_font = 0;
+                        app.selected_installed_font_sub_index = 0;
+                        app.installed_font_horizontal_focus_uninstall = false;
                         WelcomeFocus::InstalledFontList
                     }
                 }
@@ -1010,38 +1294,49 @@ fn handle_welcome_key(app: &mut App, key: KeyEvent) -> Result<()> {
                     if app.installed_fonts.is_empty() {
                         WelcomeFocus::DeleteProjectButton
                     } else {
-                        WelcomeFocus::InstalledFontList
-                    }
-                }
-                WelcomeFocus::ToolList => {
-                    if app.installed_fonts.is_empty() {
-                        WelcomeFocus::ToolList
-                    } else {
+                        app.selected_installed_font = 0;
+                        app.selected_installed_font_sub_index = 0;
+                        app.installed_font_horizontal_focus_uninstall = false;
                         WelcomeFocus::InstalledFontList
                     }
                 }
                 WelcomeFocus::InstalledFontList => {
-                    if app.selected_installed_font + 1 < app.installed_fonts.len() {
-                        app.selected_installed_font += 1;
+                    if app.installed_font_horizontal_focus_uninstall {
+                        // Pressing down on Uninstall button goes to sample line (sub-index 1)
+                        app.installed_font_horizontal_focus_uninstall = false;
+                        app.selected_installed_font_sub_index = 1.min(
+                            app.installed_font_sub_row_count(app.selected_installed_font)
+                                .saturating_sub(1),
+                        );
+                        WelcomeFocus::InstalledFontList
+                    } else {
+                        let sub_count = app.installed_font_sub_row_count(app.selected_installed_font);
+                        if app.selected_installed_font_sub_index + 1 < sub_count {
+                            app.selected_installed_font_sub_index += 1;
+                            WelcomeFocus::InstalledFontList
+                        } else if app.selected_installed_font + 1 < app.installed_fonts.len() {
+                            app.selected_installed_font += 1;
+                            app.selected_installed_font_sub_index = 0;
+                            WelcomeFocus::InstalledFontList
+                        } else {
+                            WelcomeFocus::InstalledFontList
+                        }
                     }
-                    WelcomeFocus::InstalledFontList
                 }
             };
         }
         KeyCode::Left | KeyCode::Char('h') if !app.welcome_input_editing => {
             app.welcome_focus = match app.welcome_focus {
                 WelcomeFocus::VerbosePathsToggle => WelcomeFocus::VerbosePathsToggle,
-                WelcomeFocus::ToolList => match app.selected_home_tool {
-                    HomeToolAction::ComposeGrid => WelcomeFocus::ToolList,
-                    HomeToolAction::AnimateGlyph => {
-                        app.selected_home_tool = HomeToolAction::ComposeGrid;
-                        WelcomeFocus::ToolList
-                    }
-                },
                 WelcomeFocus::BuildButton => WelcomeFocus::CreateInput,
                 WelcomeFocus::InstallButton => WelcomeFocus::BuildButton,
                 WelcomeFocus::DeleteProjectButton => WelcomeFocus::InstallButton,
-                WelcomeFocus::InstalledFontList => WelcomeFocus::InstalledFontList,
+                WelcomeFocus::InstalledFontList => {
+                    if app.selected_installed_font_sub_index == 0 {
+                        app.installed_font_horizontal_focus_uninstall = false;
+                    }
+                    WelcomeFocus::InstalledFontList
+                }
                 WelcomeFocus::ProjectList => WelcomeFocus::ProjectList,
                 WelcomeFocus::CreateInput => WelcomeFocus::CreateInput,
             };
@@ -1080,20 +1375,12 @@ fn handle_welcome_key(app: &mut App, key: KeyEvent) -> Result<()> {
                     }
                 }
                 WelcomeFocus::DeleteProjectButton => WelcomeFocus::DeleteProjectButton,
-                WelcomeFocus::ToolList => match app.selected_home_tool {
-                    HomeToolAction::ComposeGrid => {
-                        app.selected_home_tool = HomeToolAction::AnimateGlyph;
-                        WelcomeFocus::ToolList
+                WelcomeFocus::InstalledFontList => {
+                    if app.selected_installed_font_sub_index == 0 {
+                        app.installed_font_horizontal_focus_uninstall = true;
                     }
-                    HomeToolAction::AnimateGlyph => {
-                        if home_project_actions_enabled {
-                            WelcomeFocus::BuildButton
-                        } else {
-                            WelcomeFocus::CreateInput
-                        }
-                    }
-                },
-                WelcomeFocus::InstalledFontList => WelcomeFocus::InstalledFontList,
+                    WelcomeFocus::InstalledFontList
+                }
             };
         }
         KeyCode::Enter => match app.welcome_focus {
@@ -1149,13 +1436,36 @@ fn handle_welcome_key(app: &mut App, key: KeyEvent) -> Result<()> {
                 app.welcome_input_editing = false;
                 app.begin_delete_project_confirmation()?;
             }
-            WelcomeFocus::ToolList => {
-                app.welcome_input_editing = false;
-                trigger_home_tool_action(app)?;
-            }
             WelcomeFocus::InstalledFontList => {
                 app.welcome_input_editing = false;
-                trigger_uninstall_action(app)?;
+                if app.installed_font_horizontal_focus_uninstall {
+                    trigger_uninstall_action(app)?;
+                } else {
+                    // Copy to clipboard
+                    if let Some(font) = app.installed_fonts.get(app.selected_installed_font) {
+                        let content = if app.selected_installed_font_sub_index == 0 {
+                            font.path.display().to_string()
+                        } else {
+                            font.blocks
+                                .get(app.selected_installed_font_sub_index - 1)
+                                .cloned()
+                                .unwrap_or_default()
+                        };
+
+                        if !content.is_empty() {
+                            copy_to_clipboard(content);
+                            let row_id = if app.selected_installed_font_sub_index == 0 {
+                                "path".to_string()
+                            } else {
+                                format!("sample-{}", app.selected_installed_font_sub_index - 1)
+                            };
+                            app.last_copy_notification = Some((
+                                Instant::now(),
+                                format!("{}-{}", app.selected_installed_font, row_id),
+                            ));
+                        }
+                    }
+                }
             }
         },
         _ => {
@@ -1511,106 +1821,8 @@ fn draw_welcome_view(
         format_projects_card_hint_for_display(app.welcome_focus, app.welcome_input_editing),
         Style::default().fg(muted),
     ));
-    let mut projects_footer_lines =
+    let projects_footer_lines =
         vec![Line::from(""), Line::from(new_project_line), Line::from("")];
-
-    let selected_button_style = Style::default()
-        .fg(Color::Black)
-        .bg(accent)
-        .add_modifier(Modifier::BOLD);
-    let idle_button_style = Style::default()
-        .fg(Color::White)
-        .bg(Color::DarkGray)
-        .add_modifier(Modifier::BOLD);
-    let disabled_button_style = Style::default()
-        .fg(Color::DarkGray)
-        .bg(Color::Black)
-        .add_modifier(Modifier::DIM);
-    let build_label = match (app.build_task_kind(), app.build_task_spinner_frame()) {
-        (Some(kind), Some(spinner)) => format!(" {spinner} {} ", kind.button_label()),
-        _ => format!(" {} ", build_action_name(app.current_project_is_built())),
-    };
-    let build_button_style = if app.active_project.is_none() {
-        disabled_button_style
-    } else if app.build_in_progress() {
-        selected_button_style
-    } else if app.install_in_progress() {
-        disabled_button_style
-    } else if app.welcome_focus == WelcomeFocus::BuildButton {
-        selected_button_style
-    } else {
-        idle_button_style
-    };
-    let install_button_style =
-        if app.active_project.is_none() && !app.install_in_progress() && !app.build_in_progress() {
-            disabled_button_style
-        } else if let Some(FontTaskKind::Install) = app.font_task_kind() {
-            app.font_task_button_style()
-                .unwrap_or(disabled_button_style)
-        } else if app.install_in_progress() || app.build_in_progress() {
-            disabled_button_style
-        } else if app.welcome_focus == WelcomeFocus::InstallButton {
-            selected_button_style
-        } else {
-            idle_button_style
-        };
-    let install_label = match (app.font_task_kind(), app.font_task_spinner_frame()) {
-        (Some(FontTaskKind::Install), Some(spinner)) => format!(" {spinner} Installing... "),
-        _ => format!(
-            " {} ",
-            install_action_name(app.current_project_is_installed())
-        ),
-    };
-    let delete_button_style = if !app.active_project_can_be_deleted()
-        || app.install_in_progress()
-        || app.build_in_progress()
-    {
-        disabled_button_style
-    } else if app.welcome_focus == WelcomeFocus::DeleteProjectButton {
-        Style::default()
-            .fg(Color::White)
-            .bg(Color::Red)
-            .add_modifier(Modifier::BOLD)
-    } else {
-        Style::default()
-            .fg(Color::LightRed)
-            .bg(Color::DarkGray)
-            .add_modifier(Modifier::BOLD)
-    };
-    let compose_button_style = if app.active_project.is_none() {
-        disabled_button_style
-    } else if app.welcome_focus == WelcomeFocus::ToolList
-        && app.selected_home_tool == HomeToolAction::ComposeGrid
-    {
-        selected_button_style
-    } else {
-        idle_button_style
-    };
-    let animate_button_style = if app.active_project.is_none() {
-        disabled_button_style
-    } else if app.welcome_focus == WelcomeFocus::ToolList
-        && app.selected_home_tool == HomeToolAction::AnimateGlyph
-    {
-        selected_button_style
-    } else {
-        idle_button_style
-    };
-    let tools_hint = if app.active_project.is_some() {
-        app.selected_home_tool.description().to_string()
-    } else {
-        "Select or create a project to enable generators.".to_string()
-    };
-    projects_footer_lines.push(Line::from(vec![
-        Span::raw("  "),
-        Span::styled("Advanced: ", Style::default().fg(muted)),
-        Span::styled(" Compose Grid ", compose_button_style),
-        Span::raw(" "),
-        Span::styled(" Animate Glyph ", animate_button_style),
-    ]));
-    projects_footer_lines.push(Line::from(vec![
-        Span::raw("  "),
-        Span::styled(tools_hint, Style::default().fg(muted)),
-    ]));
 
     let projects_inner = projects_block.inner(main[0]);
     frame.render_widget(projects_block, main[0]);
@@ -1747,6 +1959,73 @@ fn draw_welcome_view(
         app.active_project_label()
     } else {
         "Select or create a project to see project-local status.".to_string()
+    };
+
+    let selected_button_style = Style::default()
+        .fg(Color::Black)
+        .bg(accent)
+        .add_modifier(Modifier::BOLD);
+    let idle_button_style = Style::default()
+        .fg(Color::White)
+        .bg(Color::DarkGray)
+        .add_modifier(Modifier::BOLD);
+    let disabled_button_style = Style::default()
+        .fg(Color::DarkGray)
+        .bg(Color::Black)
+        .add_modifier(Modifier::DIM);
+
+    let build_label = match (app.build_task_kind(), app.build_task_spinner_frame()) {
+        (Some(kind), Some(spinner)) => format!(" {spinner} {} ", kind.button_label()),
+        _ => format!(" {} ", build_action_name(app.current_project_is_built())),
+    };
+    let build_button_style = if app.active_project.is_none() {
+        disabled_button_style
+    } else if app.build_in_progress() {
+        selected_button_style
+    } else if app.install_in_progress() {
+        disabled_button_style
+    } else if app.welcome_focus == WelcomeFocus::BuildButton {
+        selected_button_style
+    } else {
+        idle_button_style
+    };
+
+    let install_button_style =
+        if app.active_project.is_none() && !app.install_in_progress() && !app.build_in_progress() {
+            disabled_button_style
+        } else if let Some(FontTaskKind::Install) = app.font_task_kind() {
+            app.font_task_button_style()
+                .unwrap_or(disabled_button_style)
+        } else if app.install_in_progress() || app.build_in_progress() {
+            disabled_button_style
+        } else if app.welcome_focus == WelcomeFocus::InstallButton {
+            selected_button_style
+        } else {
+            idle_button_style
+        };
+    let install_label = match (app.font_task_kind(), app.font_task_spinner_frame()) {
+        (Some(FontTaskKind::Install), Some(spinner)) => format!(" {spinner} Installing... "),
+        _ => format!(
+            " {} ",
+            install_action_name(app.current_project_is_installed())
+        ),
+    };
+
+    let delete_button_style = if !app.active_project_can_be_deleted()
+        || app.install_in_progress()
+        || app.build_in_progress()
+    {
+        disabled_button_style
+    } else if app.welcome_focus == WelcomeFocus::DeleteProjectButton {
+        Style::default()
+            .fg(Color::White)
+            .bg(Color::Red)
+            .add_modifier(Modifier::BOLD)
+    } else {
+        Style::default()
+            .fg(Color::LightRed)
+            .bg(Color::DarkGray)
+            .add_modifier(Modifier::BOLD)
     };
 
     let current_project_inner = current_project_block.inner(main[1]);
@@ -1893,7 +2172,8 @@ fn draw_welcome_view(
         Line::from(""),
     ];
     let mut font_rows = Vec::new();
-    let mut selected_font_row = 0usize;
+    let mut selected_font_row_idx = 0usize;
+
     if app.installed_fonts.is_empty() {
         font_rows.push(Line::from(vec![
             Span::raw("  "),
@@ -1903,94 +2183,173 @@ fn draw_welcome_view(
             ),
         ]));
     } else {
-        let sample_wrap_width = usize::from(body[3].width.saturating_sub(8).max(16));
-        for (idx, font) in app.installed_fonts.iter().enumerate() {
-            if idx == app.selected_installed_font {
-                selected_font_row = font_rows.len();
-            }
-            let sample = if font.sample.is_empty() {
-                "[sample unavailable]".to_string()
-            } else if font.truncated {
-                format!("{}...", &font.sample)
-            } else {
-                font.sample.clone()
-            };
-            let is_composed_sample = font.sample.contains('\n');
-            let display_sample = if is_composed_sample {
-                sample
-                    .lines()
-                    .map(|line| {
-                        if line.contains(' ') {
-                            line.to_string()
-                        } else {
-                            line.chars().map(|c| c.to_string()).collect::<Vec<_>>().join(" ")
-                        }
-                    })
-                    .collect::<Vec<_>>()
-                    .join("\n")
-            } else {
-                sample
-            };
-            let uninstall_button_style = if app.is_selected_font_uninstall_in_progress(&font.path) {
-                app.font_task_button_style()
-                    .unwrap_or(disabled_button_style)
-            } else if app.install_in_progress() || app.build_in_progress() {
-                disabled_button_style
-            } else if app.welcome_focus == WelcomeFocus::InstalledFontList
-                && app.selected_installed_font == idx
+        let sample_wrap_width = usize::from(body[3].width.saturating_sub(12).max(16));
+        let now = Instant::now();
+
+        for (f_idx, font) in app.installed_fonts.iter().enumerate() {
+            let is_selected_font = f_idx == app.selected_installed_font;
+
+            // Row 0: Name / Path / Uninstall
             {
-                selected_button_style
-            } else {
-                idle_button_style
-            };
-            let uninstall_label = if app.is_selected_font_uninstall_in_progress(&font.path) {
-                if let Some(spinner) = app.font_task_spinner_frame() {
-                    format!(" {spinner} Removing... ")
+                let is_focused = is_selected_font
+                    && app.selected_installed_font_sub_index == 0
+                    && app.welcome_focus == WelcomeFocus::InstalledFontList;
+
+                if is_focused {
+                    selected_font_row_idx = font_rows.len();
+                }
+
+                let base_style = if is_focused && !app.installed_font_horizontal_focus_uninstall {
+                    Style::default()
+                        .bg(accent)
+                        .fg(Color::Black)
+                        .add_modifier(Modifier::BOLD)
+                } else {
+                    Style::default()
+                };
+
+                let bullet = if is_selected_font && app.selected_installed_font_sub_index == 0 {
+                    " ● "
+                } else {
+                    " ○ "
+                };
+                let mut name_spans = vec![
+                    Span::styled(bullet, Style::default().fg(if is_focused && !app.installed_font_horizontal_focus_uninstall { Color::White } else { Color::Reset })),
+                    Span::styled(&font.file_name, base_style),
+                ];
+
+                if app.verbose_paths {
+                    name_spans.push(Span::styled(
+                        format!("  ({})", font.path.display()),
+                        if is_focused && !app.installed_font_horizontal_focus_uninstall {
+                            base_style.fg(Color::Black)
+                        } else {
+                            Style::default().fg(muted)
+                        },
+                    ));
+                }
+
+                if is_focused && !app.installed_font_horizontal_focus_uninstall {
+                    if let Some((at, id)) = &app.last_copy_notification {
+                        if id == &format!("{}-path", f_idx)
+                            && now.duration_since(*at) < Duration::from_millis(1500)
+                        {
+                            name_spans.push(Span::raw("  "));
+                            name_spans.push(Span::styled(
+                                "copied to clipboard",
+                                Style::default()
+                                    .fg(Color::Yellow)
+                                    .add_modifier(Modifier::BOLD),
+                            ));
+                        }
+                    }
+                }
+
+                let mut title_line = Line::from(name_spans);
+
+                // Add Uninstall button
+                title_line.spans.push(Span::raw("  "));
+                let uninstall_button_style = if app.is_selected_font_uninstall_in_progress(&font.path) {
+                    app.font_task_button_style().unwrap_or(disabled_button_style)
+                } else if app.install_in_progress() || app.build_in_progress() {
+                    disabled_button_style
+                } else if is_focused && app.installed_font_horizontal_focus_uninstall {
+                    selected_button_style
+                } else {
+                    idle_button_style
+                };
+                let uninstall_label = if app.is_selected_font_uninstall_in_progress(&font.path) {
+                    if let Some(spinner) = app.font_task_spinner_frame() {
+                        format!(" {spinner} Removing... ")
+                    } else {
+                        " Uninstall Font ".to_string()
+                    }
                 } else {
                     " Uninstall Font ".to_string()
+                };
+                title_line
+                    .spans
+                    .push(Span::styled(uninstall_label, uninstall_button_style));
+
+                font_rows.push(title_line);
+            }
+
+            // Row 1..N: Blocks (Selectable individually)
+            for (b_idx, block_str) in font.blocks.iter().enumerate() {
+                let sub_idx = b_idx + 1;
+                let is_focused = is_selected_font
+                    && app.selected_installed_font_sub_index == sub_idx
+                    && app.welcome_focus == WelcomeFocus::InstalledFontList;
+
+                if is_focused {
+                    selected_font_row_idx = font_rows.len();
                 }
-            } else {
-                " Uninstall Font ".to_string()
-            };
-            font_rows.push(Line::from(vec![
-                Span::raw("  "),
-                Span::styled(
-                    &font.file_name,
+
+                let display_sample = if block_str.contains('\n') {
+                    block_str
+                        .lines()
+                        .map(|line| {
+                            if line.contains(' ') {
+                                line.to_string()
+                            } else {
+                                line.chars()
+                                    .map(|c| c.to_string())
+                                    .collect::<Vec<_>>()
+                                    .join(" ")
+                            }
+                        })
+                        .collect::<Vec<_>>()
+                        .join("\n")
+                } else {
+                    block_str.clone()
+                };
+
+                let wrapped_lines = wrap_sample_for_display(&display_sample, sample_wrap_width);
+                let base_style = if is_focused {
                     Style::default()
-                        .fg(Color::White)
-                        .add_modifier(Modifier::BOLD),
-                ),
-                Span::raw("  "),
-                Span::styled(uninstall_label, uninstall_button_style),
-            ]));
-            if app.verbose_paths {
-                font_rows.push(Line::from(vec![
-                    Span::raw("    "),
-                    Span::styled("path: ", Style::default().fg(muted)),
-                    Span::raw(font.path.display().to_string()),
-                ]));
+                        .bg(accent)
+                        .fg(Color::Black)
+                        .add_modifier(Modifier::BOLD)
+                } else {
+                    Style::default().fg(accent).add_modifier(Modifier::BOLD)
+                };
+
+                let bullet = if is_selected_font && app.selected_installed_font_sub_index == sub_idx
+                {
+                    " ● "
+                } else {
+                    " ○ "
+                };
+
+                for (l_idx, line_text) in wrapped_lines.into_iter().enumerate() {
+                    let mut spans = vec![
+                        Span::styled(
+                            if l_idx == 0 { bullet } else { "   " },
+                            Style::default()
+                                .fg(if is_focused { Color::White } else { Color::Reset }),
+                        ),
+                        Span::styled(line_text, base_style),
+                    ];
+
+                    if l_idx == 0 && is_focused {
+                        if let Some((at, id)) = &app.last_copy_notification {
+                            if id == &format!("{}-sample-{}", f_idx, b_idx)
+                                && now.duration_since(*at) < Duration::from_millis(1500)
+                            {
+                                spans.push(Span::raw("  "));
+                                spans.push(Span::styled(
+                                    "copied to clipboard",
+                                    Style::default()
+                                        .fg(Color::Yellow)
+                                        .add_modifier(Modifier::BOLD),
+                                ));
+                            }
+                        }
+                    }
+                    font_rows.push(Line::from(spans));
+                }
             }
-            let is_composed_sample = font.sample.contains('\n');
-            font_rows.push(Line::from(vec![
-                Span::raw("    "),
-                Span::styled(
-                    if is_composed_sample {
-                        "assembled composition:"
-                    } else {
-                        "sample:"
-                    },
-                    Style::default().fg(muted),
-                ),
-            ]));
-            for line in wrap_sample_for_display(&display_sample, sample_wrap_width) {
-                font_rows.push(Line::from(vec![
-                    Span::raw("    "),
-                    Span::styled(
-                        line,
-                        Style::default().fg(accent).add_modifier(Modifier::BOLD),
-                    ),
-                ]));
-            }
+
             font_rows.push(Line::from(""));
         }
     }
@@ -2013,7 +2372,7 @@ fn draw_welcome_view(
     let visible_font_rows = usize::from(fonts_layout[1].height);
     let (font_row_start, font_row_end) = visible_window_bounds(
         font_rows.len(),
-        selected_font_row.min(font_rows.len().saturating_sub(1)),
+        selected_font_row_idx.min(font_rows.len().saturating_sub(1)),
         visible_font_rows,
     );
     let rendered_font_rows = if font_row_start < font_row_end {
@@ -2111,8 +2470,10 @@ impl App {
             verbose_paths: false,
             installed_fonts: Vec::new(),
             selected_installed_font: 0,
+            selected_installed_font_sub_index: 0,
+            installed_font_horizontal_focus_uninstall: false,
+            last_copy_notification: None,
             switch_notice: None,
-            selected_home_tool: HomeToolAction::ComposeGrid,
             selected: 0,
             selected_visible: 0,
             glyphs: Vec::new(),
@@ -2120,6 +2481,9 @@ impl App {
             quit: false,
             status: None,
             view: AppView::Welcome,
+            glyphs_focus: GlyphsFocus::List,
+            grid_config: None,
+            selecting_for_grid: false,
             last_build: None,
             last_sample: None,
             installed_font_path: None,
@@ -2164,8 +2528,10 @@ impl App {
             verbose_paths: false,
             installed_fonts: Vec::new(),
             selected_installed_font: 0,
+            selected_installed_font_sub_index: 0,
+            installed_font_horizontal_focus_uninstall: false,
+            last_copy_notification: None,
             switch_notice: None,
-            selected_home_tool: HomeToolAction::ComposeGrid,
             selected: 0,
             selected_visible: 0,
             glyphs: Vec::new(),
@@ -2173,6 +2539,9 @@ impl App {
             quit: false,
             status: None,
             view: AppView::Welcome,
+            glyphs_focus: GlyphsFocus::List,
+            grid_config: None,
+            selecting_for_grid: false,
             last_build,
             last_sample,
             installed_font_path,
@@ -2244,7 +2613,6 @@ impl App {
                 WelcomeFocus::BuildButton
                     | WelcomeFocus::InstallButton
                     | WelcomeFocus::DeleteProjectButton
-                    | WelcomeFocus::ToolList
             )
         {
             self.welcome_focus = if self.projects.is_empty() {
@@ -2279,12 +2647,27 @@ impl App {
     fn sync_selected_installed_font(&mut self) {
         if self.installed_fonts.is_empty() {
             self.selected_installed_font = 0;
+            self.selected_installed_font_sub_index = 0;
             return;
         }
 
         self.selected_installed_font = self
             .selected_installed_font
             .min(self.installed_fonts.len() - 1);
+
+        let sub_count = self.installed_font_sub_row_count(self.selected_installed_font);
+        self.selected_installed_font_sub_index = self
+            .selected_installed_font_sub_index
+            .min(sub_count.saturating_sub(1));
+    }
+
+    fn installed_font_sub_row_count(&self, idx: usize) -> usize {
+        let font = match self.installed_fonts.get(idx) {
+            Some(f) => f,
+            None => return 0,
+        };
+        // 1 (Title) + number of blocks
+        1 + font.blocks.len()
     }
 
     fn visible_glyph_rows(&self) -> Vec<VisibleGlyphRow> {
@@ -3637,7 +4020,6 @@ fn handle_paste_event(app: &mut App, payload: &str) -> Result<()> {
 
 fn handle_key_event(app: &mut App, key: KeyEvent) -> Result<()> {
     let code = key.code;
-    let previous_view = app.view;
     tui_debug_log(
         "handle_key_event.enter",
         format!("{} {}", key_debug(&key), app_debug_state(app)),
@@ -3662,7 +4044,7 @@ fn handle_key_event(app: &mut App, key: KeyEvent) -> Result<()> {
         return Ok(());
     }
     let is_global_panel_jump = matches!(code, KeyCode::Tab | KeyCode::BackTab)
-        || (matches!(code, KeyCode::Char('2'))
+        || (matches!(code, KeyCode::Char('1') | KeyCode::Char('2'))
             && !app.welcome_input_editing
             && app.renaming_input.is_none());
 
@@ -3683,25 +4065,11 @@ fn handle_key_event(app: &mut App, key: KeyEvent) -> Result<()> {
         return result;
     }
 
-    if app.view == AppView::Glyphs {
-        if matches!(
-            code,
-            KeyCode::Right | KeyCode::Char('l') | KeyCode::Char('+') | KeyCode::Char('=')
-        ) || is_keypad_plus_alias(&key)
-        {
-            adjust_selected_threshold_by(app, 1);
-            tui_debug_log("handle_key_event.exit_global", app_debug_state(app));
-            return Ok(());
-        }
-        if matches!(
-            code,
-            KeyCode::Left | KeyCode::Char('h') | KeyCode::Char('-')
-        ) || is_keypad_minus_alias(&key)
-        {
-            adjust_selected_threshold_by(app, -1);
-            tui_debug_log("handle_key_event.exit_global", app_debug_state(app));
-            return Ok(());
-        }
+    if app.view == AppView::Glyphs && !is_global_panel_jump {
+        tui_debug_log("handle_key_event.route_glyphs", app_debug_state(app));
+        let result = handle_glyphs_key(app, key);
+        tui_debug_log("handle_key_event.exit_glyphs", app_debug_state(app));
+        return result;
     }
 
     match code {
@@ -3712,6 +4080,8 @@ fn handle_key_event(app: &mut App, key: KeyEvent) -> Result<()> {
                 app.welcome_focus = WelcomeFocus::BuildButton;
             }
             app.view = AppView::Welcome;
+            app.grid_config = None;
+            app.selecting_for_grid = false;
         }
         KeyCode::Char('2') => {
             app.welcome_input_editing = false;
@@ -3722,6 +4092,9 @@ fn handle_key_event(app: &mut App, key: KeyEvent) -> Result<()> {
             app.view = match app.view {
                 AppView::Welcome => AppView::Glyphs,
                 AppView::Glyphs => AppView::Welcome,
+            };
+            if app.view == AppView::Welcome && app.active_project.is_some() {
+                app.welcome_focus = WelcomeFocus::BuildButton;
             }
         }
         KeyCode::BackTab => {
@@ -3729,6 +4102,9 @@ fn handle_key_event(app: &mut App, key: KeyEvent) -> Result<()> {
             app.view = match app.view {
                 AppView::Welcome => AppView::Glyphs,
                 AppView::Glyphs => AppView::Welcome,
+            };
+            if app.view == AppView::Welcome && app.active_project.is_some() {
+                app.welcome_focus = WelcomeFocus::InstalledFontList;
             }
         }
         KeyCode::Char('R') => {
@@ -3824,12 +4200,6 @@ fn handle_key_event(app: &mut App, key: KeyEvent) -> Result<()> {
         }
         _ => {}
     }
-    if previous_view == AppView::Glyphs
-        && app.view == AppView::Welcome
-        && app.active_project.is_some()
-    {
-        app.welcome_focus = WelcomeFocus::BuildButton;
-    }
     tui_debug_log("handle_key_event.exit_global", app_debug_state(app));
     Ok(())
 }
@@ -3844,37 +4214,6 @@ fn trigger_build_action(app: &mut App) -> Result<()> {
         return Ok(());
     }
     app.start_build_project()
-}
-
-fn trigger_home_tool_action(app: &mut App) -> Result<()> {
-    match app.selected_home_tool {
-        HomeToolAction::ComposeGrid => {
-            if app.active_project.is_none() {
-                app.status =
-                    Some("select or create a project before composing combined glyphs".to_string());
-            } else {
-                app.reload_glyphs()?;
-                app.view = AppView::Glyphs;
-                app.status = Some(
-                    "Glyphs: select an image, press c to create a 2x2 composition, Enter/Space to expand, C to remove"
-                        .to_string(),
-                );
-            }
-            Ok(())
-        }
-        HomeToolAction::AnimateGlyph => {
-            if app.active_project.is_none() {
-                app.status =
-                    Some("select or create a project before preparing animated glyphs".to_string());
-            } else {
-                app.status = Some(
-                    "Animate Glyph is planned for Home project tools but is not implemented yet"
-                        .to_string(),
-                );
-            }
-            Ok(())
-        }
-    }
 }
 
 fn trigger_install_action(app: &mut App) -> Result<()> {
@@ -4013,8 +4352,6 @@ fn draw_ui(frame: &mut Frame, app: &App) {
             "delete project  "
         } else if app.welcome_focus == WelcomeFocus::InstalledFontList {
             "uninstall  "
-        } else if app.welcome_focus == WelcomeFocus::ToolList {
-            "run action  "
         } else {
             "start creating  "
         };
@@ -4430,6 +4767,122 @@ fn draw_blocked_project_view(
     frame.render_widget(Paragraph::new(text).block(block), area);
 }
 
+fn draw_grid_config_ui(
+    frame: &mut Frame,
+    _app: &App,
+    config: &GridConfig,
+    area: Rect,
+    accent: Color,
+    muted: Color,
+) {
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(Style::default().fg(muted))
+        .title(Span::styled(" Grid Configuration ", Style::default().fg(accent)));
+
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    let rows_style = if config.focus == GridConfigFocus::Rows {
+        Style::default()
+            .fg(Color::Black)
+            .bg(Color::Yellow)
+            .add_modifier(Modifier::BOLD)
+    } else {
+        Style::default().fg(Color::White).bg(Color::DarkGray)
+    };
+    let cols_style = if config.focus == GridConfigFocus::Cols {
+        Style::default()
+            .fg(Color::Black)
+            .bg(Color::Yellow)
+            .add_modifier(Modifier::BOLD)
+    } else {
+        Style::default().fg(Color::White).bg(Color::DarkGray)
+    };
+    let create_style = if config.focus == GridConfigFocus::Create {
+        Style::default()
+            .fg(Color::Black)
+            .bg(accent)
+            .add_modifier(Modifier::BOLD)
+    } else {
+        Style::default().fg(Color::White).bg(Color::DarkGray)
+    };
+
+    let layout = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(1),
+            Constraint::Length(3),
+            Constraint::Length(1),
+            Constraint::Min(0),
+        ])
+        .margin(2)
+        .split(inner);
+
+    let input_layout = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([
+            Constraint::Length(20), // Rows
+            Constraint::Length(20), // Cols
+            Constraint::Length(20), // Create
+        ])
+        .split(layout[1]);
+
+    let rows_text = format!(" Rows: {} ", config.rows);
+    let cols_text = format!(" Cols: {} ", config.cols);
+    let create_text = " Create Grid ";
+
+    let header_text = format!(" Configuring grid for: {} ", source_display_name(&config.source_key));
+    frame.render_widget(Paragraph::new(header_text).style(Style::default().fg(Color::White)), layout[0]);
+
+    frame.render_widget(
+        Paragraph::new(rows_text)
+            .block(Block::default().borders(Borders::ALL).border_style(rows_style))
+            .style(rows_style),
+        input_layout[0],
+    );
+    frame.render_widget(
+        Paragraph::new(cols_text)
+            .block(Block::default().borders(Borders::ALL).border_style(cols_style))
+            .style(cols_style),
+        input_layout[1],
+    );
+    frame.render_widget(
+        Paragraph::new(create_text)
+            .block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .border_style(create_style),
+            )
+            .style(create_style),
+        input_layout[2],
+    );
+
+    let help_text = vec![
+        Line::from(""),
+        Line::from(vec![
+            Span::styled(" \u{2190}/\u{2192} ", Style::default().fg(accent)),
+            Span::raw("switch field  "),
+            Span::styled(" \u{2191}/\u{2193} ", Style::default().fg(accent)),
+            Span::raw("+/- 1  "),
+            Span::styled(" 0-9 ", Style::default().fg(accent)),
+            Span::raw("type value"),
+        ]),
+        Line::from(""),
+        Line::from(vec![
+            Span::styled(" Enter ", Style::default().fg(accent)),
+            Span::raw("create grid (on Create button)"),
+        ]),
+        Line::from(""),
+        Line::from(vec![
+            Span::styled(" Esc ", Style::default().fg(accent)),
+            Span::raw("cancel"),
+        ]),
+    ];
+    frame.render_widget(Paragraph::new(help_text), layout[3]);
+}
+
 fn draw_glyphs_view(
     frame: &mut Frame,
     app: &App,
@@ -4447,17 +4900,69 @@ fn draw_glyphs_view(
         .constraints([Constraint::Percentage(35), Constraint::Percentage(65)])
         .split(area);
 
+    let left_chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Length(2), Constraint::Min(0)])
+        .split(chunks[0]);
+
+    let grid_button_style = if app.glyphs_focus == GlyphsFocus::GridButton {
+        Style::default()
+            .fg(Color::Black)
+            .bg(accent)
+            .add_modifier(Modifier::BOLD)
+    } else {
+        Style::default().fg(Color::White).bg(Color::DarkGray)
+    };
+
+    let animate_button_style = if app.glyphs_focus == GlyphsFocus::AnimateButton {
+        Style::default()
+            .fg(Color::Black)
+            .bg(accent)
+            .add_modifier(Modifier::BOLD)
+    } else {
+        Style::default().fg(Color::White).bg(Color::DarkGray)
+    };
+
+    let button_line = Line::from(vec![
+        Span::raw("  "),
+        Span::styled(" Glyph Grid ", grid_button_style),
+        Span::raw(" "),
+        Span::styled(" Animate Glyph ", animate_button_style),
+    ]);
+    frame.render_widget(Paragraph::new(button_line), left_chunks[0]);
+
+    let mut list_title = vec![Span::styled(" Glyphs ", Style::default().fg(accent))];
+    if app.selecting_for_grid {
+        list_title.push(Span::styled(
+            " select a glyph for the grid ",
+            Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD),
+        ));
+    }
+
     let list_block = Block::default()
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
         .border_style(Style::default().fg(muted))
-        .title(Span::styled(" Glyphs ", Style::default().fg(accent)));
+        .title(Line::from(list_title));
 
     let visible_rows = app.visible_glyph_rows();
     let mut list_state = ListState::default();
     if !visible_rows.is_empty() {
         list_state.select(Some(app.selected_visible.min(visible_rows.len() - 1)));
     }
+
+    let list_highlight_style = if app.glyphs_focus == GlyphsFocus::List {
+        Style::default()
+            .fg(Color::Black)
+            .bg(if app.selecting_for_grid {
+                Color::Yellow
+            } else {
+                accent
+            })
+            .add_modifier(Modifier::BOLD)
+    } else {
+        Style::default().fg(Color::White).bg(Color::DarkGray)
+    };
 
     let items: Vec<ListItem> = if visible_rows.is_empty() {
         vec![ListItem::new(" No glyphs found. ")]
@@ -4535,15 +5040,15 @@ fn draw_glyphs_view(
 
     let list = List::new(items)
         .block(list_block)
-        .highlight_style(
-            Style::default()
-                .fg(Color::Black)
-                .bg(accent)
-                .add_modifier(Modifier::BOLD),
-        )
+        .highlight_style(list_highlight_style)
         .highlight_symbol(" \u{2023} ");
 
-    frame.render_stateful_widget(list, chunks[0], &mut list_state);
+    frame.render_stateful_widget(list, left_chunks[1], &mut list_state);
+
+    if let Some(config) = &app.grid_config {
+        draw_grid_config_ui(frame, app, config, chunks[1], accent, muted);
+        return;
+    }
 
     let preview_block = Block::default()
         .borders(Borders::ALL)

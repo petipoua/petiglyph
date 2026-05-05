@@ -23,7 +23,8 @@ use crate::project::{
     format_codepoint, load_runtime_config, parse_codepoint, read_manifest, write_manifest,
 };
 use crate::tui::{
-    App, AppView, HomeToolAction, InstalledFontSample, InteractiveGlyph, TuiLaunchOverrides,
+    App, AppView, GlyphsFocus, InstalledFontSample, InteractiveGlyph,
+ TuiLaunchOverrides,
     WelcomeFocus, build_action_name, format_projects_card_hint, format_welcome_input_field,
     handle_key, handle_key_event_for_test, handle_paste_event_for_test, install_action_name,
     persist_threshold_override, render_ui_for_test, requested_keyboard_enhancement_flags,
@@ -372,6 +373,7 @@ fn unified_tui_zero_projects_starts_without_active_project() {
     let workspace = make_temp_dir("unified-zero-projects");
     let mut app = App::new_workspace(workspace.clone(), None, TuiLaunchOverrides::default())
         .expect("workspace TUI app initializes");
+    app.installed_fonts = Vec::new();
 
     assert_eq!(app.view, AppView::Welcome);
     assert_eq!(app.active_project, None);
@@ -466,12 +468,6 @@ fn unified_tui_multiple_projects_can_be_selected_from_home() {
 
     handle_key(&mut app, KeyCode::Down).expect("down leaves project list after last project");
     assert_eq!(app.welcome_focus, WelcomeFocus::CreateInput);
-    handle_key(&mut app, KeyCode::Down).expect("down moves to compose grid button");
-    assert_eq!(app.welcome_focus, WelcomeFocus::ToolList);
-    assert_eq!(app.selected_home_tool, HomeToolAction::ComposeGrid);
-    handle_key(&mut app, KeyCode::Right).expect("right moves to animate glyph button");
-    assert_eq!(app.welcome_focus, WelcomeFocus::ToolList);
-    assert_eq!(app.selected_home_tool, HomeToolAction::AnimateGlyph);
     handle_key(&mut app, KeyCode::Right).expect("right moves to build button");
     assert_eq!(app.welcome_focus, WelcomeFocus::BuildButton);
     handle_key(&mut app, KeyCode::Right).expect("right moves to install button");
@@ -519,23 +515,9 @@ fn unified_tui_multiple_projects_can_be_selected_from_home() {
     assert_eq!(app.welcome_focus, WelcomeFocus::BuildButton);
     handle_key(&mut app, KeyCode::Left).expect("left from build returns to create input");
     assert_eq!(app.welcome_focus, WelcomeFocus::CreateInput);
-    handle_key(&mut app, KeyCode::Down).expect("down moves to compose grid button");
-    assert_eq!(app.welcome_focus, WelcomeFocus::ToolList);
-    assert_eq!(app.selected_home_tool, HomeToolAction::ComposeGrid);
-    handle_key(&mut app, KeyCode::Right).expect("right moves to animate glyph button");
-    assert_eq!(app.welcome_focus, WelcomeFocus::ToolList);
-    assert_eq!(app.selected_home_tool, HomeToolAction::AnimateGlyph);
     handle_key(&mut app, KeyCode::Right).expect("right moves to build button");
     assert_eq!(app.welcome_focus, WelcomeFocus::BuildButton);
     handle_key(&mut app, KeyCode::Left).expect("left from build returns to create input");
-    assert_eq!(app.welcome_focus, WelcomeFocus::CreateInput);
-    handle_key(&mut app, KeyCode::Down).expect("down returns to compose grid button");
-    assert_eq!(app.welcome_focus, WelcomeFocus::ToolList);
-    assert_eq!(app.selected_home_tool, HomeToolAction::ComposeGrid);
-    handle_key(&mut app, KeyCode::Left).expect("left stays on compose grid");
-    assert_eq!(app.welcome_focus, WelcomeFocus::ToolList);
-    assert_eq!(app.selected_home_tool, HomeToolAction::ComposeGrid);
-    handle_key(&mut app, KeyCode::Up).expect("up returns to create input");
     assert_eq!(app.welcome_focus, WelcomeFocus::CreateInput);
 
     fs::remove_dir_all(workspace).expect("temp workspace is removed");
@@ -671,7 +653,6 @@ fn projects_card_hint_keeps_fixed_width_and_stays_local() {
     let input_hint = format_projects_card_hint(WelcomeFocus::CreateInput, false);
     let typing_hint = format_projects_card_hint(WelcomeFocus::CreateInput, true);
     let button_hint = format_projects_card_hint(WelcomeFocus::CreateInput, false);
-    let tool_hint = format_projects_card_hint(WelcomeFocus::ToolList, false);
     let build_hint = format_projects_card_hint(WelcomeFocus::BuildButton, false);
     let install_hint = format_projects_card_hint(WelcomeFocus::InstallButton, false);
     let delete_hint = format_projects_card_hint(WelcomeFocus::DeleteProjectButton, false);
@@ -680,7 +661,6 @@ fn projects_card_hint_keeps_fixed_width_and_stays_local() {
 
     assert_eq!(input_hint.chars().count(), typing_hint.chars().count());
     assert_eq!(input_hint.chars().count(), button_hint.chars().count());
-    assert_eq!(input_hint.chars().count(), tool_hint.chars().count());
     assert_eq!(input_hint.chars().count(), build_hint.chars().count());
     assert_eq!(input_hint.chars().count(), install_hint.chars().count());
     assert_eq!(input_hint.chars().count(), delete_hint.chars().count());
@@ -689,8 +669,8 @@ fn projects_card_hint_keeps_fixed_width_and_stays_local() {
     assert!(input_hint.contains("press Enter to create"));
     assert!(typing_hint.contains("typing (Enter/Esc to stop)"));
     assert!(button_hint.contains("press Enter to create"));
-    assert!(tool_hint.trim().is_empty());
-    assert!(build_hint.trim().is_empty());
+    assert!(list_hint.trim().is_empty());
+
     assert!(install_hint.trim().is_empty());
     assert!(delete_hint.trim().is_empty());
     assert!(uninstall_hint.trim().is_empty());
@@ -795,18 +775,16 @@ fn project_action_labels_switch_with_current_project_state() {
 }
 
 #[test]
-fn home_tool_list_runs_advanced_placeholder_action() {
-    let project_dir = make_temp_dir("home-tools-build");
+fn glyph_view_animate_button_runs_placeholder_action() {
+    let project_dir = make_temp_dir("animate-glyph-enter");
     let manifest_path = project_dir.join("petiglyph.toml");
-    write_manifest(&manifest_path, &Manifest::default()).expect("manifest is written");
-
     let icons_dir = project_dir.join("icons");
     fs::create_dir_all(&icons_dir).expect("icons dir is created");
     write_test_png(&icons_dir.join("icon.png"));
 
     let config = RuntimeConfig {
         project_dir: project_dir.clone(),
-        project_id: "test-home-tool-enter".to_string(),
+        project_id: "test-animate-glyph-enter".to_string(),
         input_dir: icons_dir,
         out_dir: project_dir.join("build"),
         font_name: "Petiglyph".to_string(),
@@ -818,17 +796,14 @@ fn home_tool_list_runs_advanced_placeholder_action() {
     };
 
     let mut app = App::new(manifest_path, config);
-    assert_eq!(app.welcome_focus, WelcomeFocus::CreateInput);
-    assert_eq!(app.selected_home_tool, HomeToolAction::ComposeGrid);
+    app.view = AppView::Glyphs;
+    app.glyphs_focus = GlyphsFocus::AnimateButton;
 
-    handle_key(&mut app, KeyCode::Down).expect("down should move focus to tools");
-    assert_eq!(app.welcome_focus, WelcomeFocus::ToolList);
-
-    handle_key(&mut app, KeyCode::Enter).expect("enter on compose grid should succeed");
+    handle_key(&mut app, KeyCode::Enter).expect("enter on animate glyph should succeed");
     assert!(
         app.status
             .as_deref()
-            .is_some_and(|status| status.contains("press c to create a 2x2 composition"))
+            .is_some_and(|status| status.contains("Animate Glyph is planned for Glyphs tools"))
     );
     assert_eq!(app.view, AppView::Glyphs);
 
@@ -908,13 +883,13 @@ fn home_installed_font_buttons_can_be_navigated() {
         InstalledFontSample {
             file_name: "alpha.ttf".to_string(),
             path: PathBuf::from("/tmp/alpha.ttf"),
-            sample: "AB".to_string(),
+            blocks: vec!["AB".to_string()],
             truncated: false,
         },
         InstalledFontSample {
             file_name: "beta.ttf".to_string(),
             path: PathBuf::from("/tmp/beta.ttf"),
-            sample: "CD".to_string(),
+            blocks: vec!["CD".to_string()],
             truncated: false,
         },
     ];
@@ -923,14 +898,27 @@ fn home_installed_font_buttons_can_be_navigated() {
     handle_key(&mut app, KeyCode::Down).expect("down should move to installed fonts");
     assert_eq!(app.welcome_focus, WelcomeFocus::InstalledFontList);
     assert_eq!(app.selected_installed_font, 0);
+    assert_eq!(app.selected_installed_font_sub_index, 0);
+
+    handle_key(&mut app, KeyCode::Down).expect("down should move to sample line");
+    assert_eq!(app.welcome_focus, WelcomeFocus::InstalledFontList);
+    assert_eq!(app.selected_installed_font, 0);
+    assert_eq!(app.selected_installed_font_sub_index, 1);
 
     handle_key(&mut app, KeyCode::Down).expect("down should move to next installed font");
     assert_eq!(app.welcome_focus, WelcomeFocus::InstalledFontList);
     assert_eq!(app.selected_installed_font, 1);
+    assert_eq!(app.selected_installed_font_sub_index, 0);
 
-    handle_key(&mut app, KeyCode::Up).expect("up should move to previous installed font");
+    handle_key(&mut app, KeyCode::Up).expect("up should move to previous font's sample");
     assert_eq!(app.welcome_focus, WelcomeFocus::InstalledFontList);
     assert_eq!(app.selected_installed_font, 0);
+    assert_eq!(app.selected_installed_font_sub_index, 1);
+
+    handle_key(&mut app, KeyCode::Up).expect("up should move to previous font's title");
+    assert_eq!(app.welcome_focus, WelcomeFocus::InstalledFontList);
+    assert_eq!(app.selected_installed_font, 0);
+    assert_eq!(app.selected_installed_font_sub_index, 0);
 
     handle_key(&mut app, KeyCode::Up).expect("up from first installed font returns to build");
     assert_eq!(app.welcome_focus, WelcomeFocus::BuildButton);
@@ -2200,7 +2188,7 @@ fn tab_cycles_panels_and_glyph_controls_stay_in_glyph_view() {
     assert_eq!(app.view, AppView::Glyphs);
     handle_key(&mut app, KeyCode::BackTab).expect("key handling should succeed");
     assert_eq!(app.view, AppView::Welcome);
-    assert_eq!(app.welcome_focus, WelcomeFocus::BuildButton);
+    assert_eq!(app.welcome_focus, WelcomeFocus::InstalledFontList);
 
     // Threshold arrows still provide granular (+/-1) changes in Glyphs.
     app.view = AppView::Glyphs;
