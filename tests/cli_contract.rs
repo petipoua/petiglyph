@@ -125,7 +125,9 @@ fn cli_list_json_returns_projects_and_fonts() {
     let payload = parse_json_stdout(&output);
     assert_api_envelope(&payload, "list", true);
 
-    let projects = payload["data"]["projects"].as_array().expect("projects array");
+    let projects = payload["data"]["projects"]
+        .as_array()
+        .expect("projects array");
     assert_eq!(projects.len(), 1, "should detect the created project");
     assert_eq!(
         projects[0]["manifest_path"].as_str(),
@@ -143,9 +145,22 @@ fn cli_delete_json_removes_project() {
     let workspace = make_temp_dir("delete-json");
     let (project_dir, manifest_path) = create_project_with_icon(&workspace, "delete-demo");
 
-    assert!(project_dir.exists(), "project dir should exist before delete");
+    assert!(
+        project_dir.exists(),
+        "project dir should exist before delete"
+    );
 
-    let output = run_petiglyph(&workspace, &["delete", "--json", "--manifest", manifest_path.to_str().unwrap()], None, None);
+    let output = run_petiglyph(
+        &workspace,
+        &[
+            "delete",
+            "--json",
+            "--manifest",
+            manifest_path.to_str().unwrap(),
+        ],
+        None,
+        None,
+    );
     assert!(output.status.success(), "delete --json should succeed");
 
     let payload = parse_json_stdout(&output);
@@ -165,8 +180,16 @@ fn cli_set_threshold_json_updates_manifest() {
     let workspace = make_temp_dir("set-threshold-json");
     let (project_dir, manifest_path) = create_project_with_icon(&workspace, "threshold-demo");
 
-    let output = run_petiglyph(&project_dir, &["set-threshold", "alpha.png", "128", "--json"], None, None);
-    assert!(output.status.success(), "set-threshold --json should succeed");
+    let output = run_petiglyph(
+        &project_dir,
+        &["set-threshold", "alpha.png", "128", "--json"],
+        None,
+        None,
+    );
+    assert!(
+        output.status.success(),
+        "set-threshold --json should succeed"
+    );
 
     let payload = parse_json_stdout(&output);
     assert_api_envelope(&payload, "set-threshold", true);
@@ -174,7 +197,10 @@ fn cli_set_threshold_json_updates_manifest() {
     assert_eq!(payload["data"]["threshold"].as_u64(), Some(128));
 
     let manifest_content = fs::read_to_string(&manifest_path).expect("manifest should be readable");
-    assert!(manifest_content.contains("\"alpha.png\" = 128"), "manifest should contain the override");
+    assert!(
+        manifest_content.contains("\"alpha.png\" = 128"),
+        "manifest should contain the override"
+    );
 
     fs::remove_dir_all(project_dir).expect("project dir is removed");
     fs::remove_dir_all(workspace).expect("temp dir is removed");
@@ -186,11 +212,24 @@ fn cli_clear_threshold_json_updates_manifest() {
     let (project_dir, manifest_path) = create_project_with_icon(&workspace, "clear-threshold-demo");
 
     // First set the threshold
-    run_petiglyph(&project_dir, &["set-threshold", "alpha.png", "128", "--json"], None, None);
+    run_petiglyph(
+        &project_dir,
+        &["set-threshold", "alpha.png", "128", "--json"],
+        None,
+        None,
+    );
 
     // Then clear it
-    let output = run_petiglyph(&project_dir, &["clear-threshold", "alpha.png", "--json"], None, None);
-    assert!(output.status.success(), "clear-threshold --json should succeed");
+    let output = run_petiglyph(
+        &project_dir,
+        &["clear-threshold", "alpha.png", "--json"],
+        None,
+        None,
+    );
+    assert!(
+        output.status.success(),
+        "clear-threshold --json should succeed"
+    );
 
     let payload = parse_json_stdout(&output);
     assert_api_envelope(&payload, "clear-threshold", true);
@@ -198,7 +237,10 @@ fn cli_clear_threshold_json_updates_manifest() {
     assert_eq!(payload["data"]["was_present"].as_bool(), Some(true));
 
     let manifest_content = fs::read_to_string(&manifest_path).expect("manifest should be readable");
-    assert!(!manifest_content.contains("\"alpha.png\" = 128"), "manifest should no longer contain the override");
+    assert!(
+        !manifest_content.contains("\"alpha.png\" = 128"),
+        "manifest should no longer contain the override"
+    );
 
     fs::remove_dir_all(project_dir).expect("project dir is removed");
     fs::remove_dir_all(workspace).expect("temp dir is removed");
@@ -374,8 +416,16 @@ fn cli_tool_uninstall_json_is_idempotent() {
     let home = workspace.join("home");
     fs::create_dir_all(&home).expect("home dir is created");
 
-    let output = run_petiglyph(&workspace, &["nuke-everything", "--json"], Some(&home), None);
-    assert!(output.status.success(), "nuke-everything --json should succeed");
+    let output = run_petiglyph(
+        &workspace,
+        &["nuke-everything", "--json"],
+        Some(&home),
+        None,
+    );
+    assert!(
+        output.status.success(),
+        "nuke-everything --json should succeed"
+    );
     assert!(
         output.stderr.is_empty(),
         "nuke-everything --json should keep stderr clean on success"

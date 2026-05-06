@@ -1334,7 +1334,8 @@ fn handle_welcome_key(app: &mut App, key: KeyEvent) -> Result<()> {
                         );
                         WelcomeFocus::InstalledFontList
                     } else {
-                        let sub_count = app.installed_font_sub_row_count(app.selected_installed_font);
+                        let sub_count =
+                            app.installed_font_sub_row_count(app.selected_installed_font);
                         if app.selected_installed_font_sub_index + 1 < sub_count {
                             app.selected_installed_font_sub_index += 1;
                             WelcomeFocus::InstalledFontList
@@ -1845,8 +1846,7 @@ fn draw_welcome_view(
         format_projects_card_hint_for_display(app.welcome_focus, app.welcome_input_editing),
         Style::default().fg(muted),
     ));
-    let projects_footer_lines =
-        vec![Line::from(""), Line::from(new_project_line), Line::from("")];
+    let projects_footer_lines = vec![Line::from(""), Line::from(new_project_line), Line::from("")];
 
     let projects_inner = projects_block.inner(main[0]);
     frame.render_widget(projects_block, main[0]);
@@ -2238,7 +2238,16 @@ fn draw_welcome_view(
                     " ○ "
                 };
                 let mut name_spans = vec![
-                    Span::styled(bullet, Style::default().fg(if is_focused && !app.installed_font_horizontal_focus_uninstall { Color::White } else { Color::Reset })),
+                    Span::styled(
+                        bullet,
+                        Style::default().fg(
+                            if is_focused && !app.installed_font_horizontal_focus_uninstall {
+                                Color::White
+                            } else {
+                                Color::Reset
+                            },
+                        ),
+                    ),
                     Span::styled(&font.file_name, base_style),
                 ];
 
@@ -2273,15 +2282,17 @@ fn draw_welcome_view(
 
                 // Add Uninstall button
                 title_line.spans.push(Span::raw("  "));
-                let uninstall_button_style = if app.is_selected_font_uninstall_in_progress(&font.path) {
-                    app.font_task_button_style().unwrap_or(disabled_button_style)
-                } else if app.install_in_progress() || app.build_in_progress() {
-                    disabled_button_style
-                } else if is_focused && app.installed_font_horizontal_focus_uninstall {
-                    selected_button_style
-                } else {
-                    idle_button_style
-                };
+                let uninstall_button_style =
+                    if app.is_selected_font_uninstall_in_progress(&font.path) {
+                        app.font_task_button_style()
+                            .unwrap_or(disabled_button_style)
+                    } else if app.install_in_progress() || app.build_in_progress() {
+                        disabled_button_style
+                    } else if is_focused && app.installed_font_horizontal_focus_uninstall {
+                        selected_button_style
+                    } else {
+                        idle_button_style
+                    };
                 let uninstall_label = if app.is_selected_font_uninstall_in_progress(&font.path) {
                     if let Some(spinner) = app.font_task_spinner_frame() {
                         format!(" {spinner} Removing... ")
@@ -2331,8 +2342,11 @@ fn draw_welcome_view(
                     let mut spans = vec![
                         Span::styled(
                             if l_idx == 0 { bullet } else { "   " },
-                            Style::default()
-                                .fg(if is_focused { Color::White } else { Color::Reset }),
+                            Style::default().fg(if is_focused {
+                                Color::White
+                            } else {
+                                Color::Reset
+                            }),
                         ),
                         Span::styled(line_text, base_style),
                     ];
@@ -4785,7 +4799,10 @@ fn draw_grid_config_ui(
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
         .border_style(Style::default().fg(muted))
-        .title(Span::styled(" Grid Configuration ", Style::default().fg(accent)));
+        .title(Span::styled(
+            " Grid Configuration ",
+            Style::default().fg(accent),
+        ));
 
     let inner = block.inner(area);
     frame.render_widget(block, area);
@@ -4839,18 +4856,32 @@ fn draw_grid_config_ui(
     let cols_text = format!(" Cols: {} ", config.cols);
     let create_text = " Create Grid ";
 
-    let header_text = format!(" Configuring grid for: {} ", source_display_name(&config.source_key));
-    frame.render_widget(Paragraph::new(header_text).style(Style::default().fg(Color::White)), layout[0]);
+    let header_text = format!(
+        " Configuring grid for: {} ",
+        source_display_name(&config.source_key)
+    );
+    frame.render_widget(
+        Paragraph::new(header_text).style(Style::default().fg(Color::White)),
+        layout[0],
+    );
 
     frame.render_widget(
         Paragraph::new(rows_text)
-            .block(Block::default().borders(Borders::ALL).border_style(rows_style))
+            .block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .border_style(rows_style),
+            )
             .style(rows_style),
         input_layout[0],
     );
     frame.render_widget(
         Paragraph::new(cols_text)
-            .block(Block::default().borders(Borders::ALL).border_style(cols_style))
+            .block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .border_style(cols_style),
+            )
             .style(cols_style),
         input_layout[1],
     );
@@ -4941,7 +4972,9 @@ fn draw_glyphs_view(
     if app.selecting_for_grid {
         list_title.push(Span::styled(
             " select a glyph for the grid ",
-            Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD),
+            Style::default()
+                .fg(Color::Yellow)
+                .add_modifier(Modifier::BOLD),
         ));
     }
 

@@ -47,12 +47,20 @@ pub(crate) fn compose_tiles(
     let grid_height = glyph_size
         .checked_mul(u32::try_from(rows).context("composition rows overflow u32")?)
         .context("composition grid height overflow")?;
-    let scaled_grid = image::imageops::resize(&source, grid_width, grid_height, FilterType::Lanczos3);
+    let scaled_grid =
+        image::imageops::resize(&source, grid_width, grid_height, FilterType::Lanczos3);
 
     let has_transparency = scaled_grid.pixels().any(|p| p[3] < 255);
     let background = (!has_transparency).then(|| estimate_background_rgb(&scaled_grid));
     let mut coverage_grid = coverage_from_image(&scaled_grid, has_transparency, background);
-    seal_internal_grid_seams(&mut coverage_grid, grid_width, grid_height, glyph_size, rows, cols);
+    seal_internal_grid_seams(
+        &mut coverage_grid,
+        grid_width,
+        grid_height,
+        glyph_size,
+        rows,
+        cols,
+    );
 
     let mut tiles = Vec::with_capacity(rows.saturating_mul(cols));
     for row in 0..rows {

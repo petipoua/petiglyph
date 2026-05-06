@@ -1202,13 +1202,7 @@ fn write_ttf(
     glyphs: &[(String, u32, GlyphBitmap)],
     glyph_options: &[TtfGlyphOptions],
 ) -> Result<()> {
-    let bytes = build_ttf(
-        font_name,
-        font_identity,
-        glyph_size,
-        glyphs,
-        glyph_options,
-    )?;
+    let bytes = build_ttf(font_name, font_identity, glyph_size, glyphs, glyph_options)?;
     fs::write(path, bytes).with_context(|| format!("failed to write {}", path.display()))?;
     Ok(())
 }
@@ -1488,9 +1482,10 @@ fn bitmap_glyph_to_ttf(
             i32::from(y_min) + i32::from(y_max),
         )
     } else {
-        // Keep composition tiles in their tile-local position while placing the bitmap
-        // line box at the same baseline offset used by centered glyphs.
-        i32::from(vertical_metrics.descent)
+        // Keep composition tiles in tile-local coordinates without adding extra
+        // downward baseline offset; this avoids visible row gaps when grids are
+        // rendered as adjacent text lines in terminals.
+        0
     };
     if x_shift != 0 || y_shift != 0 {
         translate_points(&mut points, x_shift, y_shift)?;

@@ -385,4 +385,7 @@ Project root also contains:
 - if source alpha exists, alpha drives glyph coverage
 - otherwise, border color is treated as background and contrast becomes coverage
 - default `codepoint_start` is `U+100000` to avoid common BMP private-use collisions
+- composition tiles are exported with internal seam overlap so adjacent grid cells connect without visible cracks in terminal line/cell rendering
+- private-use codepoints are East Asian Ambiguous width in Unicode; for stable terminal alignment keep ambiguous width as single-cell (for example: WezTerm `treat_east_asian_ambiguous_width_as_wide = false`, iTerm2 disable “Ambiguous characters are double-width”)
+- while validating composite grids, avoid custom terminal line/cell spacing tweaks (`line_height`, `cell_height`, `font.offset.y`) that can introduce artificial row gaps
 - if metadata/lock artifacts are incompatible, CLI errors include an actionable `petiglyph doctor --repair` hint

@@ -14,7 +14,10 @@ use crate::build::{
     build_outputs_with_options, collect_source_files, coverage_map, glyph_sample_string,
     is_supported_source, preprocess_sources_with_compositions,
 };
-use crate::cli::{DefaultTuiTarget, resolve_default_tui_target_for};
+use crate::cli::{
+    DefaultTuiTarget, is_private_use_codepoint, resolve_default_tui_target_for,
+    sample_terminal_rendering_hints,
+};
 use crate::install::{
     DEFAULT_INSTALL_NAME_MODE, FontInstallNameMode, effective_font_name,
     expected_install_ttf_path_for_mode, reserve_project_unicode_range,
@@ -27,11 +30,10 @@ use crate::tui::{
     App, AppView, GlyphsFocus, InstalledFontSample, InteractiveGlyph, TuiLaunchOverrides,
     WelcomeFocus, build_action_name, format_projects_card_hint, format_welcome_input_field,
     handle_key, handle_key_event_for_test, handle_paste_event_for_test, install_action_name,
-    persist_threshold_override, render_ui_for_test, requested_keyboard_enhancement_flags,
-    regroup_installed_sample_blocks,
-    installed_font_block_display_lines, resolve_installed_font_path_with,
-    sample_glyphs_from_ttf_bytes, should_dispatch_key_kind, switch_notice_visible,
-    wrap_sample_for_display,
+    installed_font_block_display_lines, persist_threshold_override,
+    regroup_installed_sample_blocks, render_ui_for_test, requested_keyboard_enhancement_flags,
+    resolve_installed_font_path_with, sample_glyphs_from_ttf_bytes, should_dispatch_key_kind,
+    switch_notice_visible, wrap_sample_for_display,
 };
 
 fn make_temp_dir(name: &str) -> PathBuf {
@@ -705,6 +707,35 @@ fn wrap_sample_for_display_preserves_multiline_grid_layout() {
 }
 
 #[test]
+fn private_use_codepoint_detection_matches_unicode_pua_ranges() {
+    assert!(is_private_use_codepoint(0xE000));
+    assert!(is_private_use_codepoint(0xF8FF));
+    assert!(is_private_use_codepoint(0xF0000));
+    assert!(is_private_use_codepoint(0x10FFFD));
+    assert!(!is_private_use_codepoint(0xD7FF));
+    assert!(!is_private_use_codepoint(0x110000));
+}
+
+#[test]
+fn sample_terminal_rendering_hints_warn_for_pua_and_multiline_grids() {
+    let sample = "\u{100000}\u{100001}\n\u{100002}\u{100003}";
+    let hints = sample_terminal_rendering_hints(sample);
+
+    assert!(
+        hints
+            .iter()
+            .any(|hint| hint.contains("Private Use codepoints")),
+        "expected a private-use width warning: {hints:?}"
+    );
+    assert!(
+        hints
+            .iter()
+            .any(|hint| hint.contains("line-height/cell-height")),
+        "expected a multiline grid spacing warning: {hints:?}"
+    );
+}
+
+#[test]
 fn installed_font_card_keeps_grid_tiles_adjacent() {
     let lines = installed_font_block_display_lines("ABC\nDEF\nGHI", 80);
     assert_eq!(
@@ -1363,15 +1394,20 @@ fn preprocess_composition_tiles_use_global_grid_scaling() {
     compositions.insert("shape.png".to_string(), CompositionDef { rows: 3, cols: 3 });
     let sources = vec![source_path.clone()];
     let glyph_size = 16u32;
-    let glyphs = preprocess_sources_with_compositions(&sources, &input_dir, glyph_size, &compositions)
-        .expect("composition preprocess succeeds");
+    let glyphs =
+        preprocess_sources_with_compositions(&sources, &input_dir, glyph_size, &compositions)
+            .expect("composition preprocess succeeds");
     assert_eq!(glyphs.len(), 9);
 
     let source = image::open(&source_path)
         .expect("source image opens")
         .to_rgba8();
-    let scaled =
-        image::imageops::resize(&source, 3 * glyph_size, 3 * glyph_size, FilterType::Lanczos3);
+    let scaled = image::imageops::resize(
+        &source,
+        3 * glyph_size,
+        3 * glyph_size,
+        FilterType::Lanczos3,
+    );
     let mut expected_grid = scaled.pixels().map(|p| p[3]).collect::<Vec<_>>();
     seal_expected_internal_grid_seams(
         &mut expected_grid,
@@ -1418,8 +1454,9 @@ fn preprocess_composition_tiles_seal_internal_threshold_seams() {
 
     let mut compositions = BTreeMap::new();
     compositions.insert("seam.png".to_string(), CompositionDef { rows: 1, cols: 2 });
-    let glyphs = preprocess_sources_with_compositions(&[source_path], &input_dir, 16, &compositions)
-        .expect("composition preprocess succeeds");
+    let glyphs =
+        preprocess_sources_with_compositions(&[source_path], &input_dir, 16, &compositions)
+            .expect("composition preprocess succeeds");
 
     let left = glyphs
         .iter()
@@ -1577,6 +1614,76 @@ fn build_outputs_composition_overlaps_internal_ttf_edges() {
     assert!(
         right_bounds.x_min < 0,
         "right tile should overlap the previous glyph cell at the internal seam"
+    );
+
+    fs::remove_dir_all(project_dir).expect("temp project dir is removed");
+}
+
+#[test]
+fn build_outputs_composition_overlaps_internal_ttf_edges_vertically() {
+    let project_dir = make_temp_dir("composition-ttf-overlap-vertical");
+    let input_dir = project_dir.join("icons");
+    fs::create_dir_all(&input_dir).expect("icons dir is created");
+
+    let mut img = RgbaImage::from_pixel(16, 32, Rgba([255, 255, 255, 0]));
+    for x in 0..16 {
+        img.put_pixel(x, 15, Rgba([0, 0, 0, 255]));
+        img.put_pixel(x, 16, Rgba([0, 0, 0, 255]));
+    }
+    img.save(input_dir.join("vseam.png"))
+        .expect("vertical seam image is written");
+
+    let manifest_path = project_dir.join("petiglyph.toml");
+    let mut manifest = Manifest::default();
+    manifest.project_id = Some("test-composition-ttf-overlap-vertical".to_string());
+    manifest
+        .compositions
+        .insert("vseam.png".to_string(), CompositionDef { rows: 2, cols: 1 });
+    write_manifest(&manifest_path, &manifest).expect("manifest is written");
+
+    let config = load_runtime_config(&manifest_path, None, None, None, Some(16), None)
+        .expect("runtime config loads");
+    let summary = build_outputs(&config).expect("build succeeds");
+    let mapping: Vec<MappingEntry> = serde_json::from_str(
+        &fs::read_to_string(&summary.mapping_path).expect("mapping is written"),
+    )
+    .expect("mapping parses");
+    let ttf = fs::read(summary.ttf_path).expect("ttf is written");
+    let face = ttf_parser::Face::parse(&ttf, 0).expect("ttf parses");
+    let asc = i32::from(face.ascender());
+    let desc = i32::from(face.descender());
+
+    let top_cp = mapping
+        .iter()
+        .find(|entry| entry.source_file == "vseam.png#compose:2x1:0:0")
+        .map(|entry| parse_codepoint(&entry.codepoint).expect("top codepoint parses"))
+        .expect("top tile is mapped");
+    let bottom_cp = mapping
+        .iter()
+        .find(|entry| entry.source_file == "vseam.png#compose:2x1:1:0")
+        .map(|entry| parse_codepoint(&entry.codepoint).expect("bottom codepoint parses"))
+        .expect("bottom tile is mapped");
+
+    let top_bounds = face
+        .glyph_bounding_box(
+            face.glyph_index(char::from_u32(top_cp).expect("top codepoint is valid"))
+                .expect("top glyph maps"),
+        )
+        .expect("top glyph has bounds");
+    let bottom_bounds = face
+        .glyph_bounding_box(
+            face.glyph_index(char::from_u32(bottom_cp).expect("bottom codepoint is valid"))
+                .expect("bottom glyph maps"),
+        )
+        .expect("bottom glyph has bounds");
+
+    // Line N+1 top for bottom glyph in baseline coordinates of line N:
+    // top_next = y_max(bottom) - (asc - desc)
+    let next_line_top = i32::from(bottom_bounds.y_max) - (asc - desc);
+    assert!(
+        i32::from(top_bounds.y_min) <= next_line_top,
+        "adjacent composition rows should overlap or touch vertically (top.y_min={}, next_line_top={next_line_top}, asc={asc}, desc={desc})",
+        top_bounds.y_min
     );
 
     fs::remove_dir_all(project_dir).expect("temp project dir is removed");

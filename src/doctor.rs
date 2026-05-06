@@ -312,7 +312,7 @@ pub(crate) fn doctor(repair: bool, manifest_arg: Option<PathBuf>) -> Result<Doct
                 .with_context(|| format!("failed to read {}", path.display()))?;
             let metadata: InstallMetadataRaw = serde_json::from_str(&raw)
                 .with_context(|| format!("failed to parse {}", path.display()))?;
-            
+
             let ttf_path = Path::new(&metadata.installed_ttf);
             if !ttf_path.is_file() {
                 orphaned_metadata.push(path);
@@ -376,9 +376,8 @@ pub(crate) fn doctor(repair: bool, manifest_arg: Option<PathBuf>) -> Result<Doct
             );
         } else if repair {
             for path in &orphaned_ttfs {
-                fs::remove_file(path).with_context(|| {
-                    format!("failed to remove orphan TTF {}", path.display())
-                })?;
+                fs::remove_file(path)
+                    .with_context(|| format!("failed to remove orphan TTF {}", path.display()))?;
                 repaired += 1;
             }
             push_finding(
@@ -407,20 +406,18 @@ pub(crate) fn doctor(repair: bool, manifest_arg: Option<PathBuf>) -> Result<Doct
 
     let mut resolved_manifests = Vec::new();
     match manifest_arg {
-        Some(path) => {
-            match manifest_path_from_option(Some(path)) {
-                Ok(m) => resolved_manifests.push(m),
-                Err(err) => {
-                    push_finding(
-                        &mut findings,
-                        "manifest_invalid",
-                        DoctorSeverity::Error,
-                        DoctorStatus::Issue,
-                        format!("failed to resolve manifest: {err}"),
-                    );
-                }
+        Some(path) => match manifest_path_from_option(Some(path)) {
+            Ok(m) => resolved_manifests.push(m),
+            Err(err) => {
+                push_finding(
+                    &mut findings,
+                    "manifest_invalid",
+                    DoctorSeverity::Error,
+                    DoctorStatus::Issue,
+                    format!("failed to resolve manifest: {err}"),
+                );
             }
-        }
+        },
         None => {
             let current_dir = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
             if let Ok(discovered) = crate::project::discover_project_manifests(&current_dir) {
@@ -487,7 +484,10 @@ pub(crate) fn doctor(repair: bool, manifest_arg: Option<PathBuf>) -> Result<Doct
                             "stale_project_lock",
                             DoctorSeverity::Warning,
                             DoctorStatus::Issue,
-                            format!("failed to remove stale lock {}: {err}", project_lock.display()),
+                            format!(
+                                "failed to remove stale lock {}: {err}",
+                                project_lock.display()
+                            ),
                         );
                     }
                 }
@@ -600,7 +600,7 @@ pub(crate) fn doctor(repair: bool, manifest_arg: Option<PathBuf>) -> Result<Doct
                                         ),
                                     );
                                 }
-                                
+
                                 if let Some(r) = range {
                                     if codepoint < r.start || codepoint > r.end {
                                         is_valid = false;
@@ -609,20 +609,36 @@ pub(crate) fn doctor(repair: bool, manifest_arg: Option<PathBuf>) -> Result<Doct
                                             "registry_project_range_conflict",
                                             DoctorSeverity::Error,
                                             DoctorStatus::Issue,
-                                            format!("codepoint {} outside owned range U+{:04X}..U+{:04X} in {}", entry.codepoint, r.start, r.end, glyph_lock_path.display()),
+                                            format!(
+                                                "codepoint {} outside owned range U+{:04X}..U+{:04X} in {}",
+                                                entry.codepoint,
+                                                r.start,
+                                                r.end,
+                                                glyph_lock_path.display()
+                                            ),
                                         );
                                     }
                                 }
 
                                 for (other_project, other_range) in &registry.ranges {
-                                    if other_project != &config.project_id && codepoint >= other_range.start && codepoint <= other_range.end {
+                                    if other_project != &config.project_id
+                                        && codepoint >= other_range.start
+                                        && codepoint <= other_range.end
+                                    {
                                         is_valid = false;
                                         push_finding(
                                             &mut findings,
                                             "registry_cross_project_conflict",
                                             DoctorSeverity::Error,
                                             DoctorStatus::Issue,
-                                            format!("codepoint {} owned by {} (U+{:04X}..U+{:04X}) in {}", entry.codepoint, other_project, other_range.start, other_range.end, glyph_lock_path.display()),
+                                            format!(
+                                                "codepoint {} owned by {} (U+{:04X}..U+{:04X}) in {}",
+                                                entry.codepoint,
+                                                other_project,
+                                                other_range.start,
+                                                other_range.end,
+                                                glyph_lock_path.display()
+                                            ),
                                         );
                                     }
                                 }
@@ -650,7 +666,11 @@ pub(crate) fn doctor(repair: bool, manifest_arg: Option<PathBuf>) -> Result<Doct
                                 "glyph_lock_missing_source",
                                 DoctorSeverity::Warning,
                                 DoctorStatus::Issue,
-                                format!("source_file {} is missing from {}", entry.source_file, config.input_dir.display()),
+                                format!(
+                                    "source_file {} is missing from {}",
+                                    entry.source_file,
+                                    config.input_dir.display()
+                                ),
                             );
                         }
 
@@ -682,7 +702,10 @@ pub(crate) fn doctor(repair: bool, manifest_arg: Option<PathBuf>) -> Result<Doct
                                     "glyph_lock_repair_failed",
                                     DoctorSeverity::Error,
                                     DoctorStatus::Issue,
-                                    format!("failed to save repaired lock to {}", glyph_lock_path.display()),
+                                    format!(
+                                        "failed to save repaired lock to {}",
+                                        glyph_lock_path.display()
+                                    ),
                                 );
                             }
                         }
@@ -768,11 +791,17 @@ pub(crate) fn doctor(repair: bool, manifest_arg: Option<PathBuf>) -> Result<Doct
 
     let warnings = findings
         .iter()
-        .filter(|item| matches!(item.severity, DoctorSeverity::Warning) && !matches!(item.status, DoctorStatus::Repaired))
+        .filter(|item| {
+            matches!(item.severity, DoctorSeverity::Warning)
+                && !matches!(item.status, DoctorStatus::Repaired)
+        })
         .count();
     let errors = findings
         .iter()
-        .filter(|item| matches!(item.severity, DoctorSeverity::Error) && !matches!(item.status, DoctorStatus::Repaired))
+        .filter(|item| {
+            matches!(item.severity, DoctorSeverity::Error)
+                && !matches!(item.status, DoctorStatus::Repaired)
+        })
         .count();
     let healthy = errors == 0 && warnings == 0;
 
