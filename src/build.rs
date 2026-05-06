@@ -141,6 +141,7 @@ pub(crate) fn build_outputs_with_options(
 
     let mut mapping = Vec::with_capacity(glyphs.len());
     let mut bdf_glyphs = Vec::with_capacity(glyphs.len());
+    let mut ttf_center_glyphs = Vec::with_capacity(glyphs.len());
 
     for (idx, glyph) in glyphs.iter().enumerate() {
         let codepoint = assigned_codepoints[idx];
@@ -162,6 +163,7 @@ pub(crate) fn build_outputs_with_options(
         });
 
         bdf_glyphs.push((glyph.glyph_name.clone(), codepoint, bitmap));
+        ttf_center_glyphs.push(glyph.composition_tile.is_none());
     }
 
     fs::create_dir_all(&config.out_dir)
@@ -184,6 +186,7 @@ pub(crate) fn build_outputs_with_options(
         &config.project_id,
         config.glyph_size,
         &bdf_glyphs,
+        &ttf_center_glyphs,
     )?;
 
     let sample_path = config.out_dir.join("glyph-sample.txt");
@@ -1178,8 +1181,15 @@ fn write_ttf(
     font_identity: &str,
     glyph_size: u32,
     glyphs: &[(String, u32, GlyphBitmap)],
+    center_glyphs_in_ttf: &[bool],
 ) -> Result<()> {
-    let bytes = build_ttf(font_name, font_identity, glyph_size, glyphs)?;
+    let bytes = build_ttf(
+        font_name,
+        font_identity,
+        glyph_size,
+        glyphs,
+        center_glyphs_in_ttf,
+    )?;
     fs::write(path, bytes).with_context(|| format!("failed to write {}", path.display()))?;
     Ok(())
 }
@@ -1189,7 +1199,16 @@ fn build_ttf(
     font_identity: &str,
     glyph_size: u32,
     glyphs: &[(String, u32, GlyphBitmap)],
+    center_glyphs_in_ttf: &[bool],
 ) -> Result<Vec<u8>> {
+    if glyphs.len() != center_glyphs_in_ttf.len() {
+        bail!(
+            "TTF export metadata mismatch: {} glyphs but {} centering flags",
+            glyphs.len(),
+            center_glyphs_in_ttf.len()
+        );
+    }
+
     let units_per_em = glyph_size
         .checked_mul(16)
         .context("glyph_size is too large for TTF export")?;
@@ -1204,6 +1223,7 @@ fn build_ttf(
         units_per_em,
         vertical_metrics,
         units_per_em,
+        true,
     )?);
     ttf_glyphs.push(bitmap_glyph_to_ttf(
         &GlyphBitmap {
@@ -1214,15 +1234,17 @@ fn build_ttf(
         units_per_em,
         vertical_metrics,
         units_per_em / 2,
+        true,
     )?);
 
-    for (_, codepoint, bitmap) in glyphs {
+    for (idx, (_, codepoint, bitmap)) in glyphs.iter().enumerate() {
         ttf_glyphs.push(bitmap_glyph_to_ttf(
             bitmap,
             Some(*codepoint),
             units_per_em,
             vertical_metrics,
             units_per_em,
+            center_glyphs_in_ttf[idx],
         )?);
     }
 
@@ -1359,6 +1381,7 @@ fn bitmap_glyph_to_ttf(
     units_per_em: u16,
     vertical_metrics: FontVerticalMetrics,
     advance_width: u16,
+    center_in_line_box: bool,
 ) -> Result<TtfGlyph> {
     if bitmap.size == 0 {
         bail!("glyph bitmap size must be > 0 for TTF export");
@@ -1421,14 +1444,24 @@ fn bitmap_glyph_to_ttf(
         });
     }
 
-    let x_shift = center_shift(
-        i32::from(advance_width),
-        i32::from(x_min) + i32::from(x_max),
-    );
-    let y_shift = center_shift(
-        i32::from(vertical_metrics.ascent) + i32::from(vertical_metrics.descent),
-        i32::from(y_min) + i32::from(y_max),
-    );
+    let x_shift = if center_in_line_box {
+        center_shift(
+            i32::from(advance_width),
+            i32::from(x_min) + i32::from(x_max),
+        )
+    } else {
+        0
+    };
+    let y_shift = if center_in_line_box {
+        center_shift(
+            i32::from(vertical_metrics.ascent) + i32::from(vertical_metrics.descent),
+            i32::from(y_min) + i32::from(y_max),
+        )
+    } else {
+        // Keep composition tiles in their tile-local position while placing the bitmap
+        // line box at the same baseline offset used by centered glyphs.
+        i32::from(vertical_metrics.descent)
+    };
     if x_shift != 0 || y_shift != 0 {
         translate_points(&mut points, x_shift, y_shift)?;
         x_min = checked_i16(i32::from(x_min) + x_shift, "x_min after TTF centering")?;

@@ -1,6 +1,7 @@
 use crossterm::event::{
     KeyCode, KeyEvent, KeyEventKind, KeyEventState, KeyModifiers, KeyboardEnhancementFlags,
 };
+use image::imageops::FilterType;
 use image::{Rgba, RgbaImage};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
@@ -86,6 +87,17 @@ fn write_quadrant_png(path: &Path, size: u32) {
         }
     }
     img.save(path).expect("quadrant test image is written");
+}
+
+fn write_split_edge_dots_png(path: &Path, tile_size: u32) {
+    let width = tile_size.saturating_mul(2).max(2);
+    let height = tile_size.max(2);
+    let mid_y = height / 2;
+
+    let mut img = RgbaImage::from_pixel(width, height, Rgba([255, 255, 255, 0]));
+    img.put_pixel(0, mid_y, Rgba([0, 0, 0, 255]));
+    img.put_pixel(width.saturating_sub(1), mid_y, Rgba([0, 0, 0, 255]));
+    img.save(path).expect("split-edge test image is written");
 }
 
 fn nonzero_coverage_bounds(coverage: &[u8], size: u32) -> Option<(u32, u32, u32, u32)> {
@@ -1255,6 +1267,122 @@ fn preprocess_composition_tiles_keep_corner_alignment_without_recentering() {
     assert!(
         nonzero_coverage_bounds(&top_right.coverage, 16).is_none(),
         "neighbor tiles should remain empty for corner-only source content"
+    );
+
+    fs::remove_dir_all(project_dir).expect("temp project dir is removed");
+}
+
+#[test]
+fn preprocess_composition_tiles_use_global_grid_scaling() {
+    let project_dir = make_temp_dir("composition-global-grid-scaling");
+    let input_dir = project_dir.join("icons");
+    fs::create_dir_all(&input_dir).expect("icons dir is created");
+
+    let mut img = RgbaImage::from_pixel(28, 28, Rgba([255, 255, 255, 0]));
+    for y in 19..27 {
+        for x in 23..27 {
+            img.put_pixel(x, y, Rgba([0, 0, 0, 255]));
+        }
+    }
+    for y in 23..25 {
+        for x in 13..16 {
+            img.put_pixel(x, y, Rgba([0, 0, 0, 255]));
+        }
+    }
+    let source_path = input_dir.join("shape.png");
+    img.save(&source_path).expect("shape image is written");
+
+    let mut compositions = BTreeMap::new();
+    compositions.insert("shape.png".to_string(), CompositionDef { rows: 3, cols: 3 });
+    let sources = vec![source_path.clone()];
+    let glyph_size = 16u32;
+    let glyphs = preprocess_sources_with_compositions(&sources, &input_dir, glyph_size, &compositions)
+        .expect("composition preprocess succeeds");
+    assert_eq!(glyphs.len(), 9);
+
+    let source = image::open(&source_path)
+        .expect("source image opens")
+        .to_rgba8();
+    let scaled = image::imageops::resize(&source, 3 * glyph_size, 3 * glyph_size, FilterType::Lanczos3);
+
+    for glyph in &glyphs {
+        let tile = glyph
+            .composition_tile
+            .as_ref()
+            .expect("all glyphs should be composition tiles");
+        let expected_tile = image::imageops::crop_imm(
+            &scaled,
+            (tile.col as u32) * glyph_size,
+            (tile.row as u32) * glyph_size,
+            glyph_size,
+            glyph_size,
+        )
+        .to_image();
+        let expected_coverage = expected_tile.pixels().map(|p| p[3]).collect::<Vec<_>>();
+        assert_eq!(
+            glyph.coverage, expected_coverage,
+            "tile coverage should match global-scale split for row={}, col={}",
+            tile.row, tile.col
+        );
+    }
+
+    fs::remove_dir_all(project_dir).expect("temp project dir is removed");
+}
+
+#[test]
+fn build_outputs_composition_preserves_tile_offsets_in_ttf() {
+    let project_dir = make_temp_dir("composition-ttf-offsets");
+    let input_dir = project_dir.join("icons");
+    fs::create_dir_all(&input_dir).expect("icons dir is created");
+    write_split_edge_dots_png(&input_dir.join("split.png"), 32);
+
+    let manifest_path = project_dir.join("petiglyph.toml");
+    let mut manifest = Manifest::default();
+    manifest.project_id = Some("test-composition-ttf-offsets".to_string());
+    manifest
+        .compositions
+        .insert("split.png".to_string(), CompositionDef { rows: 1, cols: 2 });
+    write_manifest(&manifest_path, &manifest).expect("manifest is written");
+
+    let config = load_runtime_config(&manifest_path, None, None, None, None, None)
+        .expect("runtime config loads");
+    let summary = build_outputs(&config).expect("build succeeds");
+    let mapping: Vec<MappingEntry> = serde_json::from_str(
+        &fs::read_to_string(&summary.mapping_path).expect("mapping is written"),
+    )
+    .expect("mapping parses");
+
+    let left_cp = mapping
+        .iter()
+        .find(|entry| entry.source_file == "split.png#compose:1x2:0:0")
+        .map(|entry| parse_codepoint(&entry.codepoint).expect("left codepoint parses"))
+        .expect("left composition tile is mapped");
+    let right_cp = mapping
+        .iter()
+        .find(|entry| entry.source_file == "split.png#compose:1x2:0:1")
+        .map(|entry| parse_codepoint(&entry.codepoint).expect("right codepoint parses"))
+        .expect("right composition tile is mapped");
+
+    let ttf = fs::read(summary.ttf_path).expect("ttf is written");
+    let face = ttf_parser::Face::parse(&ttf, 0).expect("ttf parses");
+    let left_bounds = face
+        .glyph_bounding_box(
+            face.glyph_index(char::from_u32(left_cp).expect("left codepoint is valid"))
+                .expect("left glyph maps"),
+        )
+        .expect("left glyph has bounds");
+    let right_bounds = face
+        .glyph_bounding_box(
+            face.glyph_index(char::from_u32(right_cp).expect("right codepoint is valid"))
+                .expect("right glyph maps"),
+        )
+        .expect("right glyph has bounds");
+
+    let left_sum = i32::from(left_bounds.x_min) + i32::from(left_bounds.x_max);
+    let right_sum = i32::from(right_bounds.x_min) + i32::from(right_bounds.x_max);
+    assert!(
+        right_sum > left_sum,
+        "right tile should stay to the right of left tile in TTF metrics (left_sum={left_sum}, right_sum={right_sum})"
     );
 
     fs::remove_dir_all(project_dir).expect("temp project dir is removed");

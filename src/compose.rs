@@ -37,23 +37,34 @@ pub(crate) fn compose_tiles(
         bail!("source image has invalid size: {}", source_path.display());
     }
 
-    let has_transparency = source.pixels().any(|p| p[3] < 255);
-    let background = (!has_transparency).then(|| estimate_background_rgb(&source));
+    // Preserve global geometry for compositions by scaling once to the whole
+    // grid target, then slicing fixed-size tiles. Resizing each tile
+    // independently can shift content when source dimensions are not evenly
+    // divisible by rows/cols.
+    let grid_width = glyph_size
+        .checked_mul(u32::try_from(cols).context("composition cols overflow u32")?)
+        .context("composition grid width overflow")?;
+    let grid_height = glyph_size
+        .checked_mul(u32::try_from(rows).context("composition rows overflow u32")?)
+        .context("composition grid height overflow")?;
+    let scaled_grid = image::imageops::resize(&source, grid_width, grid_height, FilterType::Lanczos3);
+
+    let has_transparency = scaled_grid.pixels().any(|p| p[3] < 255);
+    let background = (!has_transparency).then(|| estimate_background_rgb(&scaled_grid));
 
     let mut tiles = Vec::with_capacity(rows.saturating_mul(cols));
     for row in 0..rows {
-        let y0 = ((row as u32) * height) / rows as u32;
-        let y1 = (((row + 1) as u32) * height) / rows as u32;
-        let tile_h = y1.saturating_sub(y0).max(1);
+        let y0 = glyph_size
+            .checked_mul(u32::try_from(row).context("composition row overflow u32")?)
+            .context("composition y offset overflow")?;
         for col in 0..cols {
-            let x0 = ((col as u32) * width) / cols as u32;
-            let x1 = (((col + 1) as u32) * width) / cols as u32;
-            let tile_w = x1.saturating_sub(x0).max(1);
+            let x0 = glyph_size
+                .checked_mul(u32::try_from(col).context("composition col overflow u32")?)
+                .context("composition x offset overflow")?;
 
-            let tile = image::imageops::crop_imm(&source, x0, y0, tile_w, tile_h).to_image();
-            let resized =
-                image::imageops::resize(&tile, glyph_size, glyph_size, FilterType::Lanczos3);
-            let coverage = coverage_from_resized_tile(&resized, has_transparency, background);
+            let tile =
+                image::imageops::crop_imm(&scaled_grid, x0, y0, glyph_size, glyph_size).to_image();
+            let coverage = coverage_from_resized_tile(&tile, has_transparency, background);
             let fingerprint = tile_fingerprint(&source_bytes, rows, cols, row, col);
 
             tiles.push(ComposedTile {
@@ -126,7 +137,7 @@ fn render_svg(path: &Path, rows: usize, cols: usize, glyph_size: u32) -> Result<
     let src_w = size.width().max(1);
     let src_h = size.height().max(1);
     let longest_grid = rows.max(cols).max(1) as u32;
-    let target = (glyph_size.max(16) * longest_grid * 2).max(128);
+    let target = (glyph_size.max(16) * longest_grid * 4).max(256);
     let scale = (target as f32 / src_w as f32).min(target as f32 / src_h as f32);
     let out_w = ((src_w as f32 * scale).round() as u32).max(1);
     let out_h = ((src_h as f32 * scale).round() as u32).max(1);
