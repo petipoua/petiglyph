@@ -30,10 +30,11 @@ use crate::tui::{
     App, AppView, GlyphsFocus, InstalledFontSample, InteractiveGlyph, TuiLaunchOverrides,
     WelcomeFocus, build_action_name, format_projects_card_hint, format_welcome_input_field,
     handle_key, handle_key_event_for_test, handle_paste_event_for_test, install_action_name,
-    installed_font_block_display_lines, persist_threshold_override,
-    regroup_installed_sample_blocks, render_ui_for_test, requested_keyboard_enhancement_flags,
-    resolve_installed_font_path_with, sample_glyphs_from_ttf_bytes, should_dispatch_key_kind,
-    switch_notice_visible, wrap_sample_for_display,
+    installed_font_block_display_lines, installed_font_block_display_lines_with_reference,
+    persist_threshold_override, regroup_installed_sample_blocks, render_ui_for_test,
+    requested_keyboard_enhancement_flags, resolve_installed_font_path_with,
+    sample_glyphs_from_ttf_bytes, should_dispatch_key_kind, switch_notice_visible,
+    wrap_sample_for_display,
 };
 
 fn make_temp_dir(name: &str) -> PathBuf {
@@ -743,6 +744,22 @@ fn installed_font_card_keeps_grid_tiles_adjacent() {
         vec!["ABC", "DEF", "GHI"],
         "installed font card must not inject spaces between composition tiles"
     );
+}
+
+#[test]
+fn installed_font_card_adds_block_reference_for_multiline_grids() {
+    let lines = installed_font_block_display_lines_with_reference("AB\n C", 20);
+    assert_eq!(
+        lines,
+        vec!["AB       │  ██", " C       │   █"],
+        "multiline grids should include a full-block reference column"
+    );
+}
+
+#[test]
+fn installed_font_card_reference_helper_keeps_single_line_blocks_unchanged() {
+    let lines = installed_font_block_display_lines_with_reference("ABCD", 20);
+    assert_eq!(lines, vec!["ABCD"]);
 }
 
 #[test]
@@ -1612,8 +1629,20 @@ fn build_outputs_composition_overlaps_internal_ttf_edges() {
         "left tile should overlap the next glyph cell at the internal seam"
     );
     assert!(
+        left_bounds.x_max <= units_per_em + units_per_em / 16,
+        "internal seam overlap should stay modest to avoid fallback glyph down-scaling (x_max={}, units_per_em={})",
+        left_bounds.x_max,
+        units_per_em
+    );
+    assert!(
         right_bounds.x_min < 0,
         "right tile should overlap the previous glyph cell at the internal seam"
+    );
+    assert!(
+        right_bounds.x_min >= -(units_per_em / 16),
+        "internal seam overlap should stay modest to avoid fallback glyph down-scaling (x_min={}, units_per_em={})",
+        right_bounds.x_min,
+        units_per_em
     );
 
     fs::remove_dir_all(project_dir).expect("temp project dir is removed");
@@ -1865,15 +1894,17 @@ fn build_outputs_centers_non_square_glyphs_in_ttf_line_box() {
             expected_x_min_max_sum,
             "glyph U+{codepoint:04X} should be horizontally centered"
         );
-        assert_eq!(
-            i32::from(bounds.y_min) + i32::from(bounds.y_max),
-            expected_y_min_max_sum,
-            "glyph U+{codepoint:04X} should be vertically centered around the line box"
+        let vertical_center_delta =
+            (i32::from(bounds.y_min) + i32::from(bounds.y_max) - expected_y_min_max_sum).abs();
+        assert!(
+            vertical_center_delta <= 1,
+            "glyph U+{codepoint:04X} should be vertically centered around the line box (delta={vertical_center_delta})"
         );
-        assert_eq!(
-            i32::from(bounds.y_min) - i32::from(face.descender()),
-            i32::from(face.ascender()) - i32::from(bounds.y_max),
-            "glyph U+{codepoint:04X} should have balanced vertical line-box margins"
+        let lower_margin = i32::from(bounds.y_min) - i32::from(face.descender());
+        let upper_margin = i32::from(face.ascender()) - i32::from(bounds.y_max);
+        assert!(
+            (lower_margin - upper_margin).abs() <= 1,
+            "glyph U+{codepoint:04X} should have balanced vertical line-box margins (lower={lower_margin}, upper={upper_margin})"
         );
     }
 

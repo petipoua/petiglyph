@@ -1187,11 +1187,29 @@ impl FontVerticalMetrics {
 
 fn font_vertical_metrics(units_per_em: u16) -> FontVerticalMetrics {
     let descent_abs = ((u32::from(units_per_em) + 2) / 5) as i16;
-    let seam_overlap = (u32::from(units_per_em) / 64).max(1) as i16;
+    // Keep one explicit row-overlap budget in line metrics so adjacent
+    // composition rows don't separate because of terminal line-box rounding.
+    let seam_overlap = composition_line_overlap_units(u32::from(units_per_em)) as i16;
     FontVerticalMetrics {
         ascent: units_per_em as i16 - descent_abs - seam_overlap,
         descent: -descent_abs,
     }
+}
+
+fn composition_outline_overlap_units(units_per_em: u32) -> u32 {
+    // Keep contour coordinates aligned to the original bitmap pixel grid so
+    // adjacent tiles rasterize with consistent scale/stroke weight.
+    (units_per_em / 64).max(1)
+}
+
+fn composition_line_overlap_units(units_per_em: u32) -> u32 {
+    // Prior overlap used a single source-pixel worth of units (~units/64).
+    // At common terminal sizes that can quantize below one device pixel and
+    // leave visible row cracks. Keep a small extra buffer, but avoid large
+    // bbox growth that can make fallback-font renderers downscale/clamp glyphs.
+    let source_pixel_overlap = composition_outline_overlap_units(units_per_em);
+    let nominal_terminal_px_overlap = (units_per_em / 48).max(1);
+    source_pixel_overlap.max(nominal_terminal_px_overlap)
 }
 
 fn write_ttf(
@@ -1557,7 +1575,13 @@ fn overlap_internal_composition_edges(
         return Ok((x0, bottom, x1, top));
     };
 
-    let overlap = i32::from(pixel_units.max(1));
+    let units_per_em = i32::from(pixel_units.max(1))
+        .checked_mul(i32::try_from(bitmap_size).context("bitmap_size overflow")?)
+        .ok_or_else(|| anyhow::anyhow!("units_per_em overflow while computing seam overlap"))?;
+    let overlap = i32::try_from(composition_outline_overlap_units(
+        u32::try_from(units_per_em).context("negative units_per_em for seam overlap")?,
+    ))
+    .context("composition seam overlap overflow")?;
     let mut x0 = i32::from(x0);
     let mut bottom = i32::from(bottom);
     let mut x1 = i32::from(x1);
