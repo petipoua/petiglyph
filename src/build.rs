@@ -29,7 +29,7 @@ pub(crate) struct PreprocessedGlyph {
     pub(crate) composition_tile: Option<CompositionTileInfo>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct CompositionTileInfo {
     pub(crate) rows: usize,
     pub(crate) cols: usize,
@@ -41,6 +41,21 @@ pub(crate) struct CompositionTileInfo {
 pub(crate) struct GlyphBitmap {
     pub(crate) size: u32,
     pub(crate) pixels: Vec<bool>,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct TtfGlyphOptions {
+    center_in_line_box: bool,
+    composition_tile: Option<CompositionTileInfo>,
+}
+
+impl TtfGlyphOptions {
+    fn centered() -> Self {
+        Self {
+            center_in_line_box: true,
+            composition_tile: None,
+        }
+    }
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -141,7 +156,7 @@ pub(crate) fn build_outputs_with_options(
 
     let mut mapping = Vec::with_capacity(glyphs.len());
     let mut bdf_glyphs = Vec::with_capacity(glyphs.len());
-    let mut ttf_center_glyphs = Vec::with_capacity(glyphs.len());
+    let mut ttf_glyph_options = Vec::with_capacity(glyphs.len());
 
     for (idx, glyph) in glyphs.iter().enumerate() {
         let codepoint = assigned_codepoints[idx];
@@ -163,7 +178,10 @@ pub(crate) fn build_outputs_with_options(
         });
 
         bdf_glyphs.push((glyph.glyph_name.clone(), codepoint, bitmap));
-        ttf_center_glyphs.push(glyph.composition_tile.is_none());
+        ttf_glyph_options.push(TtfGlyphOptions {
+            center_in_line_box: glyph.composition_tile.is_none(),
+            composition_tile: glyph.composition_tile,
+        });
     }
 
     fs::create_dir_all(&config.out_dir)
@@ -186,7 +204,7 @@ pub(crate) fn build_outputs_with_options(
         &config.project_id,
         config.glyph_size,
         &bdf_glyphs,
-        &ttf_center_glyphs,
+        &ttf_glyph_options,
     )?;
 
     let sample_path = config.out_dir.join("glyph-sample.txt");
@@ -1169,8 +1187,9 @@ impl FontVerticalMetrics {
 
 fn font_vertical_metrics(units_per_em: u16) -> FontVerticalMetrics {
     let descent_abs = ((u32::from(units_per_em) + 2) / 5) as i16;
+    let seam_overlap = (u32::from(units_per_em) / 64).max(1) as i16;
     FontVerticalMetrics {
-        ascent: units_per_em as i16 - descent_abs,
+        ascent: units_per_em as i16 - descent_abs - seam_overlap,
         descent: -descent_abs,
     }
 }
@@ -1181,14 +1200,14 @@ fn write_ttf(
     font_identity: &str,
     glyph_size: u32,
     glyphs: &[(String, u32, GlyphBitmap)],
-    center_glyphs_in_ttf: &[bool],
+    glyph_options: &[TtfGlyphOptions],
 ) -> Result<()> {
     let bytes = build_ttf(
         font_name,
         font_identity,
         glyph_size,
         glyphs,
-        center_glyphs_in_ttf,
+        glyph_options,
     )?;
     fs::write(path, bytes).with_context(|| format!("failed to write {}", path.display()))?;
     Ok(())
@@ -1199,13 +1218,13 @@ fn build_ttf(
     font_identity: &str,
     glyph_size: u32,
     glyphs: &[(String, u32, GlyphBitmap)],
-    center_glyphs_in_ttf: &[bool],
+    glyph_options: &[TtfGlyphOptions],
 ) -> Result<Vec<u8>> {
-    if glyphs.len() != center_glyphs_in_ttf.len() {
+    if glyphs.len() != glyph_options.len() {
         bail!(
             "TTF export metadata mismatch: {} glyphs but {} centering flags",
             glyphs.len(),
-            center_glyphs_in_ttf.len()
+            glyph_options.len()
         );
     }
 
@@ -1223,7 +1242,7 @@ fn build_ttf(
         units_per_em,
         vertical_metrics,
         units_per_em,
-        true,
+        TtfGlyphOptions::centered(),
     )?);
     ttf_glyphs.push(bitmap_glyph_to_ttf(
         &GlyphBitmap {
@@ -1234,7 +1253,7 @@ fn build_ttf(
         units_per_em,
         vertical_metrics,
         units_per_em / 2,
-        true,
+        TtfGlyphOptions::centered(),
     )?);
 
     for (idx, (_, codepoint, bitmap)) in glyphs.iter().enumerate() {
@@ -1244,7 +1263,7 @@ fn build_ttf(
             units_per_em,
             vertical_metrics,
             units_per_em,
-            center_glyphs_in_ttf[idx],
+            glyph_options[idx],
         )?);
     }
 
@@ -1381,7 +1400,7 @@ fn bitmap_glyph_to_ttf(
     units_per_em: u16,
     vertical_metrics: FontVerticalMetrics,
     advance_width: u16,
-    center_in_line_box: bool,
+    options: TtfGlyphOptions,
 ) -> Result<TtfGlyph> {
     if bitmap.size == 0 {
         bail!("glyph bitmap size must be > 0 for TTF export");
@@ -1415,6 +1434,17 @@ fn bitmap_glyph_to_ttf(
                         .saturating_mul(pixel_units),
                 );
             let bottom = top.saturating_sub(pixel_units);
+            let (x0, bottom, x1, top) = overlap_internal_composition_edges(
+                x0,
+                bottom,
+                x1,
+                top,
+                x,
+                y,
+                bitmap.size as usize,
+                pixel_units,
+                options.composition_tile,
+            )?;
 
             let contour = [(x0, bottom), (x0, top), (x1, top), (x1, bottom)];
             for (px, py) in contour {
@@ -1444,7 +1474,7 @@ fn bitmap_glyph_to_ttf(
         });
     }
 
-    let x_shift = if center_in_line_box {
+    let x_shift = if options.center_in_line_box {
         center_shift(
             i32::from(advance_width),
             i32::from(x_min) + i32::from(x_max),
@@ -1452,7 +1482,7 @@ fn bitmap_glyph_to_ttf(
     } else {
         0
     };
-    let y_shift = if center_in_line_box {
+    let y_shift = if options.center_in_line_box {
         center_shift(
             i32::from(vertical_metrics.ascent) + i32::from(vertical_metrics.descent),
             i32::from(y_min) + i32::from(y_max),
@@ -1515,6 +1545,48 @@ fn bitmap_glyph_to_ttf(
         point_count,
         data,
     })
+}
+
+fn overlap_internal_composition_edges(
+    x0: i16,
+    bottom: i16,
+    x1: i16,
+    top: i16,
+    x: usize,
+    y: usize,
+    bitmap_size: usize,
+    pixel_units: i16,
+    tile: Option<CompositionTileInfo>,
+) -> Result<(i16, i16, i16, i16)> {
+    let Some(tile) = tile else {
+        return Ok((x0, bottom, x1, top));
+    };
+
+    let overlap = i32::from(pixel_units.max(1));
+    let mut x0 = i32::from(x0);
+    let mut bottom = i32::from(bottom);
+    let mut x1 = i32::from(x1);
+    let mut top = i32::from(top);
+
+    if tile.col > 0 && x == 0 {
+        x0 -= overlap;
+    }
+    if tile.col + 1 < tile.cols && x + 1 == bitmap_size {
+        x1 += overlap;
+    }
+    if tile.row > 0 && y == 0 {
+        top += overlap;
+    }
+    if tile.row + 1 < tile.rows && y + 1 == bitmap_size {
+        bottom -= overlap;
+    }
+
+    Ok((
+        checked_i16(x0, "x0 after composition seam overlap")?,
+        checked_i16(bottom, "bottom after composition seam overlap")?,
+        checked_i16(x1, "x1 after composition seam overlap")?,
+        checked_i16(top, "top after composition seam overlap")?,
+    ))
 }
 
 fn center_shift(container_extent: i32, glyph_min_plus_max: i32) -> i32 {

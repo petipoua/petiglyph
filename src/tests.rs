@@ -29,8 +29,9 @@ use crate::tui::{
     handle_key, handle_key_event_for_test, handle_paste_event_for_test, install_action_name,
     persist_threshold_override, render_ui_for_test, requested_keyboard_enhancement_flags,
     regroup_installed_sample_blocks,
-    resolve_installed_font_path_with, sample_glyphs_from_ttf_bytes, should_dispatch_key_kind,
-    switch_notice_visible, wrap_sample_for_display,
+    installed_font_block_display_lines, resolve_installed_font_path_with,
+    sample_glyphs_from_ttf_bytes, should_dispatch_key_kind, switch_notice_visible,
+    wrap_sample_for_display,
 };
 
 fn make_temp_dir(name: &str) -> PathBuf {
@@ -126,6 +127,62 @@ fn nonzero_coverage_bounds(coverage: &[u8], size: u32) -> Option<(u32, u32, u32,
     }
 
     found.then_some((min_x, min_y, max_x, max_y))
+}
+
+fn seal_expected_internal_grid_seams(
+    coverage: &mut [u8],
+    width: u32,
+    height: u32,
+    glyph_size: u32,
+    rows: usize,
+    cols: usize,
+) {
+    let width = width as usize;
+    let height = height as usize;
+    let glyph_size = glyph_size as usize;
+
+    for col in 1..cols {
+        let seam_x = col * glyph_size;
+        for y in 0..height {
+            let left_idx = y * width + seam_x - 1;
+            let right_idx = y * width + seam_x;
+            let coverage_max = coverage[left_idx].max(coverage[right_idx]);
+            coverage[left_idx] = coverage_max;
+            coverage[right_idx] = coverage_max;
+        }
+    }
+
+    for row in 1..rows {
+        let seam_y = row * glyph_size;
+        for x in 0..width {
+            let top_idx = (seam_y - 1) * width + x;
+            let bottom_idx = seam_y * width + x;
+            let coverage_max = coverage[top_idx].max(coverage[bottom_idx]);
+            coverage[top_idx] = coverage_max;
+            coverage[bottom_idx] = coverage_max;
+        }
+    }
+}
+
+fn crop_expected_coverage_tile(
+    coverage: &[u8],
+    grid_width: u32,
+    x0: u32,
+    y0: u32,
+    glyph_size: u32,
+) -> Vec<u8> {
+    let grid_width = grid_width as usize;
+    let x0 = x0 as usize;
+    let y0 = y0 as usize;
+    let glyph_size = glyph_size as usize;
+    let mut out = Vec::with_capacity(glyph_size * glyph_size);
+
+    for y in 0..glyph_size {
+        let start = (y0 + y) * grid_width + x0;
+        out.extend_from_slice(&coverage[start..start + glyph_size]);
+    }
+
+    out
 }
 
 #[test]
@@ -645,6 +702,16 @@ fn wrap_sample_for_display_respects_chunk_size() {
 fn wrap_sample_for_display_preserves_multiline_grid_layout() {
     let wrapped = wrap_sample_for_display("ABCD\nEF\n\nGH", 2);
     assert_eq!(wrapped, vec!["AB", "CD", "EF", "", "GH"]);
+}
+
+#[test]
+fn installed_font_card_keeps_grid_tiles_adjacent() {
+    let lines = installed_font_block_display_lines("ABC\nDEF\nGHI", 80);
+    assert_eq!(
+        lines,
+        vec!["ABC", "DEF", "GHI"],
+        "installed font card must not inject spaces between composition tiles"
+    );
 }
 
 #[test]
@@ -1303,28 +1370,86 @@ fn preprocess_composition_tiles_use_global_grid_scaling() {
     let source = image::open(&source_path)
         .expect("source image opens")
         .to_rgba8();
-    let scaled = image::imageops::resize(&source, 3 * glyph_size, 3 * glyph_size, FilterType::Lanczos3);
+    let scaled =
+        image::imageops::resize(&source, 3 * glyph_size, 3 * glyph_size, FilterType::Lanczos3);
+    let mut expected_grid = scaled.pixels().map(|p| p[3]).collect::<Vec<_>>();
+    seal_expected_internal_grid_seams(
+        &mut expected_grid,
+        3 * glyph_size,
+        3 * glyph_size,
+        glyph_size,
+        3,
+        3,
+    );
 
     for glyph in &glyphs {
         let tile = glyph
             .composition_tile
             .as_ref()
             .expect("all glyphs should be composition tiles");
-        let expected_tile = image::imageops::crop_imm(
-            &scaled,
+        let expected_coverage = crop_expected_coverage_tile(
+            &expected_grid,
+            3 * glyph_size,
             (tile.col as u32) * glyph_size,
             (tile.row as u32) * glyph_size,
             glyph_size,
-            glyph_size,
-        )
-        .to_image();
-        let expected_coverage = expected_tile.pixels().map(|p| p[3]).collect::<Vec<_>>();
+        );
         assert_eq!(
             glyph.coverage, expected_coverage,
-            "tile coverage should match global-scale split for row={}, col={}",
+            "tile coverage should match global-scale split with sealed seams for row={}, col={}",
             tile.row, tile.col
         );
     }
+
+    fs::remove_dir_all(project_dir).expect("temp project dir is removed");
+}
+
+#[test]
+fn preprocess_composition_tiles_seal_internal_threshold_seams() {
+    let project_dir = make_temp_dir("composition-sealed-seams");
+    let input_dir = project_dir.join("icons");
+    fs::create_dir_all(&input_dir).expect("icons dir is created");
+
+    let mut img = RgbaImage::from_pixel(32, 16, Rgba([255, 255, 255, 0]));
+    img.put_pixel(15, 8, Rgba([0, 0, 0, 20]));
+    img.put_pixel(16, 8, Rgba([0, 0, 0, 160]));
+    let source_path = input_dir.join("seam.png");
+    img.save(&source_path).expect("seam image is written");
+
+    let mut compositions = BTreeMap::new();
+    compositions.insert("seam.png".to_string(), CompositionDef { rows: 1, cols: 2 });
+    let glyphs = preprocess_sources_with_compositions(&[source_path], &input_dir, 16, &compositions)
+        .expect("composition preprocess succeeds");
+
+    let left = glyphs
+        .iter()
+        .find(|glyph| {
+            glyph
+                .composition_tile
+                .as_ref()
+                .is_some_and(|tile| tile.row == 0 && tile.col == 0)
+        })
+        .expect("left tile exists");
+    let right = glyphs
+        .iter()
+        .find(|glyph| {
+            glyph
+                .composition_tile
+                .as_ref()
+                .is_some_and(|tile| tile.row == 0 && tile.col == 1)
+        })
+        .expect("right tile exists");
+
+    let left_edge = left.coverage[8 * 16 + 15];
+    let right_edge = right.coverage[8 * 16];
+    assert_eq!(
+        left_edge, right_edge,
+        "internal seam coverage should be mirrored across adjacent tiles"
+    );
+    assert!(
+        left_edge >= 64,
+        "seam repair should preserve a threshold-visible edge on both sides"
+    );
 
     fs::remove_dir_all(project_dir).expect("temp project dir is removed");
 }
@@ -1383,6 +1508,128 @@ fn build_outputs_composition_preserves_tile_offsets_in_ttf() {
     assert!(
         right_sum > left_sum,
         "right tile should stay to the right of left tile in TTF metrics (left_sum={left_sum}, right_sum={right_sum})"
+    );
+
+    fs::remove_dir_all(project_dir).expect("temp project dir is removed");
+}
+
+#[test]
+fn build_outputs_composition_overlaps_internal_ttf_edges() {
+    let project_dir = make_temp_dir("composition-ttf-overlap");
+    let input_dir = project_dir.join("icons");
+    fs::create_dir_all(&input_dir).expect("icons dir is created");
+
+    let mut img = RgbaImage::from_pixel(32, 16, Rgba([255, 255, 255, 0]));
+    for y in 0..16 {
+        img.put_pixel(15, y, Rgba([0, 0, 0, 255]));
+        img.put_pixel(16, y, Rgba([0, 0, 0, 255]));
+    }
+    img.save(input_dir.join("seam.png"))
+        .expect("seam image is written");
+
+    let manifest_path = project_dir.join("petiglyph.toml");
+    let mut manifest = Manifest::default();
+    manifest.project_id = Some("test-composition-ttf-overlap".to_string());
+    manifest
+        .compositions
+        .insert("seam.png".to_string(), CompositionDef { rows: 1, cols: 2 });
+    write_manifest(&manifest_path, &manifest).expect("manifest is written");
+
+    let config = load_runtime_config(&manifest_path, None, None, None, Some(16), None)
+        .expect("runtime config loads");
+    let summary = build_outputs(&config).expect("build succeeds");
+    let mapping: Vec<MappingEntry> = serde_json::from_str(
+        &fs::read_to_string(&summary.mapping_path).expect("mapping is written"),
+    )
+    .expect("mapping parses");
+    let ttf = fs::read(summary.ttf_path).expect("ttf is written");
+    let face = ttf_parser::Face::parse(&ttf, 0).expect("ttf parses");
+    let units_per_em = i16::try_from(face.units_per_em()).expect("units_per_em fits i16");
+
+    let left_cp = mapping
+        .iter()
+        .find(|entry| entry.source_file == "seam.png#compose:1x2:0:0")
+        .map(|entry| parse_codepoint(&entry.codepoint).expect("left codepoint parses"))
+        .expect("left tile is mapped");
+    let right_cp = mapping
+        .iter()
+        .find(|entry| entry.source_file == "seam.png#compose:1x2:0:1")
+        .map(|entry| parse_codepoint(&entry.codepoint).expect("right codepoint parses"))
+        .expect("right tile is mapped");
+
+    let left_bounds = face
+        .glyph_bounding_box(
+            face.glyph_index(char::from_u32(left_cp).expect("left codepoint is valid"))
+                .expect("left glyph maps"),
+        )
+        .expect("left glyph has bounds");
+    let right_bounds = face
+        .glyph_bounding_box(
+            face.glyph_index(char::from_u32(right_cp).expect("right codepoint is valid"))
+                .expect("right glyph maps"),
+        )
+        .expect("right glyph has bounds");
+
+    assert!(
+        left_bounds.x_max > units_per_em,
+        "left tile should overlap the next glyph cell at the internal seam"
+    );
+    assert!(
+        right_bounds.x_min < 0,
+        "right tile should overlap the previous glyph cell at the internal seam"
+    );
+
+    fs::remove_dir_all(project_dir).expect("temp project dir is removed");
+}
+
+#[test]
+fn build_outputs_empty_composition_tile_keeps_ttf_advance() {
+    let project_dir = make_temp_dir("composition-empty-advance");
+    let input_dir = project_dir.join("icons");
+    fs::create_dir_all(&input_dir).expect("icons dir is created");
+
+    let mut img = RgbaImage::from_pixel(48, 16, Rgba([255, 255, 255, 0]));
+    img.put_pixel(1, 8, Rgba([0, 0, 0, 255]));
+    img.put_pixel(46, 8, Rgba([0, 0, 0, 255]));
+    img.save(input_dir.join("empty-middle.png"))
+        .expect("empty-middle image is written");
+
+    let manifest_path = project_dir.join("petiglyph.toml");
+    let mut manifest = Manifest::default();
+    manifest.project_id = Some("test-composition-empty-advance".to_string());
+    manifest.compositions.insert(
+        "empty-middle.png".to_string(),
+        CompositionDef { rows: 1, cols: 3 },
+    );
+    write_manifest(&manifest_path, &manifest).expect("manifest is written");
+
+    let config = load_runtime_config(&manifest_path, None, None, None, Some(16), None)
+        .expect("runtime config loads");
+    let summary = build_outputs(&config).expect("build succeeds");
+    let mapping: Vec<MappingEntry> = serde_json::from_str(
+        &fs::read_to_string(&summary.mapping_path).expect("mapping is written"),
+    )
+    .expect("mapping parses");
+    let middle_cp = mapping
+        .iter()
+        .find(|entry| entry.source_file == "empty-middle.png#compose:1x3:0:1")
+        .map(|entry| parse_codepoint(&entry.codepoint).expect("middle codepoint parses"))
+        .expect("middle tile is mapped");
+
+    let ttf = fs::read(summary.ttf_path).expect("ttf is written");
+    let face = ttf_parser::Face::parse(&ttf, 0).expect("ttf parses");
+    let glyph_id = face
+        .glyph_index(char::from_u32(middle_cp).expect("middle codepoint is valid"))
+        .expect("middle glyph maps");
+
+    assert!(
+        face.glyph_bounding_box(glyph_id).is_none(),
+        "empty tile should remain visually empty"
+    );
+    assert_eq!(
+        face.glyph_hor_advance(glyph_id),
+        Some(face.units_per_em()),
+        "empty tile must still reserve one full glyph cell"
     );
 
     fs::remove_dir_all(project_dir).expect("temp project dir is removed");

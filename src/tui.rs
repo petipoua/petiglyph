@@ -2309,26 +2309,8 @@ fn draw_welcome_view(
                     selected_font_row_idx = font_rows.len();
                 }
 
-                let display_sample = if block_str.contains('\n') {
-                    block_str
-                        .lines()
-                        .map(|line| {
-                            if line.contains(' ') {
-                                line.to_string()
-                            } else {
-                                line.chars()
-                                    .map(|c| c.to_string())
-                                    .collect::<Vec<_>>()
-                                    .join(" ")
-                            }
-                        })
-                        .collect::<Vec<_>>()
-                        .join("\n")
-                } else {
-                    block_str.clone()
-                };
-
-                let wrapped_lines = wrap_sample_for_display(&display_sample, sample_wrap_width);
+                let wrapped_lines =
+                    installed_font_block_display_lines(block_str, sample_wrap_width);
                 let base_style = if is_focused {
                     Style::default()
                         .bg(accent)
@@ -5915,6 +5897,10 @@ pub(crate) fn wrap_sample_for_display(sample: &str, max_chars: usize) -> Vec<Str
     }
 
     lines
+}
+
+pub(crate) fn installed_font_block_display_lines(block: &str, max_chars: usize) -> Vec<String> {
+    wrap_sample_for_display(block, max_chars)
 }
 
 #[cfg(test)]

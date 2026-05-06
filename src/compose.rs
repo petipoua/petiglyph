@@ -51,6 +51,8 @@ pub(crate) fn compose_tiles(
 
     let has_transparency = scaled_grid.pixels().any(|p| p[3] < 255);
     let background = (!has_transparency).then(|| estimate_background_rgb(&scaled_grid));
+    let mut coverage_grid = coverage_from_image(&scaled_grid, has_transparency, background);
+    seal_internal_grid_seams(&mut coverage_grid, grid_width, grid_height, glyph_size, rows, cols);
 
     let mut tiles = Vec::with_capacity(rows.saturating_mul(cols));
     for row in 0..rows {
@@ -62,9 +64,7 @@ pub(crate) fn compose_tiles(
                 .checked_mul(u32::try_from(col).context("composition col overflow u32")?)
                 .context("composition x offset overflow")?;
 
-            let tile =
-                image::imageops::crop_imm(&scaled_grid, x0, y0, glyph_size, glyph_size).to_image();
-            let coverage = coverage_from_resized_tile(&tile, has_transparency, background);
+            let coverage = crop_coverage_tile(&coverage_grid, grid_width, x0, y0, glyph_size);
             let fingerprint = tile_fingerprint(&source_bytes, rows, cols, row, col);
 
             tiles.push(ComposedTile {
@@ -85,7 +85,7 @@ fn load_source_rgba_fitted(
     path: &Path,
     rows: usize,
     cols: usize,
-    _glyph_size: u32,
+    glyph_size: u32,
 ) -> Result<RgbaImage> {
     let ext = path
         .extension()
@@ -94,9 +94,9 @@ fn load_source_rgba_fitted(
         .unwrap_or_default();
 
     let source = if ext == "svg" {
-        // Render SVG at high enough resolution to avoid blur but we'll pad it after.
-        // We use a fixed large size for the render target to maintain quality.
-        render_svg(path, rows, cols, 512)?
+        // Render SVG with a target tied to the configured glyph size so composition
+        // grids stay predictable and avoid pathological oversized rasterization.
+        render_svg(path, rows, cols, glyph_size)?
     } else {
         image::open(path)
             .with_context(|| format!("failed to decode image {}", path.display()))?
@@ -152,13 +152,13 @@ fn render_svg(path: &Path, rows: usize, cols: usize, glyph_size: u32) -> Result<
         .ok_or_else(|| anyhow::anyhow!("failed to convert rendered SVG to RGBA image"))
 }
 
-fn coverage_from_resized_tile(
-    tile: &RgbaImage,
+fn coverage_from_image(
+    image: &RgbaImage,
     has_transparency: bool,
     background: Option<[u8; 3]>,
 ) -> Vec<u8> {
-    let mut out = Vec::with_capacity((tile.width() as usize) * (tile.height() as usize));
-    for pixel in tile.pixels() {
+    let mut out = Vec::with_capacity((image.width() as usize) * (image.height() as usize));
+    for pixel in image.pixels() {
         let coverage = if has_transparency {
             pixel[3]
         } else {
@@ -169,6 +169,75 @@ fn coverage_from_resized_tile(
         };
         out.push(coverage);
     }
+    out
+}
+
+fn seal_internal_grid_seams(
+    coverage: &mut [u8],
+    width: u32,
+    height: u32,
+    glyph_size: u32,
+    rows: usize,
+    cols: usize,
+) {
+    let width = width as usize;
+    let height = height as usize;
+    let glyph_size = glyph_size as usize;
+
+    if width == 0 || height == 0 || glyph_size == 0 {
+        return;
+    }
+
+    for col in 1..cols {
+        let seam_x = col.saturating_mul(glyph_size);
+        if seam_x == 0 || seam_x >= width {
+            continue;
+        }
+
+        for y in 0..height {
+            let left_idx = y * width + seam_x - 1;
+            let right_idx = y * width + seam_x;
+            let coverage_max = coverage[left_idx].max(coverage[right_idx]);
+            coverage[left_idx] = coverage_max;
+            coverage[right_idx] = coverage_max;
+        }
+    }
+
+    for row in 1..rows {
+        let seam_y = row.saturating_mul(glyph_size);
+        if seam_y == 0 || seam_y >= height {
+            continue;
+        }
+
+        for x in 0..width {
+            let top_idx = (seam_y - 1) * width + x;
+            let bottom_idx = seam_y * width + x;
+            let coverage_max = coverage[top_idx].max(coverage[bottom_idx]);
+            coverage[top_idx] = coverage_max;
+            coverage[bottom_idx] = coverage_max;
+        }
+    }
+}
+
+fn crop_coverage_tile(
+    coverage: &[u8],
+    grid_width: u32,
+    x0: u32,
+    y0: u32,
+    glyph_size: u32,
+) -> Vec<u8> {
+    let grid_width = grid_width as usize;
+    let x0 = x0 as usize;
+    let y0 = y0 as usize;
+    let glyph_size = glyph_size as usize;
+    let mut out = Vec::with_capacity(glyph_size.saturating_mul(glyph_size));
+
+    for y in 0..glyph_size {
+        let start = (y0 + y) * grid_width + x0;
+        let end = start + glyph_size;
+        out.extend_from_slice(&coverage[start..end]);
+    }
+
     out
 }
 
