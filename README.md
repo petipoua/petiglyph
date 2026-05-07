@@ -379,13 +379,30 @@ Project root also contains:
 - `petiglyph.lock` (stable source-file to codepoint allocations; keeps removed entries tombstoned to avoid unsafe reuse)
 - `.petiglyph-build.lock` (ephemeral build lock while assigning/writing glyph mappings)
 
+## Debug Pipeline
+
+Run with `--debug` to emit per-step image-to-glyph artifacts and logs:
+
+- `<project>/debug/pipeline.log`
+- `<project>/debug/artifacts/*.png`
+
+For each grayscale coverage/bitmap artifact, Petiglyph now writes two PNGs:
+
+- raw generated glyph bitmap (`...png`)
+- terminal cell-aspect preview (`..._terminal_preview.png`)
+
+The debug session logs the cell geometry source at startup (for example `terminal-window-size ...` or `fallback:1x2`).
+You can force the debug terminal cell geometry with `PETIGLYPH_DEBUG_CELL=<width>x<height>` (example: `PETIGLYPH_DEBUG_CELL=7x14`).
+
 ## Notes
 
 - supported inputs: `png`, `jpg`, `jpeg`, `webp`, `avif`, `bmp`, `gif`, `svg`
 - if source alpha exists, alpha drives glyph coverage
 - otherwise, border color is treated as background and contrast becomes coverage
+- `glyph_size` is the generated terminal-cell height; one-cell glyphs use half that width so they fit normal tall terminal cells without needing a trailing blank
+- standard glyphs fit and center inside that one-cell rectangle
+- composition grids fit once into the full emitted grid, then each logical square tile is split into two one-cell rectangular glyphs
 - default `codepoint_start` is `U+100000` to avoid common BMP private-use collisions
-- composition tiles are exported with internal seam overlap so adjacent grid cells connect without visible cracks in terminal line/cell rendering
 - private-use codepoints are East Asian Ambiguous width in Unicode; for stable terminal alignment keep ambiguous width as single-cell (for example: WezTerm `treat_east_asian_ambiguous_width_as_wide = false`, iTerm2 disable “Ambiguous characters are double-width”)
 - while validating composite grids, avoid custom terminal line/cell spacing tweaks (`line_height`, `cell_height`, `font.offset.y`) that can introduce artificial row gaps
 - if metadata/lock artifacts are incompatible, CLI errors include an actionable `petiglyph doctor --repair` hint
