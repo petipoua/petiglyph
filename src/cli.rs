@@ -27,6 +27,9 @@ const CLI_VERSION: &str = env!("CARGO_PKG_VERSION");
     about = "TUI-first CLI for building self-contained monochrome glyph font projects."
 )]
 struct Cli {
+    /// Enable verbose image-to-glyph debug artifacts and logs (writes to project `debug/`).
+    #[arg(long, global = true)]
+    debug: bool,
     #[command(subcommand)]
     command: Option<CliCommand>,
 }
@@ -339,6 +342,7 @@ pub(crate) struct DefaultTuiTarget {
 
 pub(crate) fn run() {
     let cli = Cli::parse();
+    crate::glyph_debug::set_debug_enabled(cli.debug);
     let exit_code = match run_cli(cli) {
         Ok(()) => 0,
         Err(CliRunError::Plain(error)) => {
@@ -374,7 +378,7 @@ pub(crate) fn resolve_default_tui_target_for(current_dir: &Path) -> Result<Defau
     })
 }
 
-fn run_default_tui() -> Result<()> {
+fn run_default_tui(_debug: bool) -> Result<()> {
     let current_dir = std::env::current_dir().context("failed to read current directory")?;
     if !io::stdin().is_terminal() || !io::stdout().is_terminal() {
         anyhow::bail!(
@@ -395,7 +399,7 @@ fn run_default_tui() -> Result<()> {
 
 fn run_cli(cli: Cli) -> std::result::Result<(), CliRunError> {
     match cli.command {
-        None => run_default_tui().map_err(CliRunError::Plain),
+        None => run_default_tui(cli.debug).map_err(CliRunError::Plain),
         Some(CliCommand::Create { name, no_launch }) => {
             create_project(&name, no_launch).map_err(CliRunError::Plain)
         }

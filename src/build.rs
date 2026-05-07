@@ -1,8 +1,5 @@
 use anyhow::{Context, Result, bail};
-use image::imageops::FilterType;
-use image::{ImageBuffer, Rgba, RgbaImage};
-use resvg::tiny_skia::{Pixmap, Transform};
-use resvg::usvg;
+use image::{Rgba, RgbaImage};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::fs;
@@ -14,6 +11,8 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use walkdir::WalkDir;
 
 use crate::compose::compose_tiles;
+use crate::glyph_debug;
+use crate::image_pipeline::{coverage_map_from_image, preprocess_standard_source};
 use crate::install::reserve_project_unicode_range;
 use crate::project::{CompositionDef, RuntimeConfig, format_codepoint, parse_codepoint};
 
@@ -46,14 +45,12 @@ pub(crate) struct GlyphBitmap {
 #[derive(Debug, Clone, Copy)]
 struct TtfGlyphOptions {
     center_in_line_box: bool,
-    composition_tile: Option<CompositionTileInfo>,
 }
 
 impl TtfGlyphOptions {
     fn centered() -> Self {
         Self {
             center_in_line_box: true,
-            composition_tile: None,
         }
     }
 }
@@ -128,6 +125,16 @@ pub(crate) fn build_outputs_with_options(
     config: &RuntimeConfig,
     options: BuildOptions,
 ) -> Result<BuildSummary> {
+    glyph_debug::begin_session(&config.project_dir, "build");
+    glyph_debug::log_step(
+        "build.start",
+        format!(
+            "project={} input_dir={} glyph_size={}",
+            config.project_id,
+            config.input_dir.display(),
+            config.glyph_size
+        ),
+    );
     let sources = collect_source_files(&config.input_dir)?;
     let glyphs = preprocess_sources_with_compositions(
         &sources,
@@ -163,7 +170,7 @@ pub(crate) fn build_outputs_with_options(
         let threshold = effective_threshold(
             config.base_threshold,
             &config.threshold_overrides,
-            &glyph.source_key,
+            &glyph.source_parent_key,
         );
         let bitmap = threshold_bitmap(glyph, threshold);
 
@@ -180,7 +187,6 @@ pub(crate) fn build_outputs_with_options(
         bdf_glyphs.push((glyph.glyph_name.clone(), codepoint, bitmap));
         ttf_glyph_options.push(TtfGlyphOptions {
             center_in_line_box: glyph.composition_tile.is_none(),
-            composition_tile: glyph.composition_tile,
         });
     }
 
@@ -841,8 +847,16 @@ pub(crate) fn preprocess_sources_with_compositions(
 
     for source in sources {
         let source_key = source_manifest_key(source, input_dir);
+        glyph_debug::log_step(
+            "source.begin",
+            format!("source={} path={}", source_key, source.display()),
+        );
         if let Some(def) = compositions.get(&source_key) {
-            let tiles = compose_tiles(source, def.rows, def.cols, glyph_size)?;
+            glyph_debug::log_step(
+                "source.compose",
+                format!("source={} rows={} cols={}", source_key, def.rows, def.cols),
+            );
+            let tiles = compose_tiles(source, &source_key, def.rows, def.cols, glyph_size)?;
             let base_name = unique_glyph_name(source, &mut used_names);
             for tile in tiles {
                 let tile_source_key =
@@ -867,23 +881,28 @@ pub(crate) fn preprocess_sources_with_compositions(
                     }),
                 });
             }
+            glyph_debug::log_step("source.done", format!("source={} mode=compose", source_key));
             continue;
         }
 
-        let source_rgba = load_source_rgba(source, glyph_size)?;
-        let coverage = coverage_map(&source_rgba, glyph_size)?;
+        glyph_debug::log_step("source.standard", format!("source={source_key}"));
+        let coverage = preprocess_standard_source(source, glyph_size, &source_key)?;
         let glyph_name = unique_glyph_name(source, &mut used_names);
         let image_fingerprint = fingerprint_source(source)?;
         out.push(PreprocessedGlyph {
             source_path: source.clone(),
             source_key: source_key.clone(),
-            source_parent_key: source_key,
+            source_parent_key: source_key.clone(),
             glyph_name,
             size: glyph_size,
             coverage,
             image_fingerprint,
             composition_tile: None,
         });
+        glyph_debug::log_step(
+            "source.done",
+            format!("source={} mode=standard", source_key),
+        );
     }
 
     Ok(out)
@@ -899,200 +918,39 @@ fn compose_tile_source_key(
     format!("{source_key}#compose:{rows}x{cols}:{row}:{col}")
 }
 
-fn load_source_rgba(path: &Path, glyph_size: u32) -> Result<RgbaImage> {
-    let ext = path
-        .extension()
-        .and_then(|ext| ext.to_str())
-        .map(|s| s.to_ascii_lowercase())
-        .unwrap_or_default();
-
-    if ext == "svg" {
-        render_svg(path, glyph_size)
-    } else {
-        let img = image::open(path)
-            .with_context(|| format!("failed to decode image {}", path.display()))?;
-        Ok(img.to_rgba8())
-    }
-}
-
-fn render_svg(path: &Path, glyph_size: u32) -> Result<RgbaImage> {
-    let data = fs::read(path).with_context(|| format!("failed to read {}", path.display()))?;
-    let options = usvg::Options::default();
-    let tree = usvg::Tree::from_data(&data, &options)
-        .with_context(|| format!("failed to parse SVG {}", path.display()))?;
-
-    let size = tree.size().to_int_size();
-    let src_w = size.width().max(1);
-    let src_h = size.height().max(1);
-    let target = (glyph_size.max(16) * 4).max(64);
-
-    let scale = (target as f32 / src_w as f32).min(target as f32 / src_h as f32);
-    let out_w = ((src_w as f32 * scale).round() as u32).max(1);
-    let out_h = ((src_h as f32 * scale).round() as u32).max(1);
-
-    let mut pixmap = Pixmap::new(out_w, out_h)
-        .ok_or_else(|| anyhow::anyhow!("failed to allocate SVG render target"))?;
-
-    let transform = Transform::from_scale(out_w as f32 / src_w as f32, out_h as f32 / src_h as f32);
-    resvg::render(&tree, transform, &mut pixmap.as_mut());
-
-    let pixels = pixmap.data().to_vec();
-    ImageBuffer::from_raw(out_w, out_h, pixels)
-        .ok_or_else(|| anyhow::anyhow!("failed to convert rendered SVG to RGBA image"))
-}
-
+#[allow(dead_code)]
 pub(crate) fn coverage_map(source: &RgbaImage, glyph_size: u32) -> Result<Vec<u8>> {
-    const OPAQUE_CONTENT_EPSILON: u8 = 6;
-
-    if glyph_size == 0 {
-        bail!("glyph_size must be > 0");
-    }
-
-    let has_transparency = source.pixels().any(|p| p[3] < 255);
-    let background = (!has_transparency).then(|| estimate_background_rgb(source));
-    let content =
-        crop_source_to_content(source, has_transparency, background, OPAQUE_CONTENT_EPSILON);
-    let fitted = fit_to_canvas(&content, glyph_size);
-
-    let mut out = vec![0u8; (glyph_size as usize) * (glyph_size as usize)];
-
-    for (idx, pixel) in fitted.pixels().enumerate() {
-        let coverage = if has_transparency {
-            pixel[3]
-        } else {
-            opaque_coverage(
-                pixel,
-                background.expect("background exists for opaque sources"),
-            )
-        };
-
-        out[idx] = coverage;
-    }
-
-    Ok(out)
-}
-
-fn crop_source_to_content(
-    source: &RgbaImage,
-    has_transparency: bool,
-    background: Option<[u8; 3]>,
-    opaque_content_epsilon: u8,
-) -> RgbaImage {
-    let Some((min_x, min_y, max_x, max_y)) =
-        content_bounds(source, has_transparency, background, opaque_content_epsilon)
-    else {
-        return source.clone();
-    };
-
-    let (width, height) = source.dimensions();
-    if min_x == 0
-        && min_y == 0
-        && max_x == width.saturating_sub(1)
-        && max_y == height.saturating_sub(1)
-    {
-        return source.clone();
-    }
-
-    let crop_w = max_x - min_x + 1;
-    let crop_h = max_y - min_y + 1;
-    image::imageops::crop_imm(source, min_x, min_y, crop_w, crop_h).to_image()
-}
-
-fn content_bounds(
-    source: &RgbaImage,
-    has_transparency: bool,
-    background: Option<[u8; 3]>,
-    opaque_content_epsilon: u8,
-) -> Option<(u32, u32, u32, u32)> {
-    let (width, height) = source.dimensions();
-    if width == 0 || height == 0 {
-        return None;
-    }
-
-    let mut min_x = width;
-    let mut min_y = height;
-    let mut max_x = 0u32;
-    let mut max_y = 0u32;
-    let mut found = false;
-
-    for y in 0..height {
-        for x in 0..width {
-            let pixel = source.get_pixel(x, y);
-            let is_content = if has_transparency {
-                pixel[3] > 0
-            } else {
-                let bg = background.expect("background is available for opaque sources");
-                opaque_coverage(pixel, bg) > opaque_content_epsilon
-            };
-
-            if !is_content {
-                continue;
-            }
-
-            found = true;
-            min_x = min_x.min(x);
-            min_y = min_y.min(y);
-            max_x = max_x.max(x);
-            max_y = max_y.max(y);
-        }
-    }
-
-    found.then_some((min_x, min_y, max_x, max_y))
-}
-
-fn estimate_background_rgb(source: &RgbaImage) -> [u8; 3] {
-    let (width, height) = source.dimensions();
-    let max_x = width.saturating_sub(1);
-    let max_y = height.saturating_sub(1);
-    let coords = [(0, 0), (max_x, 0), (0, max_y), (max_x, max_y)];
-
-    let mut sum = [0u32; 3];
-    for (x, y) in coords {
-        let pixel = source.get_pixel(x, y);
-        sum[0] += pixel[0] as u32;
-        sum[1] += pixel[1] as u32;
-        sum[2] += pixel[2] as u32;
-    }
-
-    [
-        (sum[0] / coords.len() as u32) as u8,
-        (sum[1] / coords.len() as u32) as u8,
-        (sum[2] / coords.len() as u32) as u8,
-    ]
-}
-
-fn opaque_coverage(pixel: &Rgba<u8>, background: [u8; 3]) -> u8 {
-    if pixel[3] == 0 {
-        return 0;
-    }
-
-    let dr = pixel[0].abs_diff(background[0]) as u16;
-    let dg = pixel[1].abs_diff(background[1]) as u16;
-    let db = pixel[2].abs_diff(background[2]) as u16;
-    ((dr + dg + db) / 3) as u8
-}
-
-fn fit_to_canvas(source: &RgbaImage, glyph_size: u32) -> RgbaImage {
-    let (width, height) = source.dimensions();
-    let width = width.max(1);
-    let height = height.max(1);
-
-    let scale = (glyph_size as f32 / width as f32).min(glyph_size as f32 / height as f32);
-    let scaled_w = ((width as f32 * scale).round() as u32).max(1);
-    let scaled_h = ((height as f32 * scale).round() as u32).max(1);
-
-    let resized = image::imageops::resize(source, scaled_w, scaled_h, FilterType::Lanczos3);
-
-    let mut canvas = RgbaImage::from_pixel(glyph_size, glyph_size, Rgba([255, 255, 255, 0]));
-    let offset_x = ((glyph_size - scaled_w) / 2) as i64;
-    let offset_y = ((glyph_size - scaled_h) / 2) as i64;
-    image::imageops::overlay(&mut canvas, &resized, offset_x, offset_y);
-
-    canvas
+    coverage_map_from_image(source, glyph_size)
 }
 
 fn threshold_bitmap(glyph: &PreprocessedGlyph, threshold: u8) -> GlyphBitmap {
-    let pixels = glyph.coverage.iter().map(|v| *v >= threshold).collect();
+    let pixels = glyph
+        .coverage
+        .iter()
+        .map(|v| *v >= threshold)
+        .collect::<Vec<bool>>();
+    glyph_debug::log_step(
+        "threshold",
+        format!(
+            "source={} glyph={} threshold={}",
+            glyph.source_parent_key, glyph.glyph_name, threshold
+        ),
+    );
+    glyph_debug::write_bitmap_png(
+        "10_threshold_bitmap",
+        &glyph.glyph_name,
+        glyph.size,
+        glyph.size,
+        &pixels,
+    );
+    glyph_debug::write_ascii_coverage(
+        "11_threshold_ascii",
+        &glyph.glyph_name,
+        glyph.size,
+        glyph.size,
+        &glyph.coverage,
+        threshold,
+    );
     GlyphBitmap {
         size: glyph.size,
         pixels,
@@ -1187,29 +1045,10 @@ impl FontVerticalMetrics {
 
 fn font_vertical_metrics(units_per_em: u16) -> FontVerticalMetrics {
     let descent_abs = ((u32::from(units_per_em) + 2) / 5) as i16;
-    // Keep one explicit row-overlap budget in line metrics so adjacent
-    // composition rows don't separate because of terminal line-box rounding.
-    let seam_overlap = composition_line_overlap_units(u32::from(units_per_em)) as i16;
     FontVerticalMetrics {
-        ascent: units_per_em as i16 - descent_abs - seam_overlap,
+        ascent: units_per_em as i16 - descent_abs,
         descent: -descent_abs,
     }
-}
-
-fn composition_outline_overlap_units(units_per_em: u32) -> u32 {
-    // Keep contour coordinates aligned to the original bitmap pixel grid so
-    // adjacent tiles rasterize with consistent scale/stroke weight.
-    (units_per_em / 64).max(1)
-}
-
-fn composition_line_overlap_units(units_per_em: u32) -> u32 {
-    // Prior overlap used a single source-pixel worth of units (~units/64).
-    // At common terminal sizes that can quantize below one device pixel and
-    // leave visible row cracks. Keep a small extra buffer, but avoid large
-    // bbox growth that can make fallback-font renderers downscale/clamp glyphs.
-    let source_pixel_overlap = composition_outline_overlap_units(units_per_em);
-    let nominal_terminal_px_overlap = (units_per_em / 48).max(1);
-    source_pixel_overlap.max(nominal_terminal_px_overlap)
 }
 
 fn write_ttf(
@@ -1367,7 +1206,14 @@ fn build_ttf(
     let cmap = build_cmap_table(&mappings);
     let name = build_name_table(font_name, font_identity);
     let post = build_post_table();
-    let os2 = build_os2_table(units_per_em, vertical_metrics, &mappings, advance_width_max);
+    let os2 = build_os2_table(
+        units_per_em,
+        vertical_metrics,
+        &mappings,
+        advance_width_max,
+        y_min,
+        y_max,
+    );
 
     let mut tables = vec![
         (*b"OS/2", os2),
@@ -1446,17 +1292,6 @@ fn bitmap_glyph_to_ttf(
                         .saturating_mul(pixel_units),
                 );
             let bottom = top.saturating_sub(pixel_units);
-            let (x0, bottom, x1, top) = overlap_internal_composition_edges(
-                x0,
-                bottom,
-                x1,
-                top,
-                x,
-                y,
-                bitmap.size as usize,
-                pixel_units,
-                options.composition_tile,
-            )?;
 
             let contour = [(x0, bottom), (x0, top), (x1, top), (x1, bottom)];
             for (px, py) in contour {
@@ -1500,10 +1335,9 @@ fn bitmap_glyph_to_ttf(
             i32::from(y_min) + i32::from(y_max),
         )
     } else {
-        // Keep composition tiles in tile-local coordinates without adding extra
-        // downward baseline offset; this avoids visible row gaps when grids are
-        // rendered as adjacent text lines in terminals.
-        0
+        // Keep composition tiles in shared tile-local geometry, but align the
+        // tile box to the font line box baseline.
+        i32::from(vertical_metrics.descent)
     };
     if x_shift != 0 || y_shift != 0 {
         translate_points(&mut points, x_shift, y_shift)?;
@@ -1549,7 +1383,7 @@ fn bitmap_glyph_to_ttf(
     Ok(TtfGlyph {
         codepoint,
         advance_width,
-        left_side_bearing: 0,
+        left_side_bearing: x_min,
         x_min,
         y_min,
         x_max,
@@ -1558,54 +1392,6 @@ fn bitmap_glyph_to_ttf(
         point_count,
         data,
     })
-}
-
-fn overlap_internal_composition_edges(
-    x0: i16,
-    bottom: i16,
-    x1: i16,
-    top: i16,
-    x: usize,
-    y: usize,
-    bitmap_size: usize,
-    pixel_units: i16,
-    tile: Option<CompositionTileInfo>,
-) -> Result<(i16, i16, i16, i16)> {
-    let Some(tile) = tile else {
-        return Ok((x0, bottom, x1, top));
-    };
-
-    let units_per_em = i32::from(pixel_units.max(1))
-        .checked_mul(i32::try_from(bitmap_size).context("bitmap_size overflow")?)
-        .ok_or_else(|| anyhow::anyhow!("units_per_em overflow while computing seam overlap"))?;
-    let overlap = i32::try_from(composition_outline_overlap_units(
-        u32::try_from(units_per_em).context("negative units_per_em for seam overlap")?,
-    ))
-    .context("composition seam overlap overflow")?;
-    let mut x0 = i32::from(x0);
-    let mut bottom = i32::from(bottom);
-    let mut x1 = i32::from(x1);
-    let mut top = i32::from(top);
-
-    if tile.col > 0 && x == 0 {
-        x0 -= overlap;
-    }
-    if tile.col + 1 < tile.cols && x + 1 == bitmap_size {
-        x1 += overlap;
-    }
-    if tile.row > 0 && y == 0 {
-        top += overlap;
-    }
-    if tile.row + 1 < tile.rows && y + 1 == bitmap_size {
-        bottom -= overlap;
-    }
-
-    Ok((
-        checked_i16(x0, "x0 after composition seam overlap")?,
-        checked_i16(bottom, "bottom after composition seam overlap")?,
-        checked_i16(x1, "x1 after composition seam overlap")?,
-        checked_i16(top, "top after composition seam overlap")?,
-    ))
 }
 
 fn center_shift(container_extent: i32, glyph_min_plus_max: i32) -> i32 {
@@ -1951,6 +1737,8 @@ fn build_os2_table(
     vertical_metrics: FontVerticalMetrics,
     mappings: &[(u32, u16)],
     advance_width: u16,
+    y_min: i16,
+    y_max: i16,
 ) -> Vec<u8> {
     let (first_char, last_char) = mappings
         .iter()
@@ -1993,8 +1781,16 @@ fn build_os2_table(
     push_i16(&mut out, vertical_metrics.ascent);
     push_i16(&mut out, vertical_metrics.descent);
     push_i16(&mut out, 0);
-    push_u16(&mut out, vertical_metrics.ascent as u16);
-    push_u16(&mut out, vertical_metrics.descent_abs());
+    let win_ascent = i32::from(vertical_metrics.ascent)
+        .max(i32::from(y_max))
+        .max(0)
+        .clamp(0, i32::from(u16::MAX)) as u16;
+    let win_descent = i32::from(vertical_metrics.descent_abs())
+        .max(-i32::from(y_min))
+        .max(0)
+        .clamp(0, i32::from(u16::MAX)) as u16;
+    push_u16(&mut out, win_ascent);
+    push_u16(&mut out, win_descent);
     push_u32(&mut out, 0);
     push_u32(&mut out, 0);
     push_i16(&mut out, units_per_em as i16 / 2);

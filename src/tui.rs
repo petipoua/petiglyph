@@ -36,6 +36,7 @@ use crate::build::{
     BuildSummary, MappingEntry, PreprocessedGlyph, build_outputs, expected_bdf_path,
     expected_ttf_path, is_supported_source, preprocess_sources_with_compositions,
 };
+use crate::glyph_debug;
 use crate::install::{
     DEFAULT_INSTALL_NAME_MODE, FontInstallNameMode, effective_font_name,
     expected_install_ttf_path_for_mode, install_built_font, install_dir_for_manifest,
@@ -71,6 +72,7 @@ const GLYPH_SOURCE_COUNT_REFRESH_MS: u64 = 300;
 const INSTALL_METADATA_PREFIX: &str = ".petiglyph-install-";
 const INSTALL_METADATA_SUFFIX: &str = ".json";
 const INSTALLED_FONT_BLOCK_REFERENCE_SEPARATOR: &str = "  │  ";
+const DEBUG_LOG_VISIBLE_LINES: usize = 6;
 static HTY_FULL_REPAINT_ENABLED: OnceLock<bool> = OnceLock::new();
 
 #[derive(Debug, Clone, Default)]
@@ -193,6 +195,7 @@ pub(crate) fn tui_workspace(
         app.poll_font_task();
         app.clear_expired_switch_notice();
         app.refresh_live_glyph_source_count();
+        app.refresh_pipeline_debug_log();
         session.terminal.draw(|frame| draw_ui(frame, &app))?;
         if log_next_draw_after_esc {
             tui_debug_log("draw.after_esc", app_debug_state(&app));
@@ -317,6 +320,9 @@ pub(crate) struct App {
     live_glyph_source_count: Option<usize>,
     live_glyph_source_probe_fingerprint: Option<u64>,
     live_glyph_source_probe_at: Option<Instant>,
+    debug_enabled: bool,
+    debug_log_path: Option<PathBuf>,
+    debug_log_lines: Vec<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -2477,6 +2483,7 @@ impl App {
 
     fn new_inactive(workspace_root: PathBuf, launch_overrides: TuiLaunchOverrides) -> Self {
         let manifest_path = workspace_root.join("petiglyph.toml");
+        let debug_enabled = glyph_debug::debug_enabled();
         Self {
             manifest_path,
             project_dir: workspace_root.clone(),
@@ -2518,6 +2525,9 @@ impl App {
             live_glyph_source_count: None,
             live_glyph_source_probe_fingerprint: None,
             live_glyph_source_probe_at: None,
+            debug_enabled,
+            debug_log_path: None,
+            debug_log_lines: Vec::new(),
         }
     }
 
@@ -2532,6 +2542,8 @@ impl App {
             .unwrap_or_else(|| Path::new("."))
             .to_path_buf();
         let workspace_root = workspace_root.unwrap_or_else(|| project_dir.clone());
+        let debug_enabled = glyph_debug::debug_enabled();
+        let debug_log_path = Some(glyph_debug::session_log_path(&project_dir));
         let (last_build, last_sample) = cached_build_state(&config);
         let installed_font_path =
             cached_installed_font_path(&manifest_path, &config.font_name, &config.project_id);
@@ -2576,6 +2588,9 @@ impl App {
             live_glyph_source_count: None,
             live_glyph_source_probe_fingerprint: None,
             live_glyph_source_probe_at: None,
+            debug_enabled,
+            debug_log_path,
+            debug_log_lines: Vec::new(),
         }
     }
 
@@ -2993,6 +3008,8 @@ impl App {
             self.last_build = None;
             self.last_sample = None;
             self.installed_font_path = None;
+            self.debug_log_path = None;
+            self.debug_log_lines.clear();
             return Ok(());
         }
 
@@ -3012,6 +3029,7 @@ impl App {
             &self.config.font_name,
             &self.config.project_id,
         );
+        self.debug_log_path = Some(glyph_debug::session_log_path(&self.config.project_dir));
         Ok(())
     }
 
@@ -3029,6 +3047,9 @@ impl App {
         }
 
         self.reload_config()?;
+        if self.debug_enabled {
+            glyph_debug::begin_session(&self.config.project_dir, "tui.reload_glyphs");
+        }
 
         if !self.config.input_dir.exists() {
             self.glyphs.clear();
@@ -3111,13 +3132,32 @@ impl App {
         self.live_glyph_source_probe_fingerprint =
             Some(glyph_source_fingerprint(&self.config.input_dir)?);
         self.live_glyph_source_probe_at = Some(Instant::now());
-        self.status = Some(format!(
+        let mut status = format!(
             "loaded {} glyph{} from {}",
             self.glyphs.len(),
             if self.glyphs.len() == 1 { "" } else { "s" },
             self.config.input_dir.display()
-        ));
+        );
+        if self.debug_enabled {
+            status.push_str(&format!(
+                " | debug: {}",
+                self.config.project_dir.join("debug").display()
+            ));
+        }
+        self.status = Some(status);
         Ok(())
+    }
+
+    fn refresh_pipeline_debug_log(&mut self) {
+        if !self.debug_enabled {
+            self.debug_log_lines.clear();
+            return;
+        }
+        let Some(path) = &self.debug_log_path else {
+            self.debug_log_lines.clear();
+            return;
+        };
+        self.debug_log_lines = glyph_debug::read_recent_log_lines(path, DEBUG_LOG_VISIBLE_LINES);
     }
 
     fn refresh_live_glyph_source_count(&mut self) {
@@ -4269,14 +4309,26 @@ fn draw_ui(frame: &mut Frame, app: &App) {
     }
     let area = centered_bounded_viewport(area);
 
-    let root = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Length(3), // Header
-            Constraint::Min(0),    // Body
-            Constraint::Length(1), // Footer keys
-        ])
-        .split(area);
+    let root = if app.debug_enabled {
+        Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([
+                Constraint::Length(3), // Header
+                Constraint::Min(0),    // Body
+                Constraint::Length(1), // Footer keys
+                Constraint::Length((DEBUG_LOG_VISIBLE_LINES as u16).saturating_add(2)),
+            ])
+            .split(area)
+    } else {
+        Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([
+                Constraint::Length(3), // Header
+                Constraint::Min(0),    // Body
+                Constraint::Length(1), // Footer keys
+            ])
+            .split(area)
+    };
 
     // Header
     let titles = [" 1 Home ", " 2 Glyphs "];
@@ -4452,6 +4504,37 @@ fn draw_ui(frame: &mut Frame, app: &App) {
         .alignment(Alignment::Center)
         .style(Style::default().fg(muted));
     frame.render_widget(footer, root[2]);
+
+    if app.debug_enabled {
+        let debug_lines = if app.debug_log_lines.is_empty() {
+            vec![Line::from(vec![Span::styled(
+                "no debug pipeline logs yet",
+                Style::default().fg(Color::DarkGray),
+            )])]
+        } else {
+            app.debug_log_lines
+                .iter()
+                .map(|line| Line::from(Span::raw(line.clone())))
+                .collect::<Vec<_>>()
+        };
+        let title = app
+            .debug_log_path
+            .as_ref()
+            .map(|p| format!(" Debug Log ({}) ", p.display()))
+            .unwrap_or_else(|| " Debug Log ".to_string());
+        let debug_block = Block::default()
+            .borders(Borders::ALL)
+            .border_type(BorderType::Rounded)
+            .border_style(Style::default().fg(Color::DarkGray))
+            .title(Span::styled(title, Style::default().fg(Color::Cyan)));
+        frame.render_widget(
+            Paragraph::new(debug_lines)
+                .block(debug_block)
+                .wrap(Wrap { trim: false })
+                .style(Style::default().fg(Color::Gray)),
+            root[3],
+        );
+    }
 }
 
 fn hty_full_repaint_enabled() -> bool {

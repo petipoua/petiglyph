@@ -132,41 +132,6 @@ fn nonzero_coverage_bounds(coverage: &[u8], size: u32) -> Option<(u32, u32, u32,
     found.then_some((min_x, min_y, max_x, max_y))
 }
 
-fn seal_expected_internal_grid_seams(
-    coverage: &mut [u8],
-    width: u32,
-    height: u32,
-    glyph_size: u32,
-    rows: usize,
-    cols: usize,
-) {
-    let width = width as usize;
-    let height = height as usize;
-    let glyph_size = glyph_size as usize;
-
-    for col in 1..cols {
-        let seam_x = col * glyph_size;
-        for y in 0..height {
-            let left_idx = y * width + seam_x - 1;
-            let right_idx = y * width + seam_x;
-            let coverage_max = coverage[left_idx].max(coverage[right_idx]);
-            coverage[left_idx] = coverage_max;
-            coverage[right_idx] = coverage_max;
-        }
-    }
-
-    for row in 1..rows {
-        let seam_y = row * glyph_size;
-        for x in 0..width {
-            let top_idx = (seam_y - 1) * width + x;
-            let bottom_idx = seam_y * width + x;
-            let coverage_max = coverage[top_idx].max(coverage[bottom_idx]);
-            coverage[top_idx] = coverage_max;
-            coverage[bottom_idx] = coverage_max;
-        }
-    }
-}
-
 fn crop_expected_coverage_tile(
     coverage: &[u8],
     grid_width: u32,
@@ -186,6 +151,49 @@ fn crop_expected_coverage_tile(
     }
 
     out
+}
+
+fn fit_alpha_to_canvas(source: &RgbaImage, target_w: u32, target_h: u32) -> Vec<u8> {
+    let mut min_x = source.width();
+    let mut min_y = source.height();
+    let mut max_x = 0u32;
+    let mut max_y = 0u32;
+    let mut found = false;
+
+    for y in 0..source.height() {
+        for x in 0..source.width() {
+            if source.get_pixel(x, y)[3] == 0 {
+                continue;
+            }
+            found = true;
+            min_x = min_x.min(x);
+            min_y = min_y.min(y);
+            max_x = max_x.max(x);
+            max_y = max_y.max(y);
+        }
+    }
+
+    if !found {
+        return vec![0; (target_w as usize) * (target_h as usize)];
+    }
+
+    let crop_w = max_x - min_x + 1;
+    let crop_h = max_y - min_y + 1;
+    let cropped = image::imageops::crop_imm(source, min_x, min_y, crop_w, crop_h).to_image();
+    let cropped_alpha = image::GrayImage::from_fn(crop_w, crop_h, |x, y| {
+        image::Luma([cropped.get_pixel(x, y)[3]])
+    });
+
+    let scale = (target_w as f64 / crop_w as f64).min(target_h as f64 / crop_h as f64);
+    let scaled_w = ((crop_w as f64 * scale).round() as u32).clamp(1, target_w);
+    let scaled_h = ((crop_h as f64 * scale).round() as u32).clamp(1, target_h);
+    let resized = image::imageops::resize(&cropped_alpha, scaled_w, scaled_h, FilterType::Lanczos3);
+
+    let mut canvas = image::GrayImage::from_pixel(target_w, target_h, image::Luma([0]));
+    let offset_x = ((target_w - scaled_w) / 2) as i64;
+    let offset_y = ((target_h - scaled_h) / 2) as i64;
+    image::imageops::overlay(&mut canvas, &resized, offset_x, offset_y);
+    canvas.into_raw()
 }
 
 #[test]
@@ -1342,17 +1350,26 @@ fn preprocess_composition_tiles_keep_corner_alignment_without_recentering() {
     let input_dir = project_dir.join("icons");
     fs::create_dir_all(&input_dir).expect("icons dir is created");
 
-    let mut img = RgbaImage::from_pixel(32, 32, Rgba([255, 255, 255, 0]));
-    img.put_pixel(0, 0, Rgba([0, 0, 0, 255]));
+    let mut img = RgbaImage::from_pixel(32, 16, Rgba([255, 255, 255, 0]));
+    for y in 5..=10 {
+        for x in 1..=4 {
+            img.put_pixel(x, y, Rgba([0, 0, 0, 255]));
+        }
+    }
+    for y in 5..=10 {
+        for x in 27..=30 {
+            img.put_pixel(x, y, Rgba([0, 0, 0, 255]));
+        }
+    }
     img.save(input_dir.join("dot.png"))
         .expect("dot image is written");
 
     let mut compositions = BTreeMap::new();
-    compositions.insert("dot.png".to_string(), CompositionDef { rows: 2, cols: 2 });
+    compositions.insert("dot.png".to_string(), CompositionDef { rows: 1, cols: 2 });
     let sources = vec![input_dir.join("dot.png")];
     let glyphs = preprocess_sources_with_compositions(&sources, &input_dir, 16, &compositions)
         .expect("composition preprocess succeeds");
-    assert_eq!(glyphs.len(), 4);
+    assert_eq!(glyphs.len(), 2);
 
     let top_left = glyphs
         .iter()
@@ -1362,11 +1379,11 @@ fn preprocess_composition_tiles_keep_corner_alignment_without_recentering() {
                 .as_ref()
                 .is_some_and(|tile| tile.row == 0 && tile.col == 0)
         })
-        .expect("top-left tile exists");
+        .expect("left tile exists");
     let bounds = nonzero_coverage_bounds(&top_left.coverage, 16).expect("tile should be visible");
     assert!(
-        bounds.0 <= 2 && bounds.1 <= 2,
-        "top-left tile content should stay near top-left (got bounds {:?})",
+        bounds.0 <= 3,
+        "left tile content should stay near its left edge after split (got bounds {:?})",
         bounds
     );
 
@@ -1378,10 +1395,13 @@ fn preprocess_composition_tiles_keep_corner_alignment_without_recentering() {
                 .as_ref()
                 .is_some_and(|tile| tile.row == 0 && tile.col == 1)
         })
-        .expect("top-right tile exists");
+        .expect("right tile exists");
+    let right_bounds =
+        nonzero_coverage_bounds(&top_right.coverage, 16).expect("right tile should be visible");
     assert!(
-        nonzero_coverage_bounds(&top_right.coverage, 16).is_none(),
-        "neighbor tiles should remain empty for corner-only source content"
+        right_bounds.2 >= 12,
+        "right tile content should stay near its right edge after split (got bounds {:?})",
+        right_bounds
     );
 
     fs::remove_dir_all(project_dir).expect("temp project dir is removed");
@@ -1419,21 +1439,7 @@ fn preprocess_composition_tiles_use_global_grid_scaling() {
     let source = image::open(&source_path)
         .expect("source image opens")
         .to_rgba8();
-    let scaled = image::imageops::resize(
-        &source,
-        3 * glyph_size,
-        3 * glyph_size,
-        FilterType::Lanczos3,
-    );
-    let mut expected_grid = scaled.pixels().map(|p| p[3]).collect::<Vec<_>>();
-    seal_expected_internal_grid_seams(
-        &mut expected_grid,
-        3 * glyph_size,
-        3 * glyph_size,
-        glyph_size,
-        3,
-        3,
-    );
+    let expected_grid = fit_alpha_to_canvas(&source, 3 * glyph_size, 3 * glyph_size);
 
     for glyph in &glyphs {
         let tile = glyph
@@ -1449,7 +1455,7 @@ fn preprocess_composition_tiles_use_global_grid_scaling() {
         );
         assert_eq!(
             glyph.coverage, expected_coverage,
-            "tile coverage should match global-scale split with sealed seams for row={}, col={}",
+            "tile coverage should match global fit-before-split for row={}, col={}",
             tile.row, tile.col
         );
     }
@@ -1458,7 +1464,7 @@ fn preprocess_composition_tiles_use_global_grid_scaling() {
 }
 
 #[test]
-fn preprocess_composition_tiles_seal_internal_threshold_seams() {
+fn preprocess_composition_tiles_keep_raw_internal_threshold_gradient() {
     let project_dir = make_temp_dir("composition-sealed-seams");
     let input_dir = project_dir.join("icons");
     fs::create_dir_all(&input_dir).expect("icons dir is created");
@@ -1496,13 +1502,9 @@ fn preprocess_composition_tiles_seal_internal_threshold_seams() {
 
     let left_edge = left.coverage[8 * 16 + 15];
     let right_edge = right.coverage[8 * 16];
-    assert_eq!(
-        left_edge, right_edge,
-        "internal seam coverage should be mirrored across adjacent tiles"
-    );
     assert!(
-        left_edge >= 64,
-        "seam repair should preserve a threshold-visible edge on both sides"
+        left_edge < right_edge,
+        "fit-before-split should preserve raw seam gradient (left={left_edge}, right={right_edge})"
     );
 
     fs::remove_dir_all(project_dir).expect("temp project dir is removed");
@@ -1568,7 +1570,7 @@ fn build_outputs_composition_preserves_tile_offsets_in_ttf() {
 }
 
 #[test]
-fn build_outputs_composition_overlaps_internal_ttf_edges() {
+fn build_outputs_composition_keeps_internal_ttf_edges_within_glyph_cell() {
     let project_dir = make_temp_dir("composition-ttf-overlap");
     let input_dir = project_dir.join("icons");
     fs::create_dir_all(&input_dir).expect("icons dir is created");
@@ -1625,22 +1627,22 @@ fn build_outputs_composition_overlaps_internal_ttf_edges() {
         .expect("right glyph has bounds");
 
     assert!(
-        left_bounds.x_max > units_per_em,
-        "left tile should overlap the next glyph cell at the internal seam"
+        left_bounds.x_max <= units_per_em,
+        "left tile should not cross into the next glyph cell"
     );
     assert!(
-        left_bounds.x_max <= units_per_em + units_per_em / 16,
-        "internal seam overlap should stay modest to avoid fallback glyph down-scaling (x_max={}, units_per_em={})",
+        left_bounds.x_max >= units_per_em - units_per_em / 16,
+        "left tile seam should stay near the right boundary (x_max={}, units_per_em={})",
         left_bounds.x_max,
         units_per_em
     );
     assert!(
-        right_bounds.x_min < 0,
-        "right tile should overlap the previous glyph cell at the internal seam"
+        right_bounds.x_min >= 0,
+        "right tile should not cross into the previous glyph cell"
     );
     assert!(
-        right_bounds.x_min >= -(units_per_em / 16),
-        "internal seam overlap should stay modest to avoid fallback glyph down-scaling (x_min={}, units_per_em={})",
+        right_bounds.x_min <= units_per_em / 16,
+        "right tile seam should stay near the left boundary (x_min={}, units_per_em={})",
         right_bounds.x_min,
         units_per_em
     );
