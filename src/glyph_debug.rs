@@ -12,7 +12,6 @@ const DEBUG_LOG_FILE_NAME: &str = "pipeline.log";
 
 #[derive(Debug, Clone)]
 struct DebugSession {
-    debug_dir: PathBuf,
     artifacts_dir: PathBuf,
     log_path: PathBuf,
     sequence: u64,
@@ -72,7 +71,6 @@ pub(crate) fn begin_session(project_dir: &Path, context: &str) {
     let _ = fs::create_dir_all(&artifacts_dir);
 
     let mut session = DebugSession {
-        debug_dir,
         artifacts_dir,
         log_path,
         sequence: 0,
@@ -82,10 +80,6 @@ pub(crate) fn begin_session(project_dir: &Path, context: &str) {
     let _ = fs::write(
         &session.log_path,
         format!("[{now}] debug session start: {context}\n"),
-    );
-    let _ = fs::write(
-        session.debug_dir.join("README.txt"),
-        "petiglyph debug artifacts\n\n- pipeline.log: step-by-step processing log\n- artifacts/: PNG/TXT snapshots for each image-to-glyph stage\n",
     );
 
     let seq = next_sequence(&mut session);
@@ -182,52 +176,6 @@ pub(crate) fn write_coverage_png(step: &str, label: &str, width: u32, height: u3
                 seq,
                 "artifact",
                 &format!("coverage {}x{} {}", width, height, path.display()),
-            );
-        }
-    });
-}
-
-pub(crate) fn write_ascii_coverage(
-    step: &str,
-    label: &str,
-    width: u32,
-    height: u32,
-    data: &[u8],
-    threshold: u8,
-) {
-    if !debug_enabled() {
-        return;
-    }
-    if data.len() != (width as usize).saturating_mul(height as usize) {
-        return;
-    }
-
-    let mut lines = String::new();
-    lines.push_str(&format!(
-        "# {} {}x{} threshold={}\n",
-        label, width, height, threshold
-    ));
-    for y in 0..height as usize {
-        for x in 0..width as usize {
-            let idx = y * width as usize + x;
-            let ch = if data[idx] >= threshold { '#' } else { '.' };
-            lines.push(ch);
-        }
-        lines.push('\n');
-    }
-
-    let step = sanitize(step);
-    let label = sanitize(label);
-    let _ = with_session_mut(|session| {
-        let seq = next_sequence(session);
-        let filename = format!("{seq:05}_{step}_{label}.txt");
-        let path = session.artifacts_dir.join(filename);
-        if fs::write(&path, lines.as_bytes()).is_ok() {
-            append_log_line(
-                &session.log_path,
-                seq,
-                "artifact",
-                &format!("ascii {}x{} {}", width, height, path.display()),
             );
         }
     });

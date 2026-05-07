@@ -58,14 +58,6 @@ pub(crate) fn compose_tiles(
                 glyph_size,
                 &coverage,
             );
-            glyph_debug::write_ascii_coverage(
-                "09_grid_tile_ascii",
-                &format!("{source_key}_r{}_c{}", row + 1, col + 1),
-                glyph_size,
-                glyph_size,
-                &coverage,
-                64,
-            );
             glyph_debug::log_step(
                 "grid.tile",
                 format!(
@@ -86,7 +78,92 @@ pub(crate) fn compose_tiles(
         }
     }
 
+    let grid_height = glyph_size
+        .checked_mul(u32::try_from(rows).context("composition rows overflow u32")?)
+        .context("composition grid height overflow")?;
+    let assembled = assemble_tiles_coverage(&tiles, rows, cols, glyph_size);
+    glyph_debug::write_coverage_png(
+        "09_grid_tiles_assembled",
+        source_key,
+        grid_width,
+        grid_height,
+        &assembled,
+    );
+
+    let mut assembled_bordered = assembled.clone();
+    add_tile_borders(&mut assembled_bordered, rows, cols, glyph_size);
+    glyph_debug::write_coverage_png(
+        "10_grid_tiles_assembled_bordered",
+        source_key,
+        grid_width,
+        grid_height,
+        &assembled_bordered,
+    );
+
+    glyph_debug::log_step(
+        "grid.assembled",
+        format!("source={source_key} size={}x{}", grid_width, grid_height),
+    );
+
     Ok(tiles)
+}
+
+fn assemble_tiles_coverage(
+    tiles: &[ComposedTile],
+    rows: usize,
+    cols: usize,
+    glyph_size: u32,
+) -> Vec<u8> {
+    let tile_size = glyph_size as usize;
+    let width = cols.saturating_mul(tile_size);
+    let height = rows.saturating_mul(tile_size);
+    let mut assembled = vec![0u8; width.saturating_mul(height)];
+
+    for tile in tiles {
+        let x0 = tile.col.saturating_mul(tile_size);
+        let y0 = tile.row.saturating_mul(tile_size);
+        for y in 0..tile_size {
+            let dst_start = (y0 + y).saturating_mul(width) + x0;
+            let src_start = y.saturating_mul(tile_size);
+            let dst_end = dst_start + tile_size;
+            let src_end = src_start + tile_size;
+            if dst_end <= assembled.len() && src_end <= tile.coverage.len() {
+                assembled[dst_start..dst_end].copy_from_slice(&tile.coverage[src_start..src_end]);
+            }
+        }
+    }
+
+    assembled
+}
+
+fn add_tile_borders(coverage: &mut [u8], rows: usize, cols: usize, glyph_size: u32) {
+    let tile_size = glyph_size as usize;
+    if tile_size == 0 || rows == 0 || cols == 0 {
+        return;
+    }
+    let width = cols.saturating_mul(tile_size);
+    let height = rows.saturating_mul(tile_size);
+    if coverage.len() != width.saturating_mul(height) {
+        return;
+    }
+
+    for row in 0..rows {
+        let y0 = row.saturating_mul(tile_size);
+        let y1 = y0 + tile_size - 1;
+        for col in 0..cols {
+            let x0 = col.saturating_mul(tile_size);
+            let x1 = x0 + tile_size - 1;
+
+            for x in x0..=x1 {
+                coverage[y0 * width + x] = 255;
+                coverage[y1 * width + x] = 255;
+            }
+            for y in y0..=y1 {
+                coverage[y * width + x0] = 255;
+                coverage[y * width + x1] = 255;
+            }
+        }
+    }
 }
 
 fn crop_coverage_tile(

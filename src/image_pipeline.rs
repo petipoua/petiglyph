@@ -9,7 +9,6 @@ use std::path::Path;
 use crate::glyph_debug;
 
 const OPAQUE_CONTENT_EPSILON: u8 = 6;
-const DEBUG_ASCII_THRESHOLD: u8 = 64;
 
 #[derive(Debug, Clone)]
 struct SourceCoverage {
@@ -58,14 +57,6 @@ pub(crate) fn preprocess_standard_source(
         glyph_size,
         glyph_size,
         &fitted,
-    );
-    glyph_debug::write_ascii_coverage(
-        "07_standard_final_ascii",
-        source_key,
-        glyph_size,
-        glyph_size,
-        &fitted,
-        DEBUG_ASCII_THRESHOLD,
     );
     glyph_debug::log_step("standard.done", format!("source={source_key}"));
 
@@ -127,14 +118,6 @@ pub(crate) fn preprocess_composition_grid_source(
         target_w,
         target_h,
         &fitted,
-    );
-    glyph_debug::write_ascii_coverage(
-        "07_grid_fitted_full_ascii",
-        source_key,
-        target_w,
-        target_h,
-        &fitted,
-        DEBUG_ASCII_THRESHOLD,
     );
     glyph_debug::log_step(
         "grid.done",

@@ -943,14 +943,6 @@ fn threshold_bitmap(glyph: &PreprocessedGlyph, threshold: u8) -> GlyphBitmap {
         glyph.size,
         &pixels,
     );
-    glyph_debug::write_ascii_coverage(
-        "11_threshold_ascii",
-        &glyph.glyph_name,
-        glyph.size,
-        glyph.size,
-        &glyph.coverage,
-        threshold,
-    );
     GlyphBitmap {
         size: glyph.size,
         pixels,
