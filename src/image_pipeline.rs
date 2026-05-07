@@ -18,20 +18,25 @@ struct SourceCoverage {
     content_min: u8,
 }
 
+pub(crate) fn terminal_cell_width_for_height(cell_height: u32) -> u32 {
+    (cell_height / 2).max(1)
+}
+
 pub(crate) fn preprocess_standard_source(
     path: &Path,
-    glyph_size: u32,
+    glyph_width: u32,
+    glyph_height: u32,
     source_key: &str,
 ) -> Result<Vec<u8>> {
-    if glyph_size == 0 {
-        bail!("glyph_size must be > 0");
+    if glyph_width == 0 || glyph_height == 0 {
+        bail!("glyph dimensions must be > 0");
     }
 
     glyph_debug::log_step(
         "standard.start",
-        format!("source={source_key} glyph_size={glyph_size}"),
+        format!("source={source_key} glyph={}x{}", glyph_width, glyph_height),
     );
-    let source = load_source_rgba(path, glyph_size)?;
+    let source = load_source_rgba(path, glyph_height)?;
     glyph_debug::write_rgba_png("01_standard_input_rgba", source_key, &source);
 
     let source_coverage = coverage_from_rgba(&source);
@@ -45,8 +50,8 @@ pub(crate) fn preprocess_standard_source(
 
     let fitted = fit_coverage_to_canvas(
         &source_coverage,
-        glyph_size,
-        glyph_size,
+        glyph_width,
+        glyph_height,
         Some(source_key),
         "standard",
     )?;
@@ -54,8 +59,8 @@ pub(crate) fn preprocess_standard_source(
     glyph_debug::write_coverage_png(
         "06_standard_final_coverage",
         source_key,
-        glyph_size,
-        glyph_size,
+        glyph_width,
+        glyph_height,
         &fitted,
     );
     glyph_debug::log_step("standard.done", format!("source={source_key}"));
@@ -67,24 +72,33 @@ pub(crate) fn preprocess_composition_grid_source(
     path: &Path,
     rows: usize,
     cols: usize,
-    glyph_size: u32,
+    glyph_width: u32,
+    glyph_height: u32,
     source_key: &str,
 ) -> Result<Vec<u8>> {
     if rows == 0 || cols == 0 {
         bail!("composition rows/cols must be > 0");
     }
-    if glyph_size == 0 {
-        bail!("glyph_size must be > 0");
+    if glyph_width == 0 || glyph_height == 0 {
+        bail!("glyph dimensions must be > 0");
     }
 
     glyph_debug::log_step(
         "grid.start",
-        format!("source={source_key} rows={rows} cols={cols} glyph_size={glyph_size}"),
+        format!(
+            "source={source_key} rows={rows} cols={cols} glyph={}x{}",
+            glyph_width, glyph_height
+        ),
     );
 
-    let render_hint = glyph_size
-        .checked_mul(u32::try_from(rows.max(cols)).context("composition grid dimensions overflow")?)
-        .context("composition render size overflow")?;
+    let target_w = glyph_width
+        .checked_mul(u32::try_from(cols).context("composition cols overflow u32")?)
+        .context("composition grid width overflow")?;
+    let target_h = glyph_height
+        .checked_mul(u32::try_from(rows).context("composition rows overflow u32")?)
+        .context("composition grid height overflow")?;
+
+    let render_hint = target_w.max(target_h);
     let source = load_source_rgba(path, render_hint)?;
     glyph_debug::write_rgba_png("01_grid_input_rgba", source_key, &source);
 
@@ -96,13 +110,6 @@ pub(crate) fn preprocess_composition_grid_source(
         source_coverage.height,
         &source_coverage.coverage,
     );
-
-    let target_w = glyph_size
-        .checked_mul(u32::try_from(cols).context("composition cols overflow u32")?)
-        .context("composition grid width overflow")?;
-    let target_h = glyph_size
-        .checked_mul(u32::try_from(rows).context("composition rows overflow u32")?)
-        .context("composition grid height overflow")?;
 
     let fitted = fit_coverage_to_canvas(
         &source_coverage,

@@ -5357,15 +5357,18 @@ fn composition_preview_lines(
         return vec![Line::from("    [Composition preview unavailable]")];
     }
 
-    let Some(tile_size) = tiles.first().map(|g| g.glyph.size as usize) else {
+    let Some((tile_width, tile_height)) = tiles
+        .first()
+        .map(|g| (g.glyph.width as usize, g.glyph.height as usize))
+    else {
         return vec![Line::from("    [Composition preview unavailable]")];
     };
-    if tile_size == 0 {
+    if tile_width == 0 || tile_height == 0 {
         return vec![Line::from("    [Composition preview unavailable]")];
     }
 
-    let width = cols.saturating_mul(tile_size);
-    let height = rows.saturating_mul(tile_size);
+    let width = cols.saturating_mul(tile_width);
+    let height = rows.saturating_mul(tile_height);
     if width == 0 || height == 0 {
         return vec![Line::from("    [Composition preview unavailable]")];
     }
@@ -5378,11 +5381,14 @@ fn composition_preview_lines(
         if info.rows != rows || info.cols != cols {
             continue;
         }
-        for y in 0..tile_size {
-            for x in 0..tile_size {
-                let src_idx = y * tile_size + x;
-                let dst_x = info.col * tile_size + x;
-                let dst_y = info.row * tile_size + y;
+        if tile.glyph.width as usize != tile_width || tile.glyph.height as usize != tile_height {
+            continue;
+        }
+        for y in 0..tile_height {
+            for x in 0..tile_width {
+                let src_idx = y * tile_width + x;
+                let dst_x = info.col * tile_width + x;
+                let dst_y = info.row * tile_height + y;
                 if dst_x >= width || dst_y >= height || src_idx >= tile.glyph.coverage.len() {
                     continue;
                 }
@@ -5445,8 +5451,9 @@ fn preview_lines(
 ) -> Vec<Line<'static>> {
     const PREVIEW_X_COMP: f32 = 0.88;
 
-    let src = glyph.size as usize;
-    if src == 0 || max_w == 0 || max_h == 0 {
+    let src_w = glyph.width as usize;
+    let src_h = glyph.height as usize;
+    if src_w == 0 || src_h == 0 || max_w == 0 || max_h == 0 {
         return vec![Line::from("  [Preview too small]")];
     }
 
@@ -5454,9 +5461,9 @@ fn preview_lines(
     let mut sum_x = 0f32;
     let mut sum_y = 0f32;
     let mut on_count = 0usize;
-    for y in 0..src {
-        for x in 0..src {
-            let idx = y * src + x;
+    for y in 0..src_h {
+        for x in 0..src_w {
+            let idx = y * src_w + x;
             if glyph.coverage[idx] < threshold {
                 continue;
             }
@@ -5467,18 +5474,18 @@ fn preview_lines(
         }
     }
 
-    let out_w = ((usize::max(1, usize::min(src, max_w as usize)) as f32) * PREVIEW_X_COMP)
+    let out_w = ((usize::max(1, usize::min(src_w, max_w as usize)) as f32) * PREVIEW_X_COMP)
         .round()
         .max(1.0) as usize;
-    let out_h = usize::max(1, usize::min(src, max_h as usize));
-    let sample_idx = |out_idx: usize, out_len: usize| -> usize {
-        let numerator = (2 * out_idx + 1) * src;
+    let out_h = usize::max(1, usize::min(src_h, max_h as usize));
+    let sample_idx = |out_idx: usize, out_len: usize, src_len: usize| -> usize {
+        let numerator = (2 * out_idx + 1) * src_len;
         let denominator = 2 * out_len;
-        (numerator / denominator).min(src.saturating_sub(1))
+        (numerator / denominator).min(src_len.saturating_sub(1))
     };
     let (shift_x, shift_y) = if found_on && on_count > 0 {
-        let src_center_x = (src.saturating_sub(1)) as f32 / 2.0;
-        let src_center_y = (src.saturating_sub(1)) as f32 / 2.0;
+        let src_center_x = (src_w.saturating_sub(1)) as f32 / 2.0;
+        let src_center_y = (src_h.saturating_sub(1)) as f32 / 2.0;
         let on_center_x = sum_x / on_count as f32;
         let on_center_y = sum_y / on_count as f32;
         (src_center_x - on_center_x, src_center_y - on_center_y)
@@ -5492,12 +5499,12 @@ fn preview_lines(
         let mut row = String::with_capacity(out_w * 2 + 4);
         row.push_str("    ");
         for ox in 0..out_w {
-            let vy = sample_idx(oy, out_h) as f32;
-            let vx = sample_idx(ox, out_w) as f32;
+            let vy = sample_idx(oy, out_h, src_h) as f32;
+            let vx = sample_idx(ox, out_w, src_w) as f32;
             let sy = (vy - shift_y).round() as i32;
             let sx = (vx - shift_x).round() as i32;
-            let on = if sx >= 0 && sy >= 0 && (sx as usize) < src && (sy as usize) < src {
-                let idx = sy as usize * src + sx as usize;
+            let on = if sx >= 0 && sy >= 0 && (sx as usize) < src_w && (sy as usize) < src_h {
+                let idx = sy as usize * src_w + sx as usize;
                 glyph.coverage[idx] >= threshold
             } else {
                 false

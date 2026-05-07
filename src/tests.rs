@@ -18,6 +18,7 @@ use crate::cli::{
     DefaultTuiTarget, is_private_use_codepoint, resolve_default_tui_target_for,
     sample_terminal_rendering_hints,
 };
+use crate::image_pipeline::terminal_cell_width_for_height;
 use crate::install::{
     DEFAULT_INSTALL_NAME_MODE, FontInstallNameMode, effective_font_name,
     expected_install_ttf_path_for_mode, reserve_project_unicode_range,
@@ -105,12 +106,20 @@ fn write_split_edge_dots_png(path: &Path, tile_size: u32) {
 }
 
 fn nonzero_coverage_bounds(coverage: &[u8], size: u32) -> Option<(u32, u32, u32, u32)> {
-    if size == 0 {
+    nonzero_coverage_bounds_rect(coverage, size, size)
+}
+
+fn nonzero_coverage_bounds_rect(
+    coverage: &[u8],
+    width: u32,
+    height: u32,
+) -> Option<(u32, u32, u32, u32)> {
+    if width == 0 || height == 0 {
         return None;
     }
 
-    let mut min_x = size;
-    let mut min_y = size;
+    let mut min_x = width;
+    let mut min_y = height;
     let mut max_x = 0u32;
     let mut max_y = 0u32;
     let mut found = false;
@@ -121,8 +130,8 @@ fn nonzero_coverage_bounds(coverage: &[u8], size: u32) -> Option<(u32, u32, u32,
         }
 
         found = true;
-        let x = (idx as u32) % size;
-        let y = (idx as u32) / size;
+        let x = (idx as u32) % width;
+        let y = (idx as u32) / width;
         min_x = min_x.min(x);
         min_y = min_y.min(y);
         max_x = max_x.max(x);
@@ -137,17 +146,19 @@ fn crop_expected_coverage_tile(
     grid_width: u32,
     x0: u32,
     y0: u32,
-    glyph_size: u32,
+    tile_width: u32,
+    tile_height: u32,
 ) -> Vec<u8> {
     let grid_width = grid_width as usize;
     let x0 = x0 as usize;
     let y0 = y0 as usize;
-    let glyph_size = glyph_size as usize;
-    let mut out = Vec::with_capacity(glyph_size * glyph_size);
+    let tile_width = tile_width as usize;
+    let tile_height = tile_height as usize;
+    let mut out = Vec::with_capacity(tile_width * tile_height);
 
-    for y in 0..glyph_size {
+    for y in 0..tile_height {
         let start = (y0 + y) * grid_width + x0;
-        out.extend_from_slice(&coverage[start..start + glyph_size]);
+        out.extend_from_slice(&coverage[start..start + tile_width]);
     }
 
     out
@@ -1203,7 +1214,8 @@ fn coverage_map_recenters_opaque_content_after_trimming() {
 #[test]
 fn bitmap_to_bdf_rows_packs_pixels_into_hex_rows() {
     let bitmap = GlyphBitmap {
-        size: 8,
+        width: 8,
+        height: 8,
         pixels: vec![
             true, false, true, false, false, false, false, true, false, true, false, true, false,
             false, false, false, false, false, false, false, true, true, false, false, false,
@@ -1260,7 +1272,12 @@ fn build_outputs_generates_non_empty_repo_icon_font() {
         sample.trim_end(),
         glyph_sample_string(config.codepoint_start, sources.len())
     );
-    assert!(face.glyph_index(' ').is_some(), "space glyph should exist");
+    let space_id = face.glyph_index(' ').expect("space glyph should exist");
+    assert_eq!(
+        face.glyph_hor_advance(space_id),
+        Some(face.units_per_em() / 2),
+        "space must keep the same one-cell advance as generated glyphs"
+    );
 
     for entry in &mapping {
         assert!(bdf.contains(&format!("STARTCHAR {}", entry.glyph_name)));
@@ -1314,8 +1331,8 @@ fn build_outputs_composition_writes_grid_sample_and_contiguous_codepoints() {
     .expect("mapping parses");
     assert_eq!(
         mapping.len(),
-        4,
-        "2x2 composition should emit 4 glyph tiles"
+        8,
+        "2x2 composition should emit 8 one-cell glyph tiles (L/R split)"
     );
 
     let codepoints = mapping
@@ -1334,8 +1351,8 @@ fn build_outputs_composition_writes_grid_sample_and_contiguous_codepoints() {
         2,
         "sample should preserve composition row layout"
     );
-    assert_eq!(lines[0].chars().count(), 2);
-    assert_eq!(lines[1].chars().count(), 2);
+    assert_eq!(lines[0].chars().count(), 4);
+    assert_eq!(lines[1].chars().count(), 4);
     assert!(
         !sample.contains(' '),
         "composed sample should be a compact grid without spaces"
@@ -1369,7 +1386,9 @@ fn preprocess_composition_tiles_keep_corner_alignment_without_recentering() {
     let sources = vec![input_dir.join("dot.png")];
     let glyphs = preprocess_sources_with_compositions(&sources, &input_dir, 16, &compositions)
         .expect("composition preprocess succeeds");
-    assert_eq!(glyphs.len(), 2);
+    assert_eq!(glyphs.len(), 4);
+    let tile_width = terminal_cell_width_for_height(16);
+    let tile_height = 16;
 
     let top_left = glyphs
         .iter()
@@ -1380,9 +1399,10 @@ fn preprocess_composition_tiles_keep_corner_alignment_without_recentering() {
                 .is_some_and(|tile| tile.row == 0 && tile.col == 0)
         })
         .expect("left tile exists");
-    let bounds = nonzero_coverage_bounds(&top_left.coverage, 16).expect("tile should be visible");
+    let bounds = nonzero_coverage_bounds_rect(&top_left.coverage, tile_width, tile_height)
+        .expect("tile should be visible");
     assert!(
-        bounds.0 <= 3,
+        bounds.0 <= 1,
         "left tile content should stay near its left edge after split (got bounds {:?})",
         bounds
     );
@@ -1393,13 +1413,13 @@ fn preprocess_composition_tiles_keep_corner_alignment_without_recentering() {
             glyph
                 .composition_tile
                 .as_ref()
-                .is_some_and(|tile| tile.row == 0 && tile.col == 1)
+                .is_some_and(|tile| tile.row == 0 && tile.col == 3)
         })
         .expect("right tile exists");
-    let right_bounds =
-        nonzero_coverage_bounds(&top_right.coverage, 16).expect("right tile should be visible");
+    let right_bounds = nonzero_coverage_bounds_rect(&top_right.coverage, tile_width, tile_height)
+        .expect("right tile should be visible");
     assert!(
-        right_bounds.2 >= 12,
+        right_bounds.2 >= tile_width.saturating_sub(2),
         "right tile content should stay near its right edge after split (got bounds {:?})",
         right_bounds
     );
@@ -1434,12 +1454,15 @@ fn preprocess_composition_tiles_use_global_grid_scaling() {
     let glyphs =
         preprocess_sources_with_compositions(&sources, &input_dir, glyph_size, &compositions)
             .expect("composition preprocess succeeds");
-    assert_eq!(glyphs.len(), 9);
+    assert_eq!(glyphs.len(), 18);
+    let tile_width = terminal_cell_width_for_height(glyph_size);
+    let tile_height = glyph_size;
+    let emitted_cols = 6u32;
 
     let source = image::open(&source_path)
         .expect("source image opens")
         .to_rgba8();
-    let expected_grid = fit_alpha_to_canvas(&source, 3 * glyph_size, 3 * glyph_size);
+    let expected_grid = fit_alpha_to_canvas(&source, emitted_cols * tile_width, 3 * tile_height);
 
     for glyph in &glyphs {
         let tile = glyph
@@ -1448,10 +1471,11 @@ fn preprocess_composition_tiles_use_global_grid_scaling() {
             .expect("all glyphs should be composition tiles");
         let expected_coverage = crop_expected_coverage_tile(
             &expected_grid,
-            3 * glyph_size,
-            (tile.col as u32) * glyph_size,
-            (tile.row as u32) * glyph_size,
-            glyph_size,
+            emitted_cols * tile_width,
+            (tile.col as u32) * tile_width,
+            (tile.row as u32) * tile_height,
+            tile_width,
+            tile_height,
         );
         assert_eq!(
             glyph.coverage, expected_coverage,
@@ -1480,6 +1504,7 @@ fn preprocess_composition_tiles_keep_raw_internal_threshold_gradient() {
     let glyphs =
         preprocess_sources_with_compositions(&[source_path], &input_dir, 16, &compositions)
             .expect("composition preprocess succeeds");
+    let tile_width = terminal_cell_width_for_height(16) as usize;
 
     let left = glyphs
         .iter()
@@ -1487,7 +1512,7 @@ fn preprocess_composition_tiles_keep_raw_internal_threshold_gradient() {
             glyph
                 .composition_tile
                 .as_ref()
-                .is_some_and(|tile| tile.row == 0 && tile.col == 0)
+                .is_some_and(|tile| tile.row == 0 && tile.col == 1)
         })
         .expect("left tile exists");
     let right = glyphs
@@ -1496,12 +1521,12 @@ fn preprocess_composition_tiles_keep_raw_internal_threshold_gradient() {
             glyph
                 .composition_tile
                 .as_ref()
-                .is_some_and(|tile| tile.row == 0 && tile.col == 1)
+                .is_some_and(|tile| tile.row == 0 && tile.col == 2)
         })
         .expect("right tile exists");
 
-    let left_edge = left.coverage[8 * 16 + 15];
-    let right_edge = right.coverage[8 * 16];
+    let left_edge = left.coverage[8 * tile_width + tile_width - 1];
+    let right_edge = right.coverage[8 * tile_width];
     assert!(
         left_edge < right_edge,
         "fit-before-split should preserve raw seam gradient (left={left_edge}, right={right_edge})"
@@ -1535,12 +1560,12 @@ fn build_outputs_composition_preserves_tile_offsets_in_ttf() {
 
     let left_cp = mapping
         .iter()
-        .find(|entry| entry.source_file == "split.png#compose:1x2:0:0")
+        .find(|entry| entry.source_file == "split.png#compose:1x4:0:0")
         .map(|entry| parse_codepoint(&entry.codepoint).expect("left codepoint parses"))
         .expect("left composition tile is mapped");
     let right_cp = mapping
         .iter()
-        .find(|entry| entry.source_file == "split.png#compose:1x2:0:1")
+        .find(|entry| entry.source_file == "split.png#compose:1x4:0:3")
         .map(|entry| parse_codepoint(&entry.codepoint).expect("right codepoint parses"))
         .expect("right composition tile is mapped");
 
@@ -1600,16 +1625,16 @@ fn build_outputs_composition_keeps_internal_ttf_edges_within_glyph_cell() {
     .expect("mapping parses");
     let ttf = fs::read(summary.ttf_path).expect("ttf is written");
     let face = ttf_parser::Face::parse(&ttf, 0).expect("ttf parses");
-    let units_per_em = i16::try_from(face.units_per_em()).expect("units_per_em fits i16");
+    let cell_advance = i16::try_from(face.units_per_em() / 2).expect("cell advance fits i16");
 
     let left_cp = mapping
         .iter()
-        .find(|entry| entry.source_file == "seam.png#compose:1x2:0:0")
+        .find(|entry| entry.source_file == "seam.png#compose:1x4:0:1")
         .map(|entry| parse_codepoint(&entry.codepoint).expect("left codepoint parses"))
         .expect("left tile is mapped");
     let right_cp = mapping
         .iter()
-        .find(|entry| entry.source_file == "seam.png#compose:1x2:0:1")
+        .find(|entry| entry.source_file == "seam.png#compose:1x4:0:2")
         .map(|entry| parse_codepoint(&entry.codepoint).expect("right codepoint parses"))
         .expect("right tile is mapped");
 
@@ -1627,24 +1652,24 @@ fn build_outputs_composition_keeps_internal_ttf_edges_within_glyph_cell() {
         .expect("right glyph has bounds");
 
     assert!(
-        left_bounds.x_max <= units_per_em,
+        left_bounds.x_max <= cell_advance,
         "left tile should not cross into the next glyph cell"
     );
     assert!(
-        left_bounds.x_max >= units_per_em - units_per_em / 16,
+        left_bounds.x_max >= cell_advance - cell_advance / 8,
         "left tile seam should stay near the right boundary (x_max={}, units_per_em={})",
         left_bounds.x_max,
-        units_per_em
+        face.units_per_em()
     );
     assert!(
         right_bounds.x_min >= 0,
         "right tile should not cross into the previous glyph cell"
     );
     assert!(
-        right_bounds.x_min <= units_per_em / 16,
+        right_bounds.x_min <= cell_advance / 8,
         "right tile seam should stay near the left boundary (x_min={}, units_per_em={})",
         right_bounds.x_min,
-        units_per_em
+        face.units_per_em()
     );
 
     fs::remove_dir_all(project_dir).expect("temp project dir is removed");
@@ -1686,12 +1711,12 @@ fn build_outputs_composition_overlaps_internal_ttf_edges_vertically() {
 
     let top_cp = mapping
         .iter()
-        .find(|entry| entry.source_file == "vseam.png#compose:2x1:0:0")
+        .find(|entry| entry.source_file == "vseam.png#compose:2x2:0:0")
         .map(|entry| parse_codepoint(&entry.codepoint).expect("top codepoint parses"))
         .expect("top tile is mapped");
     let bottom_cp = mapping
         .iter()
-        .find(|entry| entry.source_file == "vseam.png#compose:2x1:1:0")
+        .find(|entry| entry.source_file == "vseam.png#compose:2x2:1:0")
         .map(|entry| parse_codepoint(&entry.codepoint).expect("bottom codepoint parses"))
         .expect("bottom tile is mapped");
 
@@ -1750,7 +1775,7 @@ fn build_outputs_empty_composition_tile_keeps_ttf_advance() {
     .expect("mapping parses");
     let middle_cp = mapping
         .iter()
-        .find(|entry| entry.source_file == "empty-middle.png#compose:1x3:0:1")
+        .find(|entry| entry.source_file == "empty-middle.png#compose:1x6:0:3")
         .map(|entry| parse_codepoint(&entry.codepoint).expect("middle codepoint parses"))
         .expect("middle tile is mapped");
 
@@ -1766,7 +1791,7 @@ fn build_outputs_empty_composition_tile_keeps_ttf_advance() {
     );
     assert_eq!(
         face.glyph_hor_advance(glyph_id),
-        Some(face.units_per_em()),
+        Some(face.units_per_em() / 2),
         "empty tile must still reserve one full glyph cell"
     );
 
@@ -1794,10 +1819,14 @@ fn build_outputs_remaps_noncontiguous_composition_lock_into_contiguous_run() {
         "project_id": "test-composition-lock-remap",
         "codepoint_start": "U+100000",
         "entries": [
-            { "source_file": "icon.png#compose:2x2:0:0", "codepoint": "U+100000", "image_fingerprint": "fnv1a64:a", "active": true },
-            { "source_file": "icon.png#compose:2x2:0:1", "codepoint": "U+100002", "image_fingerprint": "fnv1a64:b", "active": true },
-            { "source_file": "icon.png#compose:2x2:1:0", "codepoint": "U+100001", "image_fingerprint": "fnv1a64:c", "active": true },
-            { "source_file": "icon.png#compose:2x2:1:1", "codepoint": "U+100003", "image_fingerprint": "fnv1a64:d", "active": true }
+            { "source_file": "icon.png#compose:2x4:0:0", "codepoint": "U+100000", "image_fingerprint": "fnv1a64:a", "active": true },
+            { "source_file": "icon.png#compose:2x4:0:1", "codepoint": "U+100002", "image_fingerprint": "fnv1a64:b", "active": true },
+            { "source_file": "icon.png#compose:2x4:0:2", "codepoint": "U+100001", "image_fingerprint": "fnv1a64:c", "active": true },
+            { "source_file": "icon.png#compose:2x4:0:3", "codepoint": "U+100004", "image_fingerprint": "fnv1a64:d", "active": true },
+            { "source_file": "icon.png#compose:2x4:1:0", "codepoint": "U+100003", "image_fingerprint": "fnv1a64:e", "active": true },
+            { "source_file": "icon.png#compose:2x4:1:1", "codepoint": "U+100006", "image_fingerprint": "fnv1a64:f", "active": true },
+            { "source_file": "icon.png#compose:2x4:1:2", "codepoint": "U+100005", "image_fingerprint": "fnv1a64:g", "active": true },
+            { "source_file": "icon.png#compose:2x4:1:3", "codepoint": "U+100007", "image_fingerprint": "fnv1a64:h", "active": true }
         ]
     });
     fs::write(
@@ -1881,7 +1910,6 @@ fn build_outputs_centers_non_square_glyphs_in_ttf_line_box() {
         face.descender() < 0,
         "icon font should reserve descender space"
     );
-    let expected_x_min_max_sum = i32::from(face.units_per_em());
     let expected_y_min_max_sum = i32::from(face.ascender()) + i32::from(face.descender());
 
     for idx in 0..summary.glyph_count {
@@ -1890,6 +1918,10 @@ fn build_outputs_centers_non_square_glyphs_in_ttf_line_box() {
             .glyph_index(char::from_u32(codepoint).expect("codepoint is valid"))
             .expect("glyph is mapped");
         let bounds = face.glyph_bounding_box(glyph_id).expect("glyph has bounds");
+        let expected_x_min_max_sum = i32::from(
+            face.glyph_hor_advance(glyph_id)
+                .expect("glyph has horizontal advance"),
+        );
 
         assert_eq!(
             i32::from(bounds.x_min) + i32::from(bounds.x_max),
@@ -2550,8 +2582,9 @@ fn handle_key_updates_and_clears_selected_threshold_override() {
             source_key: "icon.png".to_string(),
             source_parent_key: "icon.png".to_string(),
             glyph_name: "icon".to_string(),
-            size: 8,
-            coverage: vec![0; 64],
+            width: 4,
+            height: 8,
+            coverage: vec![0; 32],
             image_fingerprint: "fnv1a64:test".to_string(),
             composition_tile: None,
         },
@@ -2627,8 +2660,9 @@ fn handle_key_supports_keypad_plus_minus_aliases_for_threshold() {
             source_key: "icon.png".to_string(),
             source_parent_key: "icon.png".to_string(),
             glyph_name: "icon".to_string(),
-            size: 8,
-            coverage: vec![0; 64],
+            width: 4,
+            height: 8,
+            coverage: vec![0; 32],
             image_fingerprint: "fnv1a64:test".to_string(),
             composition_tile: None,
         },
@@ -2691,8 +2725,9 @@ fn tab_cycles_panels_and_glyph_controls_stay_in_glyph_view() {
             source_key: "icon.png".to_string(),
             source_parent_key: "icon.png".to_string(),
             glyph_name: "icon".to_string(),
-            size: 8,
-            coverage: vec![0; 64],
+            width: 4,
+            height: 8,
+            coverage: vec![0; 32],
             image_fingerprint: "fnv1a64:test".to_string(),
             composition_tile: None,
         },

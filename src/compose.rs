@@ -3,7 +3,7 @@ use std::fs;
 use std::path::Path;
 
 use crate::glyph_debug;
-use crate::image_pipeline::preprocess_composition_grid_source;
+use crate::image_pipeline::{preprocess_composition_grid_source, terminal_cell_width_for_height};
 
 #[derive(Debug, Clone)]
 pub(crate) struct ComposedTile {
@@ -11,6 +11,8 @@ pub(crate) struct ComposedTile {
     pub(crate) cols: usize,
     pub(crate) row: usize,
     pub(crate) col: usize,
+    pub(crate) width: u32,
+    pub(crate) height: u32,
     pub(crate) coverage: Vec<u8>,
     pub(crate) fingerprint: String,
 }
@@ -19,10 +21,10 @@ pub(crate) fn compose_tiles(
     source_path: &Path,
     source_key: &str,
     rows: usize,
-    cols: usize,
+    logical_cols: usize,
     glyph_size: u32,
 ) -> Result<Vec<ComposedTile>> {
-    if rows == 0 || cols == 0 {
+    if rows == 0 || logical_cols == 0 {
         bail!("composition rows/cols must be > 0");
     }
     if glyph_size == 0 {
@@ -32,37 +34,59 @@ pub(crate) fn compose_tiles(
     let source_bytes = fs::read(source_path)
         .with_context(|| format!("failed to read {}", source_path.display()))?;
 
-    // Composite flow: fit once to the full grid area, then split into fixed tiles
-    // without any per-tile fit/centering so tiles stay perfectly contiguous.
-    let grid_coverage =
-        preprocess_composition_grid_source(source_path, rows, cols, glyph_size, source_key)?;
-    let grid_width = glyph_size
+    // Portable composition flow:
+    // 1) fit once on the full grid (no per-tile fit)
+    // 2) each logical tile becomes two one-cell glyph tiles (left/right halves)
+    // This doubles horizontal tile count but keeps per-glyph rendering safely one-cell.
+    let cols = logical_cols
+        .checked_mul(2)
+        .ok_or_else(|| anyhow::anyhow!("composition emitted cols overflow"))?;
+    let glyph_width = terminal_cell_width_for_height(glyph_size);
+    let glyph_height = glyph_size;
+    let grid_coverage = preprocess_composition_grid_source(
+        source_path,
+        rows,
+        cols,
+        glyph_width,
+        glyph_height,
+        source_key,
+    )?;
+    let grid_width = glyph_width
         .checked_mul(u32::try_from(cols).context("composition cols overflow u32")?)
         .context("composition grid width overflow")?;
 
     let mut tiles = Vec::with_capacity(rows.saturating_mul(cols));
     for row in 0..rows {
-        let y0 = glyph_size
+        let y0 = glyph_height
             .checked_mul(u32::try_from(row).context("composition row overflow u32")?)
             .context("composition y offset overflow")?;
         for col in 0..cols {
-            let x0 = glyph_size
+            let x0 = glyph_width
                 .checked_mul(u32::try_from(col).context("composition col overflow u32")?)
                 .context("composition x offset overflow")?;
 
-            let coverage = crop_coverage_tile(&grid_coverage, grid_width, x0, y0, glyph_size);
+            let coverage = crop_coverage_tile(
+                &grid_coverage,
+                grid_width,
+                x0,
+                y0,
+                glyph_width,
+                glyph_height,
+            );
+            let logical_col = col / 2;
+            let half = if col % 2 == 0 { "l" } else { "r" };
             glyph_debug::write_coverage_png(
                 "08_grid_tile_coverage",
-                &format!("{source_key}_r{}_c{}", row + 1, col + 1),
-                glyph_size,
-                glyph_size,
+                &format!("{source_key}_r{}_c{}_{}", row + 1, logical_col + 1, half),
+                glyph_width,
+                glyph_height,
                 &coverage,
             );
             glyph_debug::log_step(
                 "grid.tile",
                 format!(
-                    "source={source_key} tile=({row},{col}) offset=({}, {}) size={}x{}",
-                    x0, y0, glyph_size, glyph_size
+                    "source={source_key} tile=({row},{col}) logical_col={} half={} offset=({}, {}) size={}x{}",
+                    logical_col, half, x0, y0, glyph_width, glyph_height
                 ),
             );
             let fingerprint = tile_fingerprint(&source_bytes, rows, cols, row, col);
@@ -72,16 +96,18 @@ pub(crate) fn compose_tiles(
                 cols,
                 row,
                 col,
+                width: glyph_width,
+                height: glyph_height,
                 coverage,
                 fingerprint,
             });
         }
     }
 
-    let grid_height = glyph_size
+    let grid_height = glyph_height
         .checked_mul(u32::try_from(rows).context("composition rows overflow u32")?)
         .context("composition grid height overflow")?;
-    let assembled = assemble_tiles_coverage(&tiles, rows, cols, glyph_size);
+    let assembled = assemble_tiles_coverage(&tiles, rows, cols, glyph_width, glyph_height);
     glyph_debug::write_coverage_png(
         "09_grid_tiles_assembled",
         source_key,
@@ -91,7 +117,13 @@ pub(crate) fn compose_tiles(
     );
 
     let mut assembled_bordered = assembled.clone();
-    add_tile_borders(&mut assembled_bordered, rows, cols, glyph_size);
+    add_tile_borders(
+        &mut assembled_bordered,
+        rows,
+        cols,
+        glyph_width,
+        glyph_height,
+    );
     glyph_debug::write_coverage_png(
         "10_grid_tiles_assembled_bordered",
         source_key,
@@ -102,7 +134,10 @@ pub(crate) fn compose_tiles(
 
     glyph_debug::log_step(
         "grid.assembled",
-        format!("source={source_key} size={}x{}", grid_width, grid_height),
+        format!(
+            "source={source_key} logical={}x{} emitted={}x{} size={}x{}",
+            rows, logical_cols, rows, cols, grid_width, grid_height
+        ),
     );
 
     Ok(tiles)
@@ -112,21 +147,23 @@ fn assemble_tiles_coverage(
     tiles: &[ComposedTile],
     rows: usize,
     cols: usize,
-    glyph_size: u32,
+    glyph_width: u32,
+    glyph_height: u32,
 ) -> Vec<u8> {
-    let tile_size = glyph_size as usize;
-    let width = cols.saturating_mul(tile_size);
-    let height = rows.saturating_mul(tile_size);
+    let tile_width = glyph_width as usize;
+    let tile_height = glyph_height as usize;
+    let width = cols.saturating_mul(tile_width);
+    let height = rows.saturating_mul(tile_height);
     let mut assembled = vec![0u8; width.saturating_mul(height)];
 
     for tile in tiles {
-        let x0 = tile.col.saturating_mul(tile_size);
-        let y0 = tile.row.saturating_mul(tile_size);
-        for y in 0..tile_size {
+        let x0 = tile.col.saturating_mul(tile_width);
+        let y0 = tile.row.saturating_mul(tile_height);
+        for y in 0..tile_height {
             let dst_start = (y0 + y).saturating_mul(width) + x0;
-            let src_start = y.saturating_mul(tile_size);
-            let dst_end = dst_start + tile_size;
-            let src_end = src_start + tile_size;
+            let src_start = y.saturating_mul(tile_width);
+            let dst_end = dst_start + tile_width;
+            let src_end = src_start + tile_width;
             if dst_end <= assembled.len() && src_end <= tile.coverage.len() {
                 assembled[dst_start..dst_end].copy_from_slice(&tile.coverage[src_start..src_end]);
             }
@@ -136,23 +173,30 @@ fn assemble_tiles_coverage(
     assembled
 }
 
-fn add_tile_borders(coverage: &mut [u8], rows: usize, cols: usize, glyph_size: u32) {
-    let tile_size = glyph_size as usize;
-    if tile_size == 0 || rows == 0 || cols == 0 {
+fn add_tile_borders(
+    coverage: &mut [u8],
+    rows: usize,
+    cols: usize,
+    glyph_width: u32,
+    glyph_height: u32,
+) {
+    let tile_width = glyph_width as usize;
+    let tile_height = glyph_height as usize;
+    if tile_width == 0 || tile_height == 0 || rows == 0 || cols == 0 {
         return;
     }
-    let width = cols.saturating_mul(tile_size);
-    let height = rows.saturating_mul(tile_size);
+    let width = cols.saturating_mul(tile_width);
+    let height = rows.saturating_mul(tile_height);
     if coverage.len() != width.saturating_mul(height) {
         return;
     }
 
     for row in 0..rows {
-        let y0 = row.saturating_mul(tile_size);
-        let y1 = y0 + tile_size - 1;
+        let y0 = row.saturating_mul(tile_height);
+        let y1 = y0 + tile_height - 1;
         for col in 0..cols {
-            let x0 = col.saturating_mul(tile_size);
-            let x1 = x0 + tile_size - 1;
+            let x0 = col.saturating_mul(tile_width);
+            let x1 = x0 + tile_width - 1;
 
             for x in x0..=x1 {
                 coverage[y0 * width + x] = 255;
@@ -171,17 +215,19 @@ fn crop_coverage_tile(
     grid_width: u32,
     x0: u32,
     y0: u32,
-    glyph_size: u32,
+    glyph_width: u32,
+    glyph_height: u32,
 ) -> Vec<u8> {
     let grid_width = grid_width as usize;
     let x0 = x0 as usize;
     let y0 = y0 as usize;
-    let glyph_size = glyph_size as usize;
-    let mut out = Vec::with_capacity(glyph_size.saturating_mul(glyph_size));
+    let glyph_width = glyph_width as usize;
+    let glyph_height = glyph_height as usize;
+    let mut out = Vec::with_capacity(glyph_width.saturating_mul(glyph_height));
 
-    for y in 0..glyph_size {
+    for y in 0..glyph_height {
         let start = (y0 + y) * grid_width + x0;
-        let end = start + glyph_size;
+        let end = start + glyph_width;
         out.extend_from_slice(&coverage[start..end]);
     }
 

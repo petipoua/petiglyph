@@ -1,3 +1,5 @@
+use crossterm::terminal;
+use image::imageops::FilterType;
 use image::{GrayImage, RgbaImage};
 use std::fs::{self, OpenOptions};
 use std::io::Write;
@@ -6,6 +8,7 @@ use std::sync::{Mutex, OnceLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 const DEBUG_ENV: &str = "PETIGLYPH_DEBUG";
+const DEBUG_CELL_ENV: &str = "PETIGLYPH_DEBUG_CELL";
 const DEBUG_DIR_NAME: &str = "debug";
 const DEBUG_ARTIFACTS_DIR_NAME: &str = "artifacts";
 const DEBUG_LOG_FILE_NAME: &str = "pipeline.log";
@@ -15,6 +18,8 @@ struct DebugSession {
     artifacts_dir: PathBuf,
     log_path: PathBuf,
     sequence: u64,
+    terminal_cell_width_px: u32,
+    terminal_cell_height_px: u32,
 }
 
 static DEBUG_SESSION: OnceLock<Mutex<Option<DebugSession>>> = OnceLock::new();
@@ -74,7 +79,12 @@ pub(crate) fn begin_session(project_dir: &Path, context: &str) {
         artifacts_dir,
         log_path,
         sequence: 0,
+        terminal_cell_width_px: 1,
+        terminal_cell_height_px: 2,
     };
+    let (cell_w, cell_h, cell_source) = detect_terminal_cell_geometry();
+    session.terminal_cell_width_px = cell_w;
+    session.terminal_cell_height_px = cell_h;
 
     let now = debug_timestamp();
     let _ = fs::write(
@@ -87,7 +97,10 @@ pub(crate) fn begin_session(project_dir: &Path, context: &str) {
         &session.log_path,
         seq,
         "session",
-        &format!("context={context}"),
+        &format!(
+            "context={context} cell={}x{} source={}",
+            session.terminal_cell_width_px, session.terminal_cell_height_px, cell_source
+        ),
     );
 
     let lock = session_lock();
@@ -178,6 +191,31 @@ pub(crate) fn write_coverage_png(step: &str, label: &str, width: u32, height: u3
                 &format!("coverage {}x{} {}", width, height, path.display()),
             );
         }
+
+        if let Some(terminal_image) = render_terminal_preview(
+            &image,
+            session.terminal_cell_width_px,
+            session.terminal_cell_height_px,
+        ) {
+            let preview_seq = next_sequence(session);
+            let preview_filename = format!("{preview_seq:05}_{step}_{label}_terminal_preview.png");
+            let preview_path = session.artifacts_dir.join(preview_filename);
+            if terminal_image.save(&preview_path).is_ok() {
+                append_log_line(
+                    &session.log_path,
+                    preview_seq,
+                    "artifact",
+                    &format!(
+                        "coverage-terminal {}x{} cell={}x{} {}",
+                        terminal_image.width(),
+                        terminal_image.height(),
+                        session.terminal_cell_width_px,
+                        session.terminal_cell_height_px,
+                        preview_path.display()
+                    ),
+                );
+            }
+        }
     });
 }
 
@@ -211,7 +249,106 @@ pub(crate) fn write_bitmap_png(step: &str, label: &str, width: u32, height: u32,
                 &format!("bitmap {}x{} {}", width, height, path.display()),
             );
         }
+
+        if let Some(terminal_image) = render_terminal_preview(
+            &image,
+            session.terminal_cell_width_px,
+            session.terminal_cell_height_px,
+        ) {
+            let preview_seq = next_sequence(session);
+            let preview_filename = format!("{preview_seq:05}_{step}_{label}_terminal_preview.png");
+            let preview_path = session.artifacts_dir.join(preview_filename);
+            if terminal_image.save(&preview_path).is_ok() {
+                append_log_line(
+                    &session.log_path,
+                    preview_seq,
+                    "artifact",
+                    &format!(
+                        "bitmap-terminal {}x{} cell={}x{} {}",
+                        terminal_image.width(),
+                        terminal_image.height(),
+                        session.terminal_cell_width_px,
+                        session.terminal_cell_height_px,
+                        preview_path.display()
+                    ),
+                );
+            }
+        }
     });
+}
+
+fn render_terminal_preview(
+    image: &GrayImage,
+    cell_width_px: u32,
+    cell_height_px: u32,
+) -> Option<GrayImage> {
+    if cell_width_px == 0 || cell_height_px == 0 {
+        return None;
+    }
+
+    let width = image.width();
+    let height = image.height();
+    if width == 0 || height == 0 {
+        return None;
+    }
+
+    let scaled_w = (u64::from(width) * u64::from(cell_width_px) * 2
+        + u64::from(cell_height_px) / 2)
+        / u64::from(cell_height_px);
+    let preview_w = u32::try_from(scaled_w).ok()?.max(1);
+    if preview_w == width {
+        return Some(image.clone());
+    }
+
+    Some(image::imageops::resize(
+        image,
+        preview_w,
+        height,
+        FilterType::Triangle,
+    ))
+}
+
+fn detect_terminal_cell_geometry() -> (u32, u32, String) {
+    if let Some((w, h)) = parse_cell_geometry_override() {
+        return (w, h, format!("env:{DEBUG_CELL_ENV}"));
+    }
+
+    if let Ok(size) = terminal::window_size() {
+        if size.columns > 0 && size.rows > 0 && size.width > 0 && size.height > 0 {
+            let cell_w = u32::from(size.width).checked_div(u32::from(size.columns));
+            let cell_h = u32::from(size.height).checked_div(u32::from(size.rows));
+            if let (Some(cell_w), Some(cell_h)) = (cell_w, cell_h) {
+                if cell_w > 0 && cell_h > 0 {
+                    return (
+                        cell_w,
+                        cell_h,
+                        format!(
+                            "terminal-window-size {}x{} px over {}x{} cells",
+                            size.width, size.height, size.columns, size.rows
+                        ),
+                    );
+                }
+            }
+        }
+    }
+
+    // Conservative fallback: most terminal cells are notably taller than wide.
+    (1, 2, "fallback:1x2".to_string())
+}
+
+fn parse_cell_geometry_override() -> Option<(u32, u32)> {
+    let raw = std::env::var(DEBUG_CELL_ENV).ok()?;
+    let raw = raw.trim();
+    if raw.is_empty() {
+        return None;
+    }
+    let (w, h) = raw.split_once('x')?;
+    let w = w.trim().parse::<u32>().ok()?;
+    let h = h.trim().parse::<u32>().ok()?;
+    if w == 0 || h == 0 {
+        return None;
+    }
+    Some((w, h))
 }
 
 fn next_sequence(session: &mut DebugSession) -> u64 {

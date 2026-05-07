@@ -12,7 +12,9 @@ use walkdir::WalkDir;
 
 use crate::compose::compose_tiles;
 use crate::glyph_debug;
-use crate::image_pipeline::{coverage_map_from_image, preprocess_standard_source};
+use crate::image_pipeline::{
+    coverage_map_from_image, preprocess_standard_source, terminal_cell_width_for_height,
+};
 use crate::install::reserve_project_unicode_range;
 use crate::project::{CompositionDef, RuntimeConfig, format_codepoint, parse_codepoint};
 
@@ -22,7 +24,8 @@ pub(crate) struct PreprocessedGlyph {
     pub(crate) source_key: String,
     pub(crate) source_parent_key: String,
     pub(crate) glyph_name: String,
-    pub(crate) size: u32,
+    pub(crate) width: u32,
+    pub(crate) height: u32,
     pub(crate) coverage: Vec<u8>,
     pub(crate) image_fingerprint: String,
     pub(crate) composition_tile: Option<CompositionTileInfo>,
@@ -38,7 +41,8 @@ pub(crate) struct CompositionTileInfo {
 
 #[derive(Debug, Clone)]
 pub(crate) struct GlyphBitmap {
-    pub(crate) size: u32,
+    pub(crate) width: u32,
+    pub(crate) height: u32,
     pub(crate) pixels: Vec<bool>,
 }
 
@@ -870,7 +874,8 @@ pub(crate) fn preprocess_sources_with_compositions(
                     source_key: tile_source_key,
                     source_parent_key: source_key.clone(),
                     glyph_name: tile_name,
-                    size: glyph_size,
+                    width: tile.width,
+                    height: tile.height,
                     coverage: tile.coverage,
                     image_fingerprint: tile.fingerprint,
                     composition_tile: Some(CompositionTileInfo {
@@ -886,7 +891,9 @@ pub(crate) fn preprocess_sources_with_compositions(
         }
 
         glyph_debug::log_step("source.standard", format!("source={source_key}"));
-        let coverage = preprocess_standard_source(source, glyph_size, &source_key)?;
+        let glyph_width = terminal_cell_width_for_height(glyph_size);
+        let glyph_height = glyph_size;
+        let coverage = preprocess_standard_source(source, glyph_width, glyph_height, &source_key)?;
         let glyph_name = unique_glyph_name(source, &mut used_names);
         let image_fingerprint = fingerprint_source(source)?;
         out.push(PreprocessedGlyph {
@@ -894,7 +901,8 @@ pub(crate) fn preprocess_sources_with_compositions(
             source_key: source_key.clone(),
             source_parent_key: source_key.clone(),
             glyph_name,
-            size: glyph_size,
+            width: glyph_width,
+            height: glyph_height,
             coverage,
             image_fingerprint,
             composition_tile: None,
@@ -939,22 +947,23 @@ fn threshold_bitmap(glyph: &PreprocessedGlyph, threshold: u8) -> GlyphBitmap {
     glyph_debug::write_bitmap_png(
         "10_threshold_bitmap",
         &glyph.glyph_name,
-        glyph.size,
-        glyph.size,
+        glyph.width,
+        glyph.height,
         &pixels,
     );
     GlyphBitmap {
-        size: glyph.size,
+        width: glyph.width,
+        height: glyph.height,
         pixels,
     }
 }
 
 fn write_preview_png(path: &Path, bitmap: &GlyphBitmap) -> Result<()> {
-    let mut img = RgbaImage::from_pixel(bitmap.size, bitmap.size, Rgba([255, 255, 255, 0]));
+    let mut img = RgbaImage::from_pixel(bitmap.width, bitmap.height, Rgba([255, 255, 255, 0]));
 
-    for y in 0..bitmap.size as usize {
-        for x in 0..bitmap.size as usize {
-            let idx = y * bitmap.size as usize + x;
+    for y in 0..bitmap.height as usize {
+        for x in 0..bitmap.width as usize {
+            let idx = y * bitmap.width as usize + x;
             if bitmap.pixels[idx] {
                 img.put_pixel(x as u32, y as u32, Rgba([0, 0, 0, 255]));
             }
@@ -976,13 +985,17 @@ fn write_bdf(
     let metrics = font_vertical_metrics(
         u16::try_from(glyph_size).context("glyph_size is too large for BDF export")?,
     );
+    let glyph_width = terminal_cell_width_for_height(glyph_size);
 
     out.push_str("STARTFONT 2.1\n");
-    out.push_str(&format!("FONT {}\n", bdf_font_name(font_name, glyph_size)));
+    out.push_str(&format!(
+        "FONT {}\n",
+        bdf_font_name(font_name, glyph_width, glyph_size)
+    ));
     out.push_str(&format!("SIZE {} 75 75\n", glyph_size));
     out.push_str(&format!(
         "FONTBOUNDINGBOX {} {} 0 {}\n",
-        glyph_size, glyph_size, metrics.descent
+        glyph_width, glyph_size, metrics.descent
     ));
     out.push_str("STARTPROPERTIES 2\n");
     out.push_str(&format!("FONT_ASCENT {}\n", metrics.ascent));
@@ -994,10 +1007,10 @@ fn write_bdf(
         out.push_str(&format!("STARTCHAR {}\n", name));
         out.push_str(&format!("ENCODING {}\n", codepoint));
         out.push_str("SWIDTH 500 0\n");
-        out.push_str(&format!("DWIDTH {} 0\n", glyph_size));
+        out.push_str(&format!("DWIDTH {} 0\n", bitmap.width));
         out.push_str(&format!(
             "BBX {} {} 0 {}\n",
-            glyph_size, glyph_size, metrics.descent
+            bitmap.width, bitmap.height, metrics.descent
         ));
         out.push_str("BITMAP\n");
         out.push_str(&bitmap_to_bdf_rows(bitmap));
@@ -1077,35 +1090,52 @@ fn build_ttf(
     let units_per_em =
         u16::try_from(units_per_em).context("glyph_size is too large for TTF export")?;
     let vertical_metrics = font_vertical_metrics(units_per_em);
+    let glyph_width = terminal_cell_width_for_height(glyph_size);
+    let cell_advance_width = u16::try_from(
+        glyph_width
+            .checked_mul(16)
+            .context("glyph width is too large for TTF export")?,
+    )
+    .context("glyph width is too large for TTF export")?;
 
     let mut ttf_glyphs = Vec::with_capacity(glyphs.len() + 2);
     ttf_glyphs.push(bitmap_glyph_to_ttf(
-        &notdef_bitmap(glyph_size),
+        &notdef_bitmap(glyph_width, glyph_size),
         None,
         units_per_em,
         vertical_metrics,
-        units_per_em,
+        cell_advance_width,
         TtfGlyphOptions::centered(),
     )?);
     ttf_glyphs.push(bitmap_glyph_to_ttf(
         &GlyphBitmap {
-            size: glyph_size,
-            pixels: vec![false; (glyph_size as usize) * (glyph_size as usize)],
+            width: glyph_width,
+            height: glyph_size,
+            pixels: vec![false; (glyph_width as usize).saturating_mul(glyph_size as usize)],
         },
         Some(0x0020),
         units_per_em,
         vertical_metrics,
-        units_per_em / 2,
+        cell_advance_width,
         TtfGlyphOptions::centered(),
     )?);
 
     for (idx, (_, codepoint, bitmap)) in glyphs.iter().enumerate() {
+        if bitmap.width != glyph_width || bitmap.height != glyph_size {
+            bail!(
+                "TTF export expected {}x{} glyph bitmap, got {}x{}",
+                glyph_width,
+                glyph_size,
+                bitmap.width,
+                bitmap.height
+            );
+        }
         ttf_glyphs.push(bitmap_glyph_to_ttf(
             bitmap,
             Some(*codepoint),
             units_per_em,
             vertical_metrics,
-            units_per_em,
+            cell_advance_width,
             glyph_options[idx],
         )?);
     }
@@ -1153,11 +1183,12 @@ fn build_ttf(
         max_contours = max_contours.max(glyph.contour_count);
         advance_width_max = advance_width_max.max(glyph.advance_width);
         min_left_side_bearing = min_left_side_bearing.min(glyph.left_side_bearing);
-        let right_side_bearing = glyph.advance_width as i32
-            - i32::from(glyph.left_side_bearing)
-            - i32::from(glyph.x_max);
+        let glyph_extent = i32::from(glyph.x_max) - i32::from(glyph.x_min);
+        let right_side_bearing =
+            i32::from(glyph.advance_width) - i32::from(glyph.left_side_bearing) - glyph_extent;
         min_right_side_bearing = min_right_side_bearing.min(right_side_bearing as i16);
-        x_max_extent = x_max_extent.max(glyph.left_side_bearing.saturating_add(glyph.x_max));
+        let extent = i32::from(glyph.left_side_bearing) + glyph_extent;
+        x_max_extent = x_max_extent.max(checked_i16(extent, "xMaxExtent")?);
 
         if !glyph.data.is_empty() {
             x_min = x_min.min(glyph.x_min);
@@ -1224,24 +1255,28 @@ fn build_ttf(
     build_sfnt(tables)
 }
 
-fn notdef_bitmap(size: u32) -> GlyphBitmap {
-    let mut pixels = vec![false; (size as usize) * (size as usize)];
-    let thickness = (size / 16).max(1);
+fn notdef_bitmap(width: u32, height: u32) -> GlyphBitmap {
+    let mut pixels = vec![false; (width as usize).saturating_mul(height as usize)];
+    let thickness = (height / 16).max(1);
 
-    for y in 0..size {
-        for x in 0..size {
+    for y in 0..height {
+        for x in 0..width {
             let border = x < thickness
                 || y < thickness
-                || x >= size.saturating_sub(thickness)
-                || y >= size.saturating_sub(thickness);
+                || x >= width.saturating_sub(thickness)
+                || y >= height.saturating_sub(thickness);
             if border {
-                let idx = y as usize * size as usize + x as usize;
+                let idx = y as usize * width as usize + x as usize;
                 pixels[idx] = true;
             }
         }
     }
 
-    GlyphBitmap { size, pixels }
+    GlyphBitmap {
+        width,
+        height,
+        pixels,
+    }
 }
 
 fn bitmap_glyph_to_ttf(
@@ -1252,11 +1287,19 @@ fn bitmap_glyph_to_ttf(
     advance_width: u16,
     options: TtfGlyphOptions,
 ) -> Result<TtfGlyph> {
-    if bitmap.size == 0 {
+    if bitmap.width == 0 || bitmap.height == 0 {
         bail!("glyph bitmap size must be > 0 for TTF export");
     }
+    let expected_len = (bitmap.width as usize).saturating_mul(bitmap.height as usize);
+    if bitmap.pixels.len() != expected_len {
+        bail!(
+            "glyph bitmap pixel count mismatch: expected {}, got {}",
+            expected_len,
+            bitmap.pixels.len()
+        );
+    }
 
-    let pixel_units = i16::try_from(u32::from(units_per_em) / bitmap.size)
+    let pixel_units = i16::try_from(u32::from(units_per_em) / bitmap.height)
         .context("invalid pixel scaling for TTF export")?;
 
     let mut points = Vec::new();
@@ -1266,9 +1309,9 @@ fn bitmap_glyph_to_ttf(
     let mut x_max = i16::MIN;
     let mut y_max = i16::MIN;
 
-    for y in 0..bitmap.size as usize {
-        for x in 0..bitmap.size as usize {
-            if !bitmap.pixels[y * bitmap.size as usize + x] {
+    for y in 0..bitmap.height as usize {
+        for x in 0..bitmap.width as usize {
+            if !bitmap.pixels[y * bitmap.width as usize + x] {
                 continue;
             }
 
@@ -1899,8 +1942,8 @@ fn push_i64(buf: &mut Vec<u8>, value: i64) {
 }
 
 pub(crate) fn bitmap_to_bdf_rows(bitmap: &GlyphBitmap) -> String {
-    let width = bitmap.size as usize;
-    let height = bitmap.size as usize;
+    let width = bitmap.width as usize;
+    let height = bitmap.height as usize;
     let bytes_per_row = width.div_ceil(8);
 
     let mut rows = String::new();
@@ -1977,16 +2020,19 @@ fn slugify(input: &str) -> String {
     out.trim_matches('_').to_string()
 }
 
-fn bdf_font_name(font_name: &str, glyph_size: u32) -> String {
+fn bdf_font_name(font_name: &str, glyph_width: u32, glyph_height: u32) -> String {
     let slug = slugify(font_name);
-    let glyph_size = glyph_size.max(1);
+    let glyph_width = glyph_width.max(1);
+    let glyph_height = glyph_height.max(1);
+    let point_size = glyph_height.saturating_mul(10);
+    let average_width = glyph_width.saturating_mul(10);
     if slug.is_empty() {
         format!(
-            "-misc-petiglyph-medium-r-normal--{glyph_size}-{glyph_size}0-75-75-c-{glyph_size}0-iso10646-1"
+            "-misc-petiglyph-medium-r-normal--{glyph_height}-{point_size}-75-75-c-{average_width}-iso10646-1"
         )
     } else {
         format!(
-            "-misc-{slug}-medium-r-normal--{glyph_size}-{glyph_size}0-75-75-c-{glyph_size}0-iso10646-1"
+            "-misc-{slug}-medium-r-normal--{glyph_height}-{point_size}-75-75-c-{average_width}-iso10646-1"
         )
     }
 }
