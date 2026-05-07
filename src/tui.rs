@@ -2323,12 +2323,13 @@ fn draw_welcome_view(
                     && app.selected_installed_font_sub_index == sub_idx
                     && app.welcome_focus == WelcomeFocus::InstalledFontList;
 
-                if is_focused {
-                    selected_font_row_idx = font_rows.len();
-                }
-
                 let wrapped_lines =
                     installed_font_block_display_lines_with_reference(block_str, sample_wrap_width);
+
+                if is_focused {
+                    selected_font_row_idx = font_rows.len() + wrapped_lines.len().saturating_sub(1);
+                }
+
                 let base_style = if is_focused {
                     Style::default()
                         .bg(accent)
