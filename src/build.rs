@@ -49,13 +49,59 @@ pub(crate) struct GlyphBitmap {
 #[derive(Debug, Clone, Copy)]
 struct TtfGlyphOptions {
     center_in_line_box: bool,
+    edge_bleed: Option<TtfEdgeBleed>,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct TtfEdgeBleed {
+    left: bool,
+    right: bool,
+    top: bool,
+    bottom: bool,
 }
 
 impl TtfGlyphOptions {
     fn centered() -> Self {
         Self {
             center_in_line_box: true,
+            edge_bleed: None,
         }
+    }
+
+    fn composition_tile(tile: &CompositionTileInfo) -> Self {
+        let bleed = TtfEdgeBleed {
+            left: tile.col > 0,
+            right: tile.col + 1 < tile.cols,
+            top: tile.row > 0,
+            bottom: tile.row + 1 < tile.rows,
+        };
+        Self {
+            center_in_line_box: false,
+            edge_bleed: bleed.any().then_some(bleed),
+        }
+    }
+}
+
+impl TtfEdgeBleed {
+    fn any(self) -> bool {
+        self.left || self.right || self.top || self.bottom
+    }
+
+    fn describe(self) -> String {
+        let mut edges = Vec::with_capacity(4);
+        if self.left {
+            edges.push("left");
+        }
+        if self.right {
+            edges.push("right");
+        }
+        if self.top {
+            edges.push("top");
+        }
+        if self.bottom {
+            edges.push("bottom");
+        }
+        edges.join(",")
     }
 }
 
@@ -189,9 +235,12 @@ pub(crate) fn build_outputs_with_options(
         });
 
         bdf_glyphs.push((glyph.glyph_name.clone(), codepoint, bitmap));
-        ttf_glyph_options.push(TtfGlyphOptions {
-            center_in_line_box: glyph.composition_tile.is_none(),
-        });
+        ttf_glyph_options.push(
+            glyph
+                .composition_tile
+                .as_ref()
+                .map_or_else(TtfGlyphOptions::centered, TtfGlyphOptions::composition_tile),
+        );
     }
 
     fs::create_dir_all(&config.out_dir)
@@ -1120,7 +1169,7 @@ fn build_ttf(
         TtfGlyphOptions::centered(),
     )?);
 
-    for (idx, (_, codepoint, bitmap)) in glyphs.iter().enumerate() {
+    for (idx, (name, codepoint, bitmap)) in glyphs.iter().enumerate() {
         if bitmap.width != glyph_width || bitmap.height != glyph_size {
             bail!(
                 "TTF export expected {}x{} glyph bitmap, got {}x{}",
@@ -1128,6 +1177,18 @@ fn build_ttf(
                 glyph_size,
                 bitmap.width,
                 bitmap.height
+            );
+        }
+        if let Some(bleed) = glyph_options[idx].edge_bleed {
+            glyph_debug::log_step(
+                "ttf.bleed",
+                format!(
+                    "glyph={} codepoint=U+{:04X} edges={} units={}",
+                    name,
+                    *codepoint,
+                    bleed.describe(),
+                    ttf_edge_bleed_units(units_per_em, bitmap.height)?
+                ),
             );
         }
         ttf_glyphs.push(bitmap_glyph_to_ttf(
@@ -1301,6 +1362,13 @@ fn bitmap_glyph_to_ttf(
 
     let pixel_units = i16::try_from(u32::from(units_per_em) / bitmap.height)
         .context("invalid pixel scaling for TTF export")?;
+    let pixel_units_i32 = i32::from(pixel_units);
+    let bleed_units = options
+        .edge_bleed
+        .map(|_| ttf_edge_bleed_units(units_per_em, bitmap.height))
+        .transpose()?
+        .unwrap_or(0);
+    let bleed_units_i32 = i32::from(bleed_units);
 
     let mut points = Vec::new();
     let mut end_points = Vec::new();
@@ -1315,18 +1383,52 @@ fn bitmap_glyph_to_ttf(
                 continue;
             }
 
-            let x0 = i16::try_from(x)
-                .context("x coordinate overflow in TTF export")?
-                .saturating_mul(pixel_units);
-            let x1 = x0.saturating_add(pixel_units);
-            let top = i16::try_from(units_per_em)
-                .context("units_per_em overflow in TTF export")?
-                .saturating_sub(
-                    i16::try_from(y)
-                        .context("y coordinate overflow in TTF export")?
-                        .saturating_mul(pixel_units),
-                );
-            let bottom = top.saturating_sub(pixel_units);
+            let x_i32 = i32::try_from(x).context("x coordinate overflow in TTF export")?;
+            let y_i32 = i32::try_from(y).context("y coordinate overflow in TTF export")?;
+            let mut x0 = x_i32
+                .checked_mul(pixel_units_i32)
+                .context("x coordinate overflow in TTF export")?;
+            let mut x1 = x0
+                .checked_add(pixel_units_i32)
+                .context("x coordinate overflow in TTF export")?;
+            let mut top = i32::from(units_per_em)
+                .checked_sub(
+                    y_i32
+                        .checked_mul(pixel_units_i32)
+                        .context("y coordinate overflow in TTF export")?,
+                )
+                .context("y coordinate overflow in TTF export")?;
+            let mut bottom = top
+                .checked_sub(pixel_units_i32)
+                .context("y coordinate overflow in TTF export")?;
+
+            if let Some(bleed) = options.edge_bleed {
+                if bleed.left && x == 0 {
+                    x0 = x0
+                        .checked_sub(bleed_units_i32)
+                        .context("left TTF edge bleed overflow")?;
+                }
+                if bleed.right && x + 1 == bitmap.width as usize {
+                    x1 = x1
+                        .checked_add(bleed_units_i32)
+                        .context("right TTF edge bleed overflow")?;
+                }
+                if bleed.top && y == 0 {
+                    top = top
+                        .checked_add(bleed_units_i32)
+                        .context("top TTF edge bleed overflow")?;
+                }
+                if bleed.bottom && y + 1 == bitmap.height as usize {
+                    bottom = bottom
+                        .checked_sub(bleed_units_i32)
+                        .context("bottom TTF edge bleed overflow")?;
+                }
+            }
+
+            let x0 = checked_i16(x0, "x0 after TTF edge bleed")?;
+            let x1 = checked_i16(x1, "x1 after TTF edge bleed")?;
+            let top = checked_i16(top, "top after TTF edge bleed")?;
+            let bottom = checked_i16(bottom, "bottom after TTF edge bleed")?;
 
             let contour = [(x0, bottom), (x0, top), (x1, top), (x1, bottom)];
             for (px, py) in contour {
@@ -1431,6 +1533,15 @@ fn bitmap_glyph_to_ttf(
 
 fn center_shift(container_extent: i32, glyph_min_plus_max: i32) -> i32 {
     (container_extent - glyph_min_plus_max) / 2
+}
+
+fn ttf_edge_bleed_units(units_per_em: u16, bitmap_height: u32) -> Result<i16> {
+    if bitmap_height == 0 {
+        bail!("glyph bitmap height must be > 0 for TTF edge bleed");
+    }
+    let pixel_units = u32::from(units_per_em) / bitmap_height;
+    let bleed_units = pixel_units.max(u32::from(units_per_em) / 24).max(1);
+    i16::try_from(bleed_units).context("TTF edge bleed overflowed i16 range")
 }
 
 fn translate_points(points: &mut [(i16, i16)], x_shift: i32, y_shift: i32) -> Result<()> {

@@ -1595,7 +1595,7 @@ fn build_outputs_composition_preserves_tile_offsets_in_ttf() {
 }
 
 #[test]
-fn build_outputs_composition_keeps_internal_ttf_edges_within_glyph_cell() {
+fn build_outputs_composition_bleeds_internal_ttf_edges() {
     let project_dir = make_temp_dir("composition-ttf-overlap");
     let input_dir = project_dir.join("icons");
     fs::create_dir_all(&input_dir).expect("icons dir is created");
@@ -1651,23 +1651,33 @@ fn build_outputs_composition_keeps_internal_ttf_edges_within_glyph_cell() {
         )
         .expect("right glyph has bounds");
 
-    assert!(
-        left_bounds.x_max <= cell_advance,
-        "left tile should not cross into the next glyph cell"
+    assert_eq!(
+        face.glyph_hor_advance(
+            face.glyph_index(char::from_u32(left_cp).expect("left codepoint is valid"))
+                .expect("left glyph maps")
+        ),
+        Some(cell_advance as u16),
+        "bleed must not change the one-cell advance"
     );
     assert!(
-        left_bounds.x_max >= cell_advance - cell_advance / 8,
-        "left tile seam should stay near the right boundary (x_max={}, units_per_em={})",
+        left_bounds.x_max > cell_advance,
+        "left tile should bleed past the right cell edge (x_max={}, cell_advance={cell_advance})",
+        left_bounds.x_max
+    );
+    assert!(
+        left_bounds.x_max <= cell_advance + cell_advance / 4,
+        "left tile bleed should stay small (x_max={}, units_per_em={})",
         left_bounds.x_max,
         face.units_per_em()
     );
     assert!(
-        right_bounds.x_min >= 0,
-        "right tile should not cross into the previous glyph cell"
+        right_bounds.x_min < 0,
+        "right tile should bleed before the left cell edge (x_min={}, cell_advance={cell_advance})",
+        right_bounds.x_min
     );
     assert!(
-        right_bounds.x_min <= cell_advance / 8,
-        "right tile seam should stay near the left boundary (x_min={}, units_per_em={})",
+        right_bounds.x_min >= -(cell_advance / 4),
+        "right tile bleed should stay small (x_min={}, units_per_em={})",
         right_bounds.x_min,
         face.units_per_em()
     );
@@ -1737,8 +1747,8 @@ fn build_outputs_composition_overlaps_internal_ttf_edges_vertically() {
     // top_next = y_max(bottom) - (asc - desc)
     let next_line_top = i32::from(bottom_bounds.y_max) - (asc - desc);
     assert!(
-        i32::from(top_bounds.y_min) <= next_line_top,
-        "adjacent composition rows should overlap or touch vertically (top.y_min={}, next_line_top={next_line_top}, asc={asc}, desc={desc})",
+        i32::from(top_bounds.y_min) < next_line_top,
+        "adjacent composition rows should overlap vertically (top.y_min={}, next_line_top={next_line_top}, asc={asc}, desc={desc})",
         top_bounds.y_min
     );
 

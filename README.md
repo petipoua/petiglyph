@@ -393,6 +393,7 @@ For each grayscale coverage/bitmap artifact, Petiglyph now writes two PNGs:
 
 The debug session logs the cell geometry source at startup (for example `terminal-window-size ...` or `fallback:1x2`).
 You can force the debug terminal cell geometry with `PETIGLYPH_DEBUG_CELL=<width>x<height>` (example: `PETIGLYPH_DEBUG_CELL=7x14`).
+For composition grids, `ttf.bleed` log lines show which internal tile edges receive outline overscan in the final TTF.
 
 ## Notes
 
@@ -402,6 +403,7 @@ You can force the debug terminal cell geometry with `PETIGLYPH_DEBUG_CELL=<width
 - `glyph_size` is the generated terminal-cell height; one-cell glyphs use half that width so they fit normal tall terminal cells without needing a trailing blank
 - standard glyphs fit and center inside that one-cell rectangle
 - composition grids fit once into the full emitted grid, then each logical square tile is split into two one-cell rectangular glyphs
+- composition tile TTF outlines use a small internal-edge bleed to hide rasterizer seams between adjacent terminal cells without changing glyph advance
 - default `codepoint_start` is `U+100000` to avoid common BMP private-use collisions
 - private-use codepoints are East Asian Ambiguous width in Unicode; for stable terminal alignment keep ambiguous width as single-cell (for example: WezTerm `treat_east_asian_ambiguous_width_as_wide = false`, iTerm2 disable “Ambiguous characters are double-width”)
 - while validating composite grids, avoid custom terminal line/cell spacing tweaks (`line_height`, `cell_height`, `font.offset.y`) that can introduce artificial row gaps
