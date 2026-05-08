@@ -37,6 +37,8 @@ pub(crate) struct CompositionTileInfo {
     pub(crate) cols: usize,
     pub(crate) row: usize,
     pub(crate) col: usize,
+    pub(crate) horizontal_bleed: bool,
+    pub(crate) vertical_bleed: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -70,10 +72,10 @@ impl TtfGlyphOptions {
 
     fn composition_tile(tile: &CompositionTileInfo) -> Self {
         let bleed = TtfEdgeBleed {
-            left: tile.col > 0,
-            right: tile.col + 1 < tile.cols,
-            top: tile.row > 0,
-            bottom: tile.row + 1 < tile.rows,
+            left: tile.horizontal_bleed && tile.col > 0,
+            right: tile.horizontal_bleed && tile.col + 1 < tile.cols,
+            top: tile.vertical_bleed && tile.row > 0,
+            bottom: tile.vertical_bleed && tile.row + 1 < tile.rows,
         };
         Self {
             center_in_line_box: false,
@@ -932,6 +934,8 @@ pub(crate) fn preprocess_sources_with_compositions(
                         cols: tile.cols,
                         row: tile.row,
                         col: tile.col,
+                        horizontal_bleed: def.horizontal_bleed,
+                        vertical_bleed: def.vertical_bleed,
                     }),
                 });
             }
@@ -1556,10 +1560,9 @@ fn ttf_vertical_edge_bleed_units(units_per_em: u16, bitmap_height: u32) -> Resul
         bail!("glyph bitmap height must be > 0 for TTF vertical edge bleed");
     }
     let pixel_units = u32::from(units_per_em) / bitmap_height;
-    // Horizontal row gaps vary by terminal renderer and line-box rounding. Use
-    // stronger internal-only vertical overscan while keeping glyph advances and
-    // outer grid edges unchanged.
-    let bleed_units = pixel_units.max(u32::from(units_per_em) / 8).max(1);
+    // Use the stable outline-expansion strategy, but keep vertical expansion
+    // milder than the first seam fix to reduce visible dilation artifacts.
+    let bleed_units = pixel_units.max(u32::from(units_per_em) / 16).max(1);
     i16::try_from(bleed_units).context("TTF vertical edge bleed overflowed i16 range")
 }
 

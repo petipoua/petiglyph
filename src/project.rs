@@ -27,6 +27,26 @@ pub(crate) struct Manifest {
 pub(crate) struct CompositionDef {
     pub(crate) rows: usize,
     pub(crate) cols: usize,
+    #[serde(default = "default_true", skip_serializing_if = "is_true")]
+    pub(crate) horizontal_bleed: bool,
+    #[serde(default = "default_false", skip_serializing_if = "is_false")]
+    pub(crate) vertical_bleed: bool,
+}
+
+fn default_true() -> bool {
+    true
+}
+
+fn default_false() -> bool {
+    false
+}
+
+fn is_true(value: &bool) -> bool {
+    *value
+}
+
+fn is_false(value: &bool) -> bool {
+    !*value
 }
 
 impl Default for Manifest {

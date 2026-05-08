@@ -339,10 +339,12 @@ codepoint_start = "U+100000"
 
 [compositions]
 "ollama.png" = { rows = 2, cols = 3 }
+# optional: disable seam-hiding bleed if it distorts strict line geometry
+"logo.png" = { rows = 2, cols = 2, horizontal_bleed = true, vertical_bleed = false }
 ```
 
 `threshold_overrides` stores per-file threshold tuning relative to `input_dir`.
-`compositions` stores per-file tile grids; each tile becomes its own glyph and is arranged as a grid sample.
+`compositions` stores per-file tile grids; each tile becomes its own glyph and is arranged as a grid sample. Left/right TTF bleed defaults on for internal grid edges, while top/bottom bleed defaults off; use `horizontal_bleed = false` or `vertical_bleed = true` to override the defaults when seam hiding distorts important geometry.
 `project_id` is managed automatically (generated if missing) and anchors install/Unicode ownership.
 
 ## TUI Keys
@@ -353,6 +355,7 @@ codepoint_start = "U+100000"
 - Home shows detected project folders, project creation controls, build/install actions, advanced generator actions (Compose Grid / Animate Glyph), a current-project panel for outputs/sample, and a machine-wide installed petiglyph font inventory with sample glyphs
 - Home navigation: project list uses `↑` / `↓`; the create/build/install/generator controls use stacked rows with `←` / `→` moving within a row and `↑` / `↓` moving between rows; `Enter` opens the selected project or runs the focused Home action (including uninstall for the selected installed-font row)
 - `R`: rescan the workspace project list and the active project's `icons/`
+- Grid creation: `←` / `→` moves focus across the one-line control strip; `↑` / `↓` adjust rows/cols or toggle a focused bleed knob; `Space` also toggles a focused bleed knob; `Enter` creates on the Create button
 - `j` / `k` or `↑` / `↓`: select glyph (Glyphs view)
 - `Enter` / `Space`: expand or collapse a composed parent row in Glyphs view
 - `c`: create a default `2x2` composition for the selected image
@@ -393,7 +396,7 @@ For each grayscale coverage/bitmap artifact, Petiglyph now writes two PNGs:
 
 The debug session logs the cell geometry source at startup (for example `terminal-window-size ...` or `fallback:1x2`).
 You can force the debug terminal cell geometry with `PETIGLYPH_DEBUG_CELL=<width>x<height>` (example: `PETIGLYPH_DEBUG_CELL=7x14`).
-For composition grids, `ttf.bleed` log lines show which internal tile edges receive outline overscan in the final TTF, including separate horizontal and vertical overscan units.
+For composition grids, `ttf.bleed` log lines show which internal tile edges receive outline expansion in the final TTF, including separate horizontal and vertical units.
 
 ## Notes
 
@@ -403,7 +406,7 @@ For composition grids, `ttf.bleed` log lines show which internal tile edges rece
 - `glyph_size` is the generated terminal-cell height; one-cell glyphs use half that width so they fit normal tall terminal cells without needing a trailing blank
 - standard glyphs fit and center inside that one-cell rectangle
 - composition grids fit once into the full emitted grid, then each logical square tile is split into two one-cell rectangular glyphs
-- composition tile TTF outlines use internal-edge bleed to hide rasterizer seams between adjacent terminal cells without changing glyph advance; vertical bleed is stronger because terminal row spacing and line-box rounding are more renderer-dependent
+- composition tile TTF outlines can use small internal-edge expansion to hide rasterizer seams without changing glyph advance; vertical expansion is stronger than horizontal when enabled, but can be disabled for straighter row-crossing geometry
 - default `codepoint_start` is `U+100000` to avoid common BMP private-use collisions
 - private-use codepoints are East Asian Ambiguous width in Unicode; for stable terminal alignment keep ambiguous width as single-cell (for example: WezTerm `treat_east_asian_ambiguous_width_as_wide = false`, iTerm2 disable “Ambiguous characters are double-width”)
 - while validating composite grids, avoid custom terminal line/cell spacing tweaks (`line_height`, `cell_height`, `font.offset.y`) that can introduce artificial row gaps

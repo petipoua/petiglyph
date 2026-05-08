@@ -268,6 +268,8 @@ pub(crate) enum GlyphsFocus {
 pub(crate) enum GridConfigFocus {
     Rows,
     Cols,
+    HorizontalBleed,
+    VerticalBleed,
     Create,
 }
 
@@ -276,6 +278,8 @@ pub(crate) struct GridConfig {
     pub(crate) source_key: String,
     pub(crate) rows: u32,
     pub(crate) cols: u32,
+    pub(crate) horizontal_bleed: bool,
+    pub(crate) vertical_bleed: bool,
     pub(crate) focus: GridConfigFocus,
 }
 
@@ -914,24 +918,32 @@ fn handle_grid_config_key(app: &mut App, config: &mut GridConfig, key: KeyEvent)
             config.focus = match config.focus {
                 GridConfigFocus::Rows => GridConfigFocus::Rows,
                 GridConfigFocus::Cols => GridConfigFocus::Rows,
-                GridConfigFocus::Create => GridConfigFocus::Cols,
+                GridConfigFocus::HorizontalBleed => GridConfigFocus::Cols,
+                GridConfigFocus::VerticalBleed => GridConfigFocus::HorizontalBleed,
+                GridConfigFocus::Create => GridConfigFocus::VerticalBleed,
             };
         }
         KeyCode::Right | KeyCode::Char('l') => {
             config.focus = match config.focus {
                 GridConfigFocus::Rows => GridConfigFocus::Cols,
-                GridConfigFocus::Cols => GridConfigFocus::Create,
+                GridConfigFocus::Cols => GridConfigFocus::HorizontalBleed,
+                GridConfigFocus::HorizontalBleed => GridConfigFocus::VerticalBleed,
+                GridConfigFocus::VerticalBleed => GridConfigFocus::Create,
                 GridConfigFocus::Create => GridConfigFocus::Create,
             };
         }
         KeyCode::Up | KeyCode::Char('k') => match config.focus {
             GridConfigFocus::Rows => config.rows = config.rows.saturating_add(1).max(1),
             GridConfigFocus::Cols => config.cols = config.cols.saturating_add(1).max(1),
+            GridConfigFocus::HorizontalBleed => config.horizontal_bleed = !config.horizontal_bleed,
+            GridConfigFocus::VerticalBleed => config.vertical_bleed = !config.vertical_bleed,
             GridConfigFocus::Create => {}
         },
         KeyCode::Down | KeyCode::Char('j') => match config.focus {
             GridConfigFocus::Rows => config.rows = config.rows.saturating_sub(1).max(1),
             GridConfigFocus::Cols => config.cols = config.cols.saturating_sub(1).max(1),
+            GridConfigFocus::HorizontalBleed => config.horizontal_bleed = !config.horizontal_bleed,
+            GridConfigFocus::VerticalBleed => config.vertical_bleed = !config.vertical_bleed,
             GridConfigFocus::Create => {}
         },
         KeyCode::Char(ch) if ch.is_ascii_digit() => {
@@ -957,13 +969,22 @@ fn handle_grid_config_key(app: &mut App, config: &mut GridConfig, key: KeyEvent)
                         config.cols = 1;
                     }
                 }
+                GridConfigFocus::HorizontalBleed => config.horizontal_bleed = digit != 0,
+                GridConfigFocus::VerticalBleed => config.vertical_bleed = digit != 0,
                 GridConfigFocus::Create => {}
             }
         }
+        KeyCode::Char(' ') => match config.focus {
+            GridConfigFocus::HorizontalBleed => config.horizontal_bleed = !config.horizontal_bleed,
+            GridConfigFocus::VerticalBleed => config.vertical_bleed = !config.vertical_bleed,
+            GridConfigFocus::Rows | GridConfigFocus::Cols | GridConfigFocus::Create => {}
+        },
         KeyCode::Backspace => {
             match config.focus {
                 GridConfigFocus::Rows => config.rows /= 10,
                 GridConfigFocus::Cols => config.cols /= 10,
+                GridConfigFocus::HorizontalBleed => config.horizontal_bleed = true,
+                GridConfigFocus::VerticalBleed => config.vertical_bleed = true,
                 GridConfigFocus::Create => {}
             }
             if config.rows == 0 {
@@ -982,19 +1003,24 @@ fn handle_grid_config_key(app: &mut App, config: &mut GridConfig, key: KeyEvent)
                 persist_composition_definition(
                     &app.manifest_path,
                     &source_key,
-                    Some(CompositionDef { rows, cols }),
+                    Some(CompositionDef {
+                        rows,
+                        cols,
+                        horizontal_bleed: config.horizontal_bleed,
+                        vertical_bleed: config.vertical_bleed,
+                    }),
                 )?;
                 app.reload_glyphs()?;
                 app.expanded_compositions.insert(source_key.clone());
                 app.grid_config = None;
                 app.status = Some(format!(
-                    "Created {}x{} grid for {}",
+                    "Created {}x{} grid for {} (left/right bleed: {}, top/bottom bleed: {})",
                     rows,
                     cols,
-                    source_display_name(&source_key)
+                    source_display_name(&source_key),
+                    if config.horizontal_bleed { "on" } else { "off" },
+                    if config.vertical_bleed { "on" } else { "off" }
                 ));
-            } else {
-                config.focus = GridConfigFocus::Create;
             }
         }
         _ => {}
@@ -1105,6 +1131,8 @@ fn handle_glyphs_key(app: &mut App, key: KeyEvent) -> Result<()> {
                             source_key,
                             rows: 2,
                             cols: 2,
+                            horizontal_bleed: true,
+                            vertical_bleed: false,
                             focus: GridConfigFocus::Rows,
                         });
                         app.selecting_for_grid = false;
@@ -3899,7 +3927,12 @@ fn apply_default_composition_to_selected(app: &mut App) -> Result<()> {
     persist_composition_definition(
         &app.manifest_path,
         &source_key,
-        Some(CompositionDef { rows: 2, cols: 2 }),
+        Some(CompositionDef {
+            rows: 2,
+            cols: 2,
+            horizontal_bleed: true,
+            vertical_bleed: false,
+        }),
     )?;
     app.reload_glyphs()?;
     app.expanded_compositions.insert(source_key.clone());
@@ -4908,13 +4941,32 @@ fn draw_grid_config_ui(
     } else {
         Style::default().fg(Color::White).bg(Color::DarkGray)
     };
-    let create_style = if config.focus == GridConfigFocus::Create {
+    let horizontal_bleed_border_style = if config.focus == GridConfigFocus::HorizontalBleed {
         Style::default()
             .fg(Color::Black)
-            .bg(accent)
+            .bg(Color::Yellow)
             .add_modifier(Modifier::BOLD)
     } else {
         Style::default().fg(Color::White).bg(Color::DarkGray)
+    };
+    let vertical_bleed_border_style = if config.focus == GridConfigFocus::VerticalBleed {
+        Style::default()
+            .fg(Color::Black)
+            .bg(Color::Yellow)
+            .add_modifier(Modifier::BOLD)
+    } else {
+        Style::default().fg(Color::White).bg(Color::DarkGray)
+    };
+    let create_style = if config.focus == GridConfigFocus::Create {
+        Style::default()
+            .fg(Color::Black)
+            .bg(Color::Yellow)
+            .add_modifier(Modifier::BOLD)
+    } else {
+        Style::default()
+            .fg(Color::Black)
+            .bg(Color::Blue)
+            .add_modifier(Modifier::BOLD)
     };
 
     let layout = Layout::default()
@@ -4922,21 +4974,23 @@ fn draw_grid_config_ui(
         .constraints([
             Constraint::Length(1),
             Constraint::Length(3),
-            Constraint::Length(1),
+            Constraint::Length(2),
             Constraint::Min(0),
         ])
         .margin(2)
         .split(inner);
 
-    let input_layout = Layout::default()
+    let size_layout = Layout::default()
         .direction(Direction::Horizontal)
         .constraints([
-            Constraint::Length(20), // Rows
-            Constraint::Length(20), // Cols
-            Constraint::Length(20), // Create
+            Constraint::Length(12), // Rows
+            Constraint::Length(12), // Cols
+            Constraint::Length(24), // Left/right bleed
+            Constraint::Length(24), // Top/bottom bleed
+            Constraint::Min(0),
+            Constraint::Length(19), // Create
         ])
         .split(layout[1]);
-
     let rows_text = format!(" Rows: {} ", config.rows);
     let cols_text = format!(" Cols: {} ", config.cols);
     let create_text = " Create Grid ";
@@ -4958,7 +5012,7 @@ fn draw_grid_config_ui(
                     .border_style(rows_style),
             )
             .style(rows_style),
-        input_layout[0],
+        size_layout[0],
     );
     frame.render_widget(
         Paragraph::new(cols_text)
@@ -4968,41 +5022,78 @@ fn draw_grid_config_ui(
                     .border_style(cols_style),
             )
             .style(cols_style),
-        input_layout[1],
+        size_layout[1],
+    );
+    frame.render_widget(
+        Paragraph::new(bleed_toggle_line(
+            " Left/right bleed ",
+            config.horizontal_bleed,
+        ))
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .border_style(horizontal_bleed_border_style),
+        )
+        .style(Style::default().fg(Color::White).bg(Color::DarkGray)),
+        size_layout[2],
+    );
+    frame.render_widget(
+        Paragraph::new(bleed_toggle_line(
+            " Top/bottom bleed ",
+            config.vertical_bleed,
+        ))
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .border_style(vertical_bleed_border_style),
+        )
+        .style(Style::default().fg(Color::White).bg(Color::DarkGray)),
+        size_layout[3],
     );
     frame.render_widget(
         Paragraph::new(create_text)
+            .centered()
             .block(
                 Block::default()
                     .borders(Borders::ALL)
+                    .border_type(if config.focus == GridConfigFocus::Create {
+                        BorderType::Thick
+                    } else {
+                        BorderType::Rounded
+                    })
                     .border_style(create_style),
             )
             .style(create_style),
-        input_layout[2],
+        size_layout[5],
     );
 
-    let help_text = vec![
-        Line::from(""),
-        Line::from(vec![
-            Span::styled(" \u{2190}/\u{2192} ", Style::default().fg(accent)),
-            Span::raw("switch field  "),
-            Span::styled(" \u{2191}/\u{2193} ", Style::default().fg(accent)),
-            Span::raw("+/- 1  "),
-            Span::styled(" 0-9 ", Style::default().fg(accent)),
-            Span::raw("type value"),
-        ]),
-        Line::from(""),
-        Line::from(vec![
-            Span::styled(" Enter ", Style::default().fg(accent)),
-            Span::raw("create grid (on Create button)"),
-        ]),
-        Line::from(""),
-        Line::from(vec![
-            Span::styled(" Esc ", Style::default().fg(accent)),
-            Span::raw("cancel"),
-        ]),
-    ];
-    frame.render_widget(Paragraph::new(help_text), layout[3]);
+    let help_text = vec![Line::from(vec![
+        Span::styled(" \u{2190}/\u{2192} ", Style::default().fg(accent)),
+        Span::raw("move focus  "),
+        Span::styled(" \u{2191}/\u{2193} ", Style::default().fg(accent)),
+        Span::raw("adjust active value  "),
+        Span::styled(" Enter ", Style::default().fg(accent)),
+        Span::raw("create on button"),
+    ])];
+    frame.render_widget(Paragraph::new(help_text), layout[2]);
+}
+
+fn bleed_toggle_line(label: &'static str, enabled: bool) -> Line<'static> {
+    let value = if enabled { "ON" } else { "OFF" };
+    let value_style = if enabled {
+        Style::default()
+            .fg(Color::Green)
+            .add_modifier(Modifier::BOLD)
+    } else {
+        Style::default()
+            .fg(Color::LightRed)
+            .add_modifier(Modifier::BOLD)
+    };
+    Line::from(vec![
+        Span::raw(label),
+        Span::styled(value, value_style),
+        Span::raw(" "),
+    ])
 }
 
 fn draw_glyphs_view(

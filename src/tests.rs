@@ -28,14 +28,14 @@ use crate::project::{
     format_codepoint, load_runtime_config, parse_codepoint, read_manifest, write_manifest,
 };
 use crate::tui::{
-    App, AppView, GlyphsFocus, InstalledFontSample, InteractiveGlyph, TuiLaunchOverrides,
-    WelcomeFocus, build_action_name, format_projects_card_hint, format_welcome_input_field,
-    handle_key, handle_key_event_for_test, handle_paste_event_for_test, install_action_name,
-    installed_font_block_display_lines, installed_font_block_display_lines_with_reference,
-    persist_threshold_override, regroup_installed_sample_blocks, render_ui_for_test,
-    requested_keyboard_enhancement_flags, resolve_installed_font_path_with,
-    sample_glyphs_from_ttf_bytes, should_dispatch_key_kind, switch_notice_visible,
-    wrap_sample_for_display,
+    App, AppView, GlyphsFocus, GridConfig, GridConfigFocus, InstalledFontSample, InteractiveGlyph,
+    TuiLaunchOverrides, WelcomeFocus, build_action_name, format_projects_card_hint,
+    format_welcome_input_field, handle_key, handle_key_event_for_test, handle_paste_event_for_test,
+    install_action_name, installed_font_block_display_lines,
+    installed_font_block_display_lines_with_reference, persist_threshold_override,
+    regroup_installed_sample_blocks, render_ui_for_test, requested_keyboard_enhancement_flags,
+    resolve_installed_font_path_with, sample_glyphs_from_ttf_bytes, should_dispatch_key_kind,
+    switch_notice_visible, wrap_sample_for_display,
 };
 
 fn make_temp_dir(name: &str) -> PathBuf {
@@ -1001,7 +1001,12 @@ fn glyph_view_c_shortcuts_create_and_remove_composition_in_manifest() {
     let manifest = read_manifest(&manifest_path).expect("manifest reloads");
     assert_eq!(
         manifest.compositions.get("icon.png"),
-        Some(&CompositionDef { rows: 2, cols: 2 })
+        Some(&CompositionDef {
+            rows: 2,
+            cols: 2,
+            horizontal_bleed: true,
+            vertical_bleed: true
+        })
     );
     assert!(
         app.status
@@ -1316,9 +1321,15 @@ fn build_outputs_composition_writes_grid_sample_and_contiguous_codepoints() {
     let manifest_path = project_dir.join("petiglyph.toml");
     let mut manifest = Manifest::default();
     manifest.project_id = Some("test-composition-grid-sample".to_string());
-    manifest
-        .compositions
-        .insert("logo.png".to_string(), CompositionDef { rows: 2, cols: 2 });
+    manifest.compositions.insert(
+        "logo.png".to_string(),
+        CompositionDef {
+            rows: 2,
+            cols: 2,
+            horizontal_bleed: true,
+            vertical_bleed: false,
+        },
+    );
     write_manifest(&manifest_path, &manifest).expect("manifest is written");
 
     let config = load_runtime_config(&manifest_path, None, None, None, None, None)
@@ -1362,6 +1373,38 @@ fn build_outputs_composition_writes_grid_sample_and_contiguous_codepoints() {
 }
 
 #[test]
+fn composition_bleed_flags_default_horizontal_on_vertical_off_when_missing() {
+    let project_dir = make_temp_dir("composition-bleed-defaults");
+    let manifest_path = project_dir.join("petiglyph.toml");
+    fs::write(
+        &manifest_path,
+        r#"
+input_dir = "icons"
+out_dir = "build"
+font_name = "Petiglyph"
+glyph_size = 16
+threshold = 64
+codepoint_start = "U+100000"
+
+[compositions]
+"icon.png" = { rows = 2, cols = 2 }
+"#,
+    )
+    .expect("manifest is written");
+
+    let config = load_runtime_config(&manifest_path, None, None, None, None, None)
+        .expect("runtime config loads");
+    let composition = config
+        .compositions
+        .get("icon.png")
+        .expect("composition exists");
+    assert!(composition.horizontal_bleed);
+    assert!(!composition.vertical_bleed);
+
+    fs::remove_dir_all(project_dir).expect("temp project dir is removed");
+}
+
+#[test]
 fn preprocess_composition_tiles_keep_corner_alignment_without_recentering() {
     let project_dir = make_temp_dir("composition-corner-alignment");
     let input_dir = project_dir.join("icons");
@@ -1382,7 +1425,15 @@ fn preprocess_composition_tiles_keep_corner_alignment_without_recentering() {
         .expect("dot image is written");
 
     let mut compositions = BTreeMap::new();
-    compositions.insert("dot.png".to_string(), CompositionDef { rows: 1, cols: 2 });
+    compositions.insert(
+        "dot.png".to_string(),
+        CompositionDef {
+            rows: 1,
+            cols: 2,
+            horizontal_bleed: true,
+            vertical_bleed: false,
+        },
+    );
     let sources = vec![input_dir.join("dot.png")];
     let glyphs = preprocess_sources_with_compositions(&sources, &input_dir, 16, &compositions)
         .expect("composition preprocess succeeds");
@@ -1448,7 +1499,15 @@ fn preprocess_composition_tiles_use_global_grid_scaling() {
     img.save(&source_path).expect("shape image is written");
 
     let mut compositions = BTreeMap::new();
-    compositions.insert("shape.png".to_string(), CompositionDef { rows: 3, cols: 3 });
+    compositions.insert(
+        "shape.png".to_string(),
+        CompositionDef {
+            rows: 3,
+            cols: 3,
+            horizontal_bleed: true,
+            vertical_bleed: false,
+        },
+    );
     let sources = vec![source_path.clone()];
     let glyph_size = 16u32;
     let glyphs =
@@ -1500,7 +1559,15 @@ fn preprocess_composition_tiles_keep_raw_internal_threshold_gradient() {
     img.save(&source_path).expect("seam image is written");
 
     let mut compositions = BTreeMap::new();
-    compositions.insert("seam.png".to_string(), CompositionDef { rows: 1, cols: 2 });
+    compositions.insert(
+        "seam.png".to_string(),
+        CompositionDef {
+            rows: 1,
+            cols: 2,
+            horizontal_bleed: true,
+            vertical_bleed: false,
+        },
+    );
     let glyphs =
         preprocess_sources_with_compositions(&[source_path], &input_dir, 16, &compositions)
             .expect("composition preprocess succeeds");
@@ -1545,9 +1612,15 @@ fn build_outputs_composition_preserves_tile_offsets_in_ttf() {
     let manifest_path = project_dir.join("petiglyph.toml");
     let mut manifest = Manifest::default();
     manifest.project_id = Some("test-composition-ttf-offsets".to_string());
-    manifest
-        .compositions
-        .insert("split.png".to_string(), CompositionDef { rows: 1, cols: 2 });
+    manifest.compositions.insert(
+        "split.png".to_string(),
+        CompositionDef {
+            rows: 1,
+            cols: 2,
+            horizontal_bleed: true,
+            vertical_bleed: false,
+        },
+    );
     write_manifest(&manifest_path, &manifest).expect("manifest is written");
 
     let config = load_runtime_config(&manifest_path, None, None, None, None, None)
@@ -1611,9 +1684,15 @@ fn build_outputs_composition_bleeds_internal_ttf_edges() {
     let manifest_path = project_dir.join("petiglyph.toml");
     let mut manifest = Manifest::default();
     manifest.project_id = Some("test-composition-ttf-overlap".to_string());
-    manifest
-        .compositions
-        .insert("seam.png".to_string(), CompositionDef { rows: 1, cols: 2 });
+    manifest.compositions.insert(
+        "seam.png".to_string(),
+        CompositionDef {
+            rows: 1,
+            cols: 2,
+            horizontal_bleed: true,
+            vertical_bleed: false,
+        },
+    );
     write_manifest(&manifest_path, &manifest).expect("manifest is written");
 
     let config = load_runtime_config(&manifest_path, None, None, None, Some(16), None)
@@ -1686,6 +1765,83 @@ fn build_outputs_composition_bleeds_internal_ttf_edges() {
 }
 
 #[test]
+fn build_outputs_composition_can_disable_horizontal_ttf_bleed() {
+    let project_dir = make_temp_dir("composition-ttf-no-horizontal-bleed");
+    let input_dir = project_dir.join("icons");
+    fs::create_dir_all(&input_dir).expect("icons dir is created");
+
+    let mut img = RgbaImage::from_pixel(32, 16, Rgba([255, 255, 255, 0]));
+    for y in 0..16 {
+        img.put_pixel(15, y, Rgba([0, 0, 0, 255]));
+        img.put_pixel(16, y, Rgba([0, 0, 0, 255]));
+    }
+    img.save(input_dir.join("seam.png"))
+        .expect("seam image is written");
+
+    let manifest_path = project_dir.join("petiglyph.toml");
+    let mut manifest = Manifest::default();
+    manifest.project_id = Some("test-composition-ttf-no-horizontal-bleed".to_string());
+    manifest.compositions.insert(
+        "seam.png".to_string(),
+        CompositionDef {
+            rows: 1,
+            cols: 2,
+            horizontal_bleed: false,
+            vertical_bleed: true,
+        },
+    );
+    write_manifest(&manifest_path, &manifest).expect("manifest is written");
+
+    let config = load_runtime_config(&manifest_path, None, None, None, Some(16), None)
+        .expect("runtime config loads");
+    let summary = build_outputs(&config).expect("build succeeds");
+    let mapping: Vec<MappingEntry> = serde_json::from_str(
+        &fs::read_to_string(&summary.mapping_path).expect("mapping is written"),
+    )
+    .expect("mapping parses");
+    let ttf = fs::read(summary.ttf_path).expect("ttf is written");
+    let face = ttf_parser::Face::parse(&ttf, 0).expect("ttf parses");
+    let cell_advance = i16::try_from(face.units_per_em() / 2).expect("cell advance fits i16");
+
+    let left_cp = mapping
+        .iter()
+        .find(|entry| entry.source_file == "seam.png#compose:1x4:0:1")
+        .map(|entry| parse_codepoint(&entry.codepoint).expect("left codepoint parses"))
+        .expect("left tile is mapped");
+    let right_cp = mapping
+        .iter()
+        .find(|entry| entry.source_file == "seam.png#compose:1x4:0:2")
+        .map(|entry| parse_codepoint(&entry.codepoint).expect("right codepoint parses"))
+        .expect("right tile is mapped");
+
+    let left_bounds = face
+        .glyph_bounding_box(
+            face.glyph_index(char::from_u32(left_cp).expect("left codepoint is valid"))
+                .expect("left glyph maps"),
+        )
+        .expect("left glyph has bounds");
+    let right_bounds = face
+        .glyph_bounding_box(
+            face.glyph_index(char::from_u32(right_cp).expect("right codepoint is valid"))
+                .expect("right glyph maps"),
+        )
+        .expect("right glyph has bounds");
+
+    assert!(
+        left_bounds.x_max <= cell_advance,
+        "left tile should not bleed horizontally when disabled (x_max={}, cell_advance={cell_advance})",
+        left_bounds.x_max
+    );
+    assert!(
+        right_bounds.x_min >= 0,
+        "right tile should not bleed horizontally when disabled (x_min={})",
+        right_bounds.x_min
+    );
+
+    fs::remove_dir_all(project_dir).expect("temp project dir is removed");
+}
+
+#[test]
 fn build_outputs_composition_overlaps_internal_ttf_edges_vertically() {
     let project_dir = make_temp_dir("composition-ttf-overlap-vertical");
     let input_dir = project_dir.join("icons");
@@ -1702,9 +1858,15 @@ fn build_outputs_composition_overlaps_internal_ttf_edges_vertically() {
     let manifest_path = project_dir.join("petiglyph.toml");
     let mut manifest = Manifest::default();
     manifest.project_id = Some("test-composition-ttf-overlap-vertical".to_string());
-    manifest
-        .compositions
-        .insert("vseam.png".to_string(), CompositionDef { rows: 2, cols: 1 });
+    manifest.compositions.insert(
+        "vseam.png".to_string(),
+        CompositionDef {
+            rows: 2,
+            cols: 1,
+            horizontal_bleed: true,
+            vertical_bleed: true,
+        },
+    );
     write_manifest(&manifest_path, &manifest).expect("manifest is written");
 
     let config = load_runtime_config(&manifest_path, None, None, None, Some(16), None)
@@ -1718,7 +1880,7 @@ fn build_outputs_composition_overlaps_internal_ttf_edges_vertically() {
     let face = ttf_parser::Face::parse(&ttf, 0).expect("ttf parses");
     let asc = i32::from(face.ascender());
     let desc = i32::from(face.descender());
-    let minimum_expected_overlap = i32::from(face.units_per_em()) / 4;
+    let minimum_expected_overlap = i32::from(face.units_per_em()) / 16;
 
     let top_cp = mapping
         .iter()
@@ -1750,7 +1912,82 @@ fn build_outputs_composition_overlaps_internal_ttf_edges_vertically() {
     let overlap = next_line_top - i32::from(top_bounds.y_min);
     assert!(
         overlap >= minimum_expected_overlap,
-        "adjacent composition rows should have strong vertical overscan (overlap={overlap}, minimum={minimum_expected_overlap}, top.y_min={}, next_line_top={next_line_top}, asc={asc}, desc={desc})",
+        "adjacent composition rows should have mild vertical bleed (overlap={overlap}, minimum={minimum_expected_overlap}, top.y_min={}, next_line_top={next_line_top}, asc={asc}, desc={desc})",
+        top_bounds.y_min
+    );
+
+    fs::remove_dir_all(project_dir).expect("temp project dir is removed");
+}
+
+#[test]
+fn build_outputs_composition_can_disable_vertical_ttf_bleed() {
+    let project_dir = make_temp_dir("composition-ttf-no-vertical-bleed");
+    let input_dir = project_dir.join("icons");
+    fs::create_dir_all(&input_dir).expect("icons dir is created");
+
+    let mut img = RgbaImage::from_pixel(16, 32, Rgba([255, 255, 255, 0]));
+    for x in 0..16 {
+        img.put_pixel(x, 15, Rgba([0, 0, 0, 255]));
+        img.put_pixel(x, 16, Rgba([0, 0, 0, 255]));
+    }
+    img.save(input_dir.join("vseam.png"))
+        .expect("vertical seam image is written");
+
+    let manifest_path = project_dir.join("petiglyph.toml");
+    let mut manifest = Manifest::default();
+    manifest.project_id = Some("test-composition-ttf-no-vertical-bleed".to_string());
+    manifest.compositions.insert(
+        "vseam.png".to_string(),
+        CompositionDef {
+            rows: 2,
+            cols: 1,
+            horizontal_bleed: true,
+            vertical_bleed: false,
+        },
+    );
+    write_manifest(&manifest_path, &manifest).expect("manifest is written");
+
+    let config = load_runtime_config(&manifest_path, None, None, None, Some(16), None)
+        .expect("runtime config loads");
+    let summary = build_outputs(&config).expect("build succeeds");
+    let mapping: Vec<MappingEntry> = serde_json::from_str(
+        &fs::read_to_string(&summary.mapping_path).expect("mapping is written"),
+    )
+    .expect("mapping parses");
+    let ttf = fs::read(summary.ttf_path).expect("ttf is written");
+    let face = ttf_parser::Face::parse(&ttf, 0).expect("ttf parses");
+    let asc = i32::from(face.ascender());
+    let desc = i32::from(face.descender());
+
+    let top_cp = mapping
+        .iter()
+        .find(|entry| entry.source_file == "vseam.png#compose:2x2:0:0")
+        .map(|entry| parse_codepoint(&entry.codepoint).expect("top codepoint parses"))
+        .expect("top tile is mapped");
+    let bottom_cp = mapping
+        .iter()
+        .find(|entry| entry.source_file == "vseam.png#compose:2x2:1:0")
+        .map(|entry| parse_codepoint(&entry.codepoint).expect("bottom codepoint parses"))
+        .expect("bottom tile is mapped");
+
+    let top_bounds = face
+        .glyph_bounding_box(
+            face.glyph_index(char::from_u32(top_cp).expect("top codepoint is valid"))
+                .expect("top glyph maps"),
+        )
+        .expect("top glyph has bounds");
+    let bottom_bounds = face
+        .glyph_bounding_box(
+            face.glyph_index(char::from_u32(bottom_cp).expect("bottom codepoint is valid"))
+                .expect("bottom glyph maps"),
+        )
+        .expect("bottom glyph has bounds");
+
+    let next_line_top = i32::from(bottom_bounds.y_max) - (asc - desc);
+    let overlap = next_line_top - i32::from(top_bounds.y_min);
+    assert!(
+        overlap <= 0,
+        "vertical bleed should be disabled when configured off (overlap={overlap}, top.y_min={}, next_line_top={next_line_top})",
         top_bounds.y_min
     );
 
@@ -1774,7 +2011,12 @@ fn build_outputs_empty_composition_tile_keeps_ttf_advance() {
     manifest.project_id = Some("test-composition-empty-advance".to_string());
     manifest.compositions.insert(
         "empty-middle.png".to_string(),
-        CompositionDef { rows: 1, cols: 3 },
+        CompositionDef {
+            rows: 1,
+            cols: 3,
+            horizontal_bleed: true,
+            vertical_bleed: false,
+        },
     );
     write_manifest(&manifest_path, &manifest).expect("manifest is written");
 
@@ -1820,9 +2062,15 @@ fn build_outputs_remaps_noncontiguous_composition_lock_into_contiguous_run() {
     let manifest_path = project_dir.join("petiglyph.toml");
     let mut manifest = Manifest::default();
     manifest.project_id = Some("test-composition-lock-remap".to_string());
-    manifest
-        .compositions
-        .insert("icon.png".to_string(), CompositionDef { rows: 2, cols: 2 });
+    manifest.compositions.insert(
+        "icon.png".to_string(),
+        CompositionDef {
+            rows: 2,
+            cols: 2,
+            horizontal_bleed: true,
+            vertical_bleed: false,
+        },
+    );
     write_manifest(&manifest_path, &manifest).expect("manifest is written");
 
     let lock_path = project_dir.join("petiglyph.lock");
@@ -2619,6 +2867,126 @@ fn handle_key_updates_and_clears_selected_threshold_override() {
     assert_eq!(app.view, AppView::Glyphs);
     let manifest = read_manifest(&manifest_path).expect("manifest reads");
     assert!(!manifest.threshold_overrides.contains_key("icon.png"));
+
+    fs::remove_dir_all(project_dir).expect("temp project dir is removed");
+}
+
+#[test]
+fn grid_config_tui_persists_bleed_toggles() {
+    let project_dir = make_temp_dir("grid-config-vertical-bleed");
+    let manifest_path = project_dir.join("petiglyph.toml");
+    write_manifest(&manifest_path, &Manifest::default()).expect("manifest is written");
+
+    let icons_dir = project_dir.join("icons");
+    fs::create_dir_all(&icons_dir).expect("icons dir is created");
+    write_test_png(&icons_dir.join("icon.png"));
+
+    let mut app = App::new_workspace(
+        project_dir.clone(),
+        Some(manifest_path.clone()),
+        TuiLaunchOverrides::default(),
+    )
+    .expect("workspace app initializes");
+    app.view = AppView::Glyphs;
+    app.grid_config = Some(GridConfig {
+        source_key: "icon.png".to_string(),
+        rows: 3,
+        cols: 2,
+        horizontal_bleed: true,
+        vertical_bleed: false,
+        focus: GridConfigFocus::Rows,
+    });
+
+    handle_key(&mut app, KeyCode::Up).expect("up increments rows");
+    assert_eq!(app.grid_config.as_ref().map(|config| config.rows), Some(4));
+    handle_key(&mut app, KeyCode::Down).expect("down decrements rows");
+    assert_eq!(app.grid_config.as_ref().map(|config| config.rows), Some(3));
+
+    handle_key(&mut app, KeyCode::Right).expect("right moves to cols");
+    assert_eq!(
+        app.grid_config.as_ref().map(|config| config.focus),
+        Some(GridConfigFocus::Cols)
+    );
+    handle_key(&mut app, KeyCode::Up).expect("up increments cols");
+    assert_eq!(app.grid_config.as_ref().map(|config| config.cols), Some(3));
+    handle_key(&mut app, KeyCode::Down).expect("down decrements cols");
+    assert_eq!(app.grid_config.as_ref().map(|config| config.cols), Some(2));
+
+    handle_key(&mut app, KeyCode::Right).expect("right moves to horizontal bleed");
+    assert_eq!(
+        app.grid_config.as_ref().map(|config| config.focus),
+        Some(GridConfigFocus::HorizontalBleed)
+    );
+    handle_key(&mut app, KeyCode::Down).expect("down toggles horizontal bleed off");
+    assert_eq!(
+        app.grid_config
+            .as_ref()
+            .map(|config| config.horizontal_bleed),
+        Some(false)
+    );
+    handle_key(&mut app, KeyCode::Up).expect("up toggles horizontal bleed on");
+    assert_eq!(
+        app.grid_config
+            .as_ref()
+            .map(|config| config.horizontal_bleed),
+        Some(true)
+    );
+    handle_key(&mut app, KeyCode::Down).expect("down toggles horizontal bleed off again");
+    assert_eq!(
+        app.grid_config
+            .as_ref()
+            .map(|config| config.horizontal_bleed),
+        Some(false)
+    );
+
+    handle_key(&mut app, KeyCode::Right).expect("right moves to vertical bleed");
+    assert_eq!(
+        app.grid_config.as_ref().map(|config| config.focus),
+        Some(GridConfigFocus::VerticalBleed)
+    );
+    handle_key(&mut app, KeyCode::Down).expect("down toggles vertical bleed on");
+    assert_eq!(
+        app.grid_config.as_ref().map(|config| config.vertical_bleed),
+        Some(true)
+    );
+    handle_key(&mut app, KeyCode::Up).expect("up toggles vertical bleed off");
+    assert_eq!(
+        app.grid_config.as_ref().map(|config| config.vertical_bleed),
+        Some(false)
+    );
+    handle_key(&mut app, KeyCode::Down).expect("down toggles vertical bleed on again");
+    assert_eq!(
+        app.grid_config.as_ref().map(|config| config.vertical_bleed),
+        Some(true)
+    );
+
+    handle_key(&mut app, KeyCode::Right).expect("right moves to create");
+    assert_eq!(
+        app.grid_config.as_ref().map(|config| config.focus),
+        Some(GridConfigFocus::Create)
+    );
+    handle_key(&mut app, KeyCode::Left).expect("left moves back to vertical bleed");
+    assert_eq!(
+        app.grid_config.as_ref().map(|config| config.focus),
+        Some(GridConfigFocus::VerticalBleed)
+    );
+    handle_key(&mut app, KeyCode::Down).expect("down disables vertical bleed again");
+    assert_eq!(
+        app.grid_config.as_ref().map(|config| config.vertical_bleed),
+        Some(false)
+    );
+    handle_key(&mut app, KeyCode::Right).expect("right returns to create");
+    handle_key(&mut app, KeyCode::Enter).expect("enter creates grid");
+    let manifest = read_manifest(&manifest_path).expect("manifest reloads");
+    assert_eq!(
+        manifest.compositions.get("icon.png"),
+        Some(&CompositionDef {
+            rows: 3,
+            cols: 2,
+            horizontal_bleed: false,
+            vertical_bleed: false,
+        })
+    );
 
     fs::remove_dir_all(project_dir).expect("temp project dir is removed");
 }
