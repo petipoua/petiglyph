@@ -1718,6 +1718,7 @@ fn build_outputs_composition_overlaps_internal_ttf_edges_vertically() {
     let face = ttf_parser::Face::parse(&ttf, 0).expect("ttf parses");
     let asc = i32::from(face.ascender());
     let desc = i32::from(face.descender());
+    let minimum_expected_overlap = i32::from(face.units_per_em()) / 4;
 
     let top_cp = mapping
         .iter()
@@ -1746,9 +1747,10 @@ fn build_outputs_composition_overlaps_internal_ttf_edges_vertically() {
     // Line N+1 top for bottom glyph in baseline coordinates of line N:
     // top_next = y_max(bottom) - (asc - desc)
     let next_line_top = i32::from(bottom_bounds.y_max) - (asc - desc);
+    let overlap = next_line_top - i32::from(top_bounds.y_min);
     assert!(
-        i32::from(top_bounds.y_min) < next_line_top,
-        "adjacent composition rows should overlap vertically (top.y_min={}, next_line_top={next_line_top}, asc={asc}, desc={desc})",
+        overlap >= minimum_expected_overlap,
+        "adjacent composition rows should have strong vertical overscan (overlap={overlap}, minimum={minimum_expected_overlap}, top.y_min={}, next_line_top={next_line_top}, asc={asc}, desc={desc})",
         top_bounds.y_min
     );
 

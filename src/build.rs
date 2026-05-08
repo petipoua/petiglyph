@@ -1183,11 +1183,12 @@ fn build_ttf(
             glyph_debug::log_step(
                 "ttf.bleed",
                 format!(
-                    "glyph={} codepoint=U+{:04X} edges={} units={}",
+                    "glyph={} codepoint=U+{:04X} edges={} x_units={} y_units={}",
                     name,
                     *codepoint,
                     bleed.describe(),
-                    ttf_edge_bleed_units(units_per_em, bitmap.height)?
+                    ttf_horizontal_edge_bleed_units(units_per_em, bitmap.height)?,
+                    ttf_vertical_edge_bleed_units(units_per_em, bitmap.height)?
                 ),
             );
         }
@@ -1363,12 +1364,18 @@ fn bitmap_glyph_to_ttf(
     let pixel_units = i16::try_from(u32::from(units_per_em) / bitmap.height)
         .context("invalid pixel scaling for TTF export")?;
     let pixel_units_i32 = i32::from(pixel_units);
-    let bleed_units = options
+    let horizontal_bleed_units = options
         .edge_bleed
-        .map(|_| ttf_edge_bleed_units(units_per_em, bitmap.height))
+        .map(|_| ttf_horizontal_edge_bleed_units(units_per_em, bitmap.height))
         .transpose()?
         .unwrap_or(0);
-    let bleed_units_i32 = i32::from(bleed_units);
+    let horizontal_bleed_units_i32 = i32::from(horizontal_bleed_units);
+    let vertical_bleed_units = options
+        .edge_bleed
+        .map(|_| ttf_vertical_edge_bleed_units(units_per_em, bitmap.height))
+        .transpose()?
+        .unwrap_or(0);
+    let vertical_bleed_units_i32 = i32::from(vertical_bleed_units);
 
     let mut points = Vec::new();
     let mut end_points = Vec::new();
@@ -1405,22 +1412,22 @@ fn bitmap_glyph_to_ttf(
             if let Some(bleed) = options.edge_bleed {
                 if bleed.left && x == 0 {
                     x0 = x0
-                        .checked_sub(bleed_units_i32)
+                        .checked_sub(horizontal_bleed_units_i32)
                         .context("left TTF edge bleed overflow")?;
                 }
                 if bleed.right && x + 1 == bitmap.width as usize {
                     x1 = x1
-                        .checked_add(bleed_units_i32)
+                        .checked_add(horizontal_bleed_units_i32)
                         .context("right TTF edge bleed overflow")?;
                 }
                 if bleed.top && y == 0 {
                     top = top
-                        .checked_add(bleed_units_i32)
+                        .checked_add(vertical_bleed_units_i32)
                         .context("top TTF edge bleed overflow")?;
                 }
                 if bleed.bottom && y + 1 == bitmap.height as usize {
                     bottom = bottom
-                        .checked_sub(bleed_units_i32)
+                        .checked_sub(vertical_bleed_units_i32)
                         .context("bottom TTF edge bleed overflow")?;
                 }
             }
@@ -1535,13 +1542,25 @@ fn center_shift(container_extent: i32, glyph_min_plus_max: i32) -> i32 {
     (container_extent - glyph_min_plus_max) / 2
 }
 
-fn ttf_edge_bleed_units(units_per_em: u16, bitmap_height: u32) -> Result<i16> {
+fn ttf_horizontal_edge_bleed_units(units_per_em: u16, bitmap_height: u32) -> Result<i16> {
     if bitmap_height == 0 {
-        bail!("glyph bitmap height must be > 0 for TTF edge bleed");
+        bail!("glyph bitmap height must be > 0 for TTF horizontal edge bleed");
     }
     let pixel_units = u32::from(units_per_em) / bitmap_height;
     let bleed_units = pixel_units.max(u32::from(units_per_em) / 24).max(1);
-    i16::try_from(bleed_units).context("TTF edge bleed overflowed i16 range")
+    i16::try_from(bleed_units).context("TTF horizontal edge bleed overflowed i16 range")
+}
+
+fn ttf_vertical_edge_bleed_units(units_per_em: u16, bitmap_height: u32) -> Result<i16> {
+    if bitmap_height == 0 {
+        bail!("glyph bitmap height must be > 0 for TTF vertical edge bleed");
+    }
+    let pixel_units = u32::from(units_per_em) / bitmap_height;
+    // Horizontal row gaps vary by terminal renderer and line-box rounding. Use
+    // stronger internal-only vertical overscan while keeping glyph advances and
+    // outer grid edges unchanged.
+    let bleed_units = pixel_units.max(u32::from(units_per_em) / 8).max(1);
+    i16::try_from(bleed_units).context("TTF vertical edge bleed overflowed i16 range")
 }
 
 fn translate_points(points: &mut [(i16, i16)], x_shift: i32, y_shift: i32) -> Result<()> {
