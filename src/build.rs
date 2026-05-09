@@ -16,7 +16,9 @@ use crate::image_pipeline::{
     coverage_map_from_image, preprocess_standard_source, terminal_cell_width_for_height,
 };
 use crate::install::reserve_project_unicode_range;
-use crate::project::{BleedLevel, CompositionDef, RuntimeConfig, format_codepoint, parse_codepoint};
+use crate::project::{
+    BleedLevel, CompositionDef, RuntimeConfig, format_codepoint, parse_codepoint,
+};
 
 #[derive(Debug, Clone)]
 pub(crate) struct PreprocessedGlyph {
@@ -948,7 +950,7 @@ pub(crate) fn preprocess_sources_with_compositions(
         }
 
         glyph_debug::log_step("source.standard", format!("source={source_key}"));
-        let glyph_width = terminal_cell_width_for_height(glyph_size);
+        let glyph_width = glyph_size;
         let glyph_height = glyph_size;
         let coverage = preprocess_standard_source(source, glyph_width, glyph_height, &source_key)?;
         let glyph_name = unique_glyph_name(source, &mut used_names);
@@ -1042,17 +1044,21 @@ fn write_bdf(
     let metrics = font_vertical_metrics(
         u16::try_from(glyph_size).context("glyph_size is too large for BDF export")?,
     );
-    let glyph_width = terminal_cell_width_for_height(glyph_size);
+    let font_width = glyphs
+        .iter()
+        .map(|(_, _, bitmap)| bitmap.width)
+        .max()
+        .unwrap_or_else(|| terminal_cell_width_for_height(glyph_size));
 
     out.push_str("STARTFONT 2.1\n");
     out.push_str(&format!(
         "FONT {}\n",
-        bdf_font_name(font_name, glyph_width, glyph_size)
+        bdf_font_name(font_name, font_width, glyph_size)
     ));
     out.push_str(&format!("SIZE {} 75 75\n", glyph_size));
     out.push_str(&format!(
         "FONTBOUNDINGBOX {} {} 0 {}\n",
-        glyph_width, glyph_size, metrics.descent
+        font_width, glyph_size, metrics.descent
     ));
     out.push_str("STARTPROPERTIES 2\n");
     out.push_str(&format!("FONT_ASCENT {}\n", metrics.ascent));
@@ -1147,17 +1153,17 @@ fn build_ttf(
     let units_per_em =
         u16::try_from(units_per_em).context("glyph_size is too large for TTF export")?;
     let vertical_metrics = font_vertical_metrics(units_per_em);
-    let glyph_width = terminal_cell_width_for_height(glyph_size);
+    let cell_width = terminal_cell_width_for_height(glyph_size);
     let cell_advance_width = u16::try_from(
-        glyph_width
+        cell_width
             .checked_mul(16)
-            .context("glyph width is too large for TTF export")?,
+            .context("cell width is too large for TTF export")?,
     )
-    .context("glyph width is too large for TTF export")?;
+    .context("cell width is too large for TTF export")?;
 
     let mut ttf_glyphs = Vec::with_capacity(glyphs.len() + 2);
     ttf_glyphs.push(bitmap_glyph_to_ttf(
-        &notdef_bitmap(glyph_width, glyph_size),
+        &notdef_bitmap(cell_width, glyph_size),
         None,
         units_per_em,
         vertical_metrics,
@@ -1166,9 +1172,9 @@ fn build_ttf(
     )?);
     ttf_glyphs.push(bitmap_glyph_to_ttf(
         &GlyphBitmap {
-            width: glyph_width,
+            width: cell_width,
             height: glyph_size,
-            pixels: vec![false; (glyph_width as usize).saturating_mul(glyph_size as usize)],
+            pixels: vec![false; (cell_width as usize).saturating_mul(glyph_size as usize)],
         },
         Some(0x0020),
         units_per_em,
@@ -1178,15 +1184,21 @@ fn build_ttf(
     )?);
 
     for (idx, (name, codepoint, bitmap)) in glyphs.iter().enumerate() {
-        if bitmap.width != glyph_width || bitmap.height != glyph_size {
+        if bitmap.height != glyph_size {
             bail!(
-                "TTF export expected {}x{} glyph bitmap, got {}x{}",
-                glyph_width,
+                "TTF export expected glyph height {}, got {}x{}",
                 glyph_size,
                 bitmap.width,
                 bitmap.height
             );
         }
+        let glyph_advance_width = u16::try_from(
+            bitmap
+                .width
+                .checked_mul(16)
+                .context("glyph width is too large for TTF export")?,
+        )
+        .context("glyph width is too large for TTF export")?;
         if let Some(bleed) = glyph_options[idx].edge_bleed {
             glyph_debug::log_step(
                 "ttf.bleed",
@@ -1213,7 +1225,7 @@ fn build_ttf(
             Some(*codepoint),
             units_per_em,
             vertical_metrics,
-            cell_advance_width,
+            glyph_advance_width,
             glyph_options[idx],
         )?);
     }

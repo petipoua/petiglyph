@@ -791,7 +791,7 @@ fn regroup_installed_sample_blocks_merges_unitary_and_keeps_grids_ordered() {
         "E F".to_string(),
         "12\n34".to_string(),
     ]);
-    assert_eq!(grouped, vec!["A B C D E F", "XY\nZW", "12\n34"]);
+    assert_eq!(grouped, vec!["A   B   C   D   E   F", "XY\nZW", "12\n34"]);
 }
 
 #[test]
@@ -802,7 +802,13 @@ fn regroup_installed_sample_blocks_filters_empty_and_whitespace_blocks() {
         "A B".to_string(),
         " \nC\nD\n ".to_string(),
     ]);
-    assert_eq!(grouped, vec!["A B", "C\nD"]);
+    assert_eq!(grouped, vec!["A   B", "C\nD"]);
+}
+
+#[test]
+fn regroup_installed_sample_blocks_expands_dense_ttf_fallback_samples() {
+    let grouped = regroup_installed_sample_blocks(vec!["ABC".to_string()]);
+    assert_eq!(grouped, vec!["A   B   C"]);
 }
 
 #[test]
@@ -1282,18 +1288,20 @@ fn build_outputs_generates_non_empty_repo_icon_font() {
     assert_eq!(
         face.glyph_hor_advance(space_id),
         Some(face.units_per_em() / 2),
-        "space must keep the same one-cell advance as generated glyphs"
+        "space should keep one terminal-cell advance"
     );
 
     for entry in &mapping {
         assert!(bdf.contains(&format!("STARTCHAR {}", entry.glyph_name)));
         let codepoint = parse_codepoint(&entry.codepoint).expect("codepoint parses");
         assert!(bdf.contains(&format!("ENCODING {}", codepoint)));
-        assert!(
-            face.glyph_index(char::from_u32(codepoint).expect("bmp codepoint"))
-                .is_some(),
-            "ttf should map {}",
-            entry.glyph_name
+        let glyph_id = face
+            .glyph_index(char::from_u32(codepoint).expect("bmp codepoint"))
+            .expect("ttf should map glyph");
+        assert_eq!(
+            face.glyph_hor_advance(glyph_id),
+            Some(face.units_per_em()),
+            "standard glyphs should keep full-width advance"
         );
 
         let preview_path = summary

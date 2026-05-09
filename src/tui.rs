@@ -677,8 +677,11 @@ pub(crate) fn regroup_installed_sample_blocks(blocks: Vec<String>) -> Vec<String
 fn expand_standard_sample_cells(sample: &str) -> String {
     let mut out = String::with_capacity(sample.len() * 2);
     for ch in sample.chars() {
+        if ch.is_whitespace() {
+            continue;
+        }
         out.push(ch);
-        out.push(' ');
+        out.push_str("   ");
     }
     out.trim_end().to_string()
 }
@@ -5770,9 +5773,7 @@ fn render_binary_preview_lines(
         }
         rows.push(row);
     }
-    rows.retain(|row| {
-        row.contains('█') || row.contains('▀') || row.contains('▄')
-    });
+    rows.retain(|row| row.contains('█') || row.contains('▀') || row.contains('▄'));
     if rows.is_empty() {
         return vec![Line::from("    [No visible pixels at threshold]")];
     }
