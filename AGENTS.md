@@ -13,11 +13,16 @@
 - Primary commands:
   - `petiglyph create <name>`
   - `petiglyph create <name> --no-launch`
+  - `petiglyph list`
+  - `petiglyph delete`
+  - `petiglyph set-threshold <image> <threshold>`
+  - `petiglyph clear-threshold <image>`
   - `petiglyph` (or `petiglyph tui`) for interactive TUI
   - `petiglyph build`
   - `petiglyph sample`
   - `petiglyph install-font`
   - `petiglyph uninstall-font`
+  - `petiglyph nuke-everything`
   - `petiglyph doctor`
 - If no subcommand is provided, `petiglyph` launches the interactive workspace TUI.
 - In non-interactive contexts (no TTY), TUI launch fails with an explicit terminal-required error.
