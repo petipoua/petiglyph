@@ -5126,11 +5126,36 @@ fn draw_grid_config_ui(
         Span::styled(" \u{2190}/\u{2192} ", Style::default().fg(accent)),
         Span::raw("move focus  "),
         Span::styled(" \u{2191}/\u{2193} ", Style::default().fg(accent)),
-        Span::raw("adjust active value  "),
+        Span::raw("adjust/cycle active value  "),
         Span::styled(" Enter ", Style::default().fg(accent)),
         Span::raw("create on button"),
     ])];
     frame.render_widget(Paragraph::new(help_text), layout[2]);
+
+    let guidance_text = vec![
+        Line::from(vec![
+            Span::styled(" Rows/Cols: ", Style::default().fg(accent)),
+            Span::raw("higher values create more glyph tiles and consume more terminal space."),
+        ]),
+        Line::from(vec![
+            Span::styled(" Left/right bleed: ", Style::default().fg(accent)),
+            Span::raw("to hide vertical seams; usually safe across terminals (Ghostty, Alacritty, etc)."),
+        ]),
+        Line::from(vec![
+            Span::styled(" Top/bottom bleed: ", Style::default().fg(accent)),
+            Span::raw(
+                "different interline configs can mean inconsistent results across terminals; diagonal lines can also look wobblier because pixels are expanded straight up/down.",
+            ),
+        ]),
+        Line::from(vec![
+            Span::styled(" Recommended default: ", Style::default().fg(accent)),
+            Span::raw("left/right = weak, top/bottom = off."),
+        ]),
+    ];
+    frame.render_widget(
+        Paragraph::new(guidance_text).wrap(Wrap { trim: true }),
+        layout[3],
+    );
 }
 
 fn next_bleed_level(level: BleedLevel) -> BleedLevel {
