@@ -668,10 +668,19 @@ pub(crate) fn regroup_installed_sample_blocks(blocks: Vec<String>) -> Vec<String
 
     let mut grouped = Vec::new();
     if !standard_blocks.is_empty() {
-        grouped.push(standard_blocks.join(" "));
+        grouped.push(expand_standard_sample_cells(&standard_blocks.join(" ")));
     }
     grouped.extend(grid_blocks);
     grouped
+}
+
+fn expand_standard_sample_cells(sample: &str) -> String {
+    let mut out = String::with_capacity(sample.len() * 2);
+    for ch in sample.chars() {
+        out.push(ch);
+        out.push(' ');
+    }
+    out.trim_end().to_string()
 }
 
 pub(crate) fn sample_glyphs_from_ttf_bytes(bytes: &[u8], limit: usize) -> Option<(String, bool)> {
@@ -1123,7 +1132,10 @@ fn handle_glyphs_key(app: &mut App, key: KeyEvent) -> Result<()> {
                         return Ok(());
                     }
                     if let Some(selected_source_key) = selected_source_parent_key(app) {
-                        let source_key = if app.config.compositions.contains_key(&selected_source_key)
+                        let source_key = if app
+                            .config
+                            .compositions
+                            .contains_key(&selected_source_key)
                         {
                             duplicate_selected_parent_source_for_grid(app, &selected_source_key)?
                         } else {
@@ -3915,10 +3927,16 @@ fn duplicate_selected_parent_source_for_grid(app: &mut App, source_key: &str) ->
             duplicate_path.display()
         )
     })?;
-    Ok(source_key_from_input_path(&app.config.input_dir, &duplicate_path))
+    Ok(source_key_from_input_path(
+        &app.config.input_dir,
+        &duplicate_path,
+    ))
 }
 
-fn next_incremental_duplicate_destination(input_dir: &Path, source_file_name: &Path) -> Result<PathBuf> {
+fn next_incremental_duplicate_destination(
+    input_dir: &Path,
+    source_file_name: &Path,
+) -> Result<PathBuf> {
     let stem = source_file_name
         .file_stem()
         .and_then(|value| value.to_str())
@@ -5150,7 +5168,9 @@ fn bleed_toggle_line(label: &'static str, level: BleedLevel) -> Line<'static> {
         BleedLevel::Off => Style::default()
             .fg(Color::LightRed)
             .add_modifier(Modifier::BOLD),
-        BleedLevel::Weak => Style::default().fg(Color::Green).add_modifier(Modifier::BOLD),
+        BleedLevel::Weak => Style::default()
+            .fg(Color::Green)
+            .add_modifier(Modifier::BOLD),
         BleedLevel::Strong => Style::default()
             .fg(Color::Yellow)
             .add_modifier(Modifier::BOLD),
@@ -5490,7 +5510,7 @@ fn draw_glyphs_view(
                     &active.glyph,
                     active.working_threshold,
                     preview_area.width.saturating_sub(4) / 2,
-                    preview_area.height.saturating_sub(5),
+                    preview_area.height.saturating_sub(6),
                 );
                 preview_content.append(&mut ascii);
             }
@@ -5593,7 +5613,97 @@ fn composition_preview_lines(
         }
     }
 
-    render_binary_preview_lines(&matrix, width, height, max_w, max_h)
+    if let Some((cropped, cropped_w, cropped_h)) =
+        crop_binary_matrix_to_active_bounds(&matrix, width, height)
+    {
+        render_binary_preview_lines(&cropped, cropped_w, cropped_h, max_w, max_h, false)
+    } else {
+        vec![Line::from("    [No visible pixels at threshold]")]
+    }
+}
+
+fn crop_binary_matrix_to_active_bounds(
+    matrix: &[bool],
+    src_w: usize,
+    src_h: usize,
+) -> Option<(Vec<bool>, usize, usize)> {
+    if matrix.is_empty() || src_w == 0 || src_h == 0 {
+        return None;
+    }
+
+    let mut min_x = src_w;
+    let mut min_y = src_h;
+    let mut max_x = 0usize;
+    let mut max_y = 0usize;
+    let mut found_on = false;
+
+    for y in 0..src_h {
+        for x in 0..src_w {
+            if !matrix[y * src_w + x] {
+                continue;
+            }
+            found_on = true;
+            min_x = min_x.min(x);
+            min_y = min_y.min(y);
+            max_x = max_x.max(x);
+            max_y = max_y.max(y);
+        }
+    }
+
+    if !found_on {
+        return None;
+    }
+
+    let out_w = max_x - min_x + 1;
+    let out_h = max_y - min_y + 1;
+    let mut cropped = vec![false; out_w.saturating_mul(out_h)];
+    for y in min_y..=max_y {
+        for x in min_x..=max_x {
+            let src_idx = y * src_w + x;
+            let dst_idx = (y - min_y) * out_w + (x - min_x);
+            cropped[dst_idx] = matrix[src_idx];
+        }
+    }
+    Some((cropped, out_w, out_h))
+}
+
+fn crop_binary_matrix_to_active_y_bounds(
+    matrix: &[bool],
+    src_w: usize,
+    src_h: usize,
+) -> Option<(Vec<bool>, usize, usize)> {
+    if matrix.is_empty() || src_w == 0 || src_h == 0 {
+        return None;
+    }
+
+    let mut min_y = src_h;
+    let mut max_y = 0usize;
+    let mut found_on = false;
+
+    for y in 0..src_h {
+        for x in 0..src_w {
+            if !matrix[y * src_w + x] {
+                continue;
+            }
+            found_on = true;
+            min_y = min_y.min(y);
+            max_y = max_y.max(y);
+        }
+    }
+
+    if !found_on {
+        return None;
+    }
+
+    let out_h = max_y - min_y + 1;
+    let mut cropped = vec![false; src_w.saturating_mul(out_h)];
+    for y in min_y..=max_y {
+        let src_start = y * src_w;
+        let dst_start = (y - min_y) * src_w;
+        cropped[dst_start..dst_start + src_w]
+            .copy_from_slice(&matrix[src_start..src_start + src_w]);
+    }
+    Some((cropped, src_w, out_h))
 }
 
 fn render_binary_preview_lines(
@@ -5602,6 +5712,7 @@ fn render_binary_preview_lines(
     src_h: usize,
     max_w: u16,
     max_h: u16,
+    allow_upscale: bool,
 ) -> Vec<Line<'static>> {
     const PREVIEW_X_COMP: f32 = 0.88;
 
@@ -5609,10 +5720,24 @@ fn render_binary_preview_lines(
         return vec![Line::from("    [Preview too small]")];
     }
 
-    let out_w = ((usize::max(1, usize::min(src_w, max_w as usize)) as f32) * PREVIEW_X_COMP)
+    let max_w = max_w as usize;
+    let max_h = max_h as usize;
+    let base_w = if allow_upscale {
+        max_w
+    } else {
+        src_w.min(max_w)
+    };
+    let out_w = ((usize::max(1, base_w) as f32) * PREVIEW_X_COMP)
         .round()
         .max(1.0) as usize;
-    let out_h = usize::max(1, usize::min(src_h, max_h as usize));
+    let out_h = usize::max(
+        1,
+        if allow_upscale {
+            max_h
+        } else {
+            src_h.min(max_h)
+        },
+    );
     let sample_idx = |out_idx: usize, out_len: usize, src_len: usize| -> usize {
         let numerator = (2 * out_idx + 1) * src_len;
         let denominator = 2 * out_len;
@@ -5620,18 +5745,34 @@ fn render_binary_preview_lines(
     };
 
     let mut rows = Vec::with_capacity(out_h);
+    let sample_h = out_h.saturating_mul(2);
     for oy in 0..out_h {
-        let sy = sample_idx(oy, out_h, src_h);
+        let sy_top = sample_idx(oy.saturating_mul(2), sample_h, src_h);
+        let sy_bottom = sample_idx(oy.saturating_mul(2).saturating_add(1), sample_h, src_h);
         let mut row = String::with_capacity(out_w * 2 + 4);
         row.push_str("    ");
         for ox in 0..out_w {
             let sx = sample_idx(ox, out_w, src_w);
-            let on = matrix[sy * src_w + sx];
-            row.push_str(if on { "██" } else { "  " });
+            let top_on = matrix[sy_top * src_w + sx];
+            let bottom_on = matrix[sy_bottom * src_w + sx];
+            let glyph = match (top_on, bottom_on) {
+                (true, true) => '█',
+                (true, false) => '▀',
+                (false, true) => '▄',
+                (false, false) => ' ',
+            };
+            if glyph == ' ' {
+                row.push_str("  ");
+            } else {
+                row.push(glyph);
+                row.push(glyph);
+            }
         }
         rows.push(row);
     }
-    rows.retain(|row| row.contains('█'));
+    rows.retain(|row| {
+        row.contains('█') || row.contains('▀') || row.contains('▄')
+    });
     if rows.is_empty() {
         return vec![Line::from("    [No visible pixels at threshold]")];
     }
@@ -5644,77 +5785,30 @@ fn preview_lines(
     max_w: u16,
     max_h: u16,
 ) -> Vec<Line<'static>> {
-    const PREVIEW_X_COMP: f32 = 0.88;
-
     let src_w = glyph.width as usize;
     let src_h = glyph.height as usize;
     if src_w == 0 || src_h == 0 || max_w == 0 || max_h == 0 {
-        return vec![Line::from("  [Preview too small]")];
+        return vec![Line::from("    [Preview too small]")];
     }
 
-    let mut found_on = false;
-    let mut sum_x = 0f32;
-    let mut sum_y = 0f32;
-    let mut on_count = 0usize;
+    let mut matrix = vec![false; src_w.saturating_mul(src_h)];
+
     for y in 0..src_h {
         for x in 0..src_w {
             let idx = y * src_w + x;
-            if glyph.coverage[idx] < threshold {
-                continue;
+            if glyph.coverage[idx] >= threshold {
+                matrix[idx] = true;
             }
-            found_on = true;
-            sum_x += x as f32;
-            sum_y += y as f32;
-            on_count += 1;
         }
     }
 
-    let out_w = ((usize::max(1, usize::min(src_w, max_w as usize)) as f32) * PREVIEW_X_COMP)
-        .round()
-        .max(1.0) as usize;
-    let out_h = usize::max(1, usize::min(src_h, max_h as usize));
-    let sample_idx = |out_idx: usize, out_len: usize, src_len: usize| -> usize {
-        let numerator = (2 * out_idx + 1) * src_len;
-        let denominator = 2 * out_len;
-        (numerator / denominator).min(src_len.saturating_sub(1))
-    };
-    let (shift_x, shift_y) = if found_on && on_count > 0 {
-        let src_center_x = (src_w.saturating_sub(1)) as f32 / 2.0;
-        let src_center_y = (src_h.saturating_sub(1)) as f32 / 2.0;
-        let on_center_x = sum_x / on_count as f32;
-        let on_center_y = sum_y / on_count as f32;
-        (src_center_x - on_center_x, src_center_y - on_center_y)
-    } else {
-        (0.0, 0.0)
-    };
-
-    let mut rows = Vec::with_capacity(out_h);
-
-    for oy in 0..out_h {
-        let mut row = String::with_capacity(out_w * 2 + 4);
-        row.push_str("    ");
-        for ox in 0..out_w {
-            let vy = sample_idx(oy, out_h, src_h) as f32;
-            let vx = sample_idx(ox, out_w, src_w) as f32;
-            let sy = (vy - shift_y).round() as i32;
-            let sx = (vx - shift_x).round() as i32;
-            let on = if sx >= 0 && sy >= 0 && (sx as usize) < src_w && (sy as usize) < src_h {
-                let idx = sy as usize * src_w + sx as usize;
-                glyph.coverage[idx] >= threshold
-            } else {
-                false
-            };
-            row.push_str(if on { "██" } else { "  " });
-        }
-        rows.push(row);
-    }
-
-    rows.retain(|row| row.contains('█'));
-    if rows.is_empty() {
+    let Some((cropped, crop_w, crop_h)) =
+        crop_binary_matrix_to_active_y_bounds(&matrix, src_w, src_h)
+    else {
         return vec![Line::from("    [No visible pixels at threshold]")];
-    }
+    };
 
-    rows.into_iter().map(Line::from).collect()
+    render_binary_preview_lines(&cropped, crop_w, crop_h, max_w, max_h, true)
 }
 
 fn looks_like_path_payload(payload: &str) -> bool {
@@ -6283,9 +6377,10 @@ pub(crate) fn installed_font_block_display_lines_with_reference(
 #[cfg(test)]
 mod tests {
     use super::{
-        App, AppView, KeyCode, RuntimeConfig, drag_images_here_lines, handle_key,
+        App, AppView, KeyCode, RuntimeConfig, drag_images_here_lines, handle_key, preview_lines,
         scrollbar_thumb_geometry, visible_window_bounds,
     };
+    use crate::build::PreprocessedGlyph;
     use std::collections::BTreeMap;
     use std::fs;
     use std::path::PathBuf;
@@ -6474,6 +6569,44 @@ mod tests {
         assert_eq!(scrollbar_thumb_geometry(5, 10, 0), (0, 0));
         assert_eq!(scrollbar_thumb_geometry(100, 10, 0), (0, 1));
         assert_eq!(scrollbar_thumb_geometry(100, 10, 90), (9, 1));
+    }
+
+    #[test]
+    fn standard_preview_upscales_cropped_cell_to_preview_viewport() {
+        let mut coverage = vec![0; 32 * 64];
+        for y in 15..49 {
+            for x in 0..32 {
+                coverage[y * 32 + x] = 255;
+            }
+        }
+        let glyph = PreprocessedGlyph {
+            source_path: PathBuf::from("codex-1.png"),
+            source_key: "codex-1.png".to_string(),
+            source_parent_key: "codex-1.png".to_string(),
+            glyph_name: "codex_1".to_string(),
+            width: 32,
+            height: 64,
+            coverage,
+            image_fingerprint: "test".to_string(),
+            composition_tile: None,
+        };
+
+        let lines = preview_lines(&glyph, 64, 37, 37);
+        let rendered = lines
+            .iter()
+            .map(|line| {
+                line.spans
+                    .iter()
+                    .map(|span| span.content.as_ref())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>();
+
+        assert_eq!(rendered.len(), 37);
+        assert!(
+            rendered.iter().all(|line| line.chars().count() == 70),
+            "37-cell preview width with x compensation should render as 4 spaces + 33 block pairs"
+        );
     }
 
     #[test]
