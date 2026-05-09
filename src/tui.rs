@@ -1112,7 +1112,23 @@ fn handle_glyphs_key(app: &mut App, key: KeyEvent) -> Result<()> {
         KeyCode::Enter | KeyCode::Char(' ') => match app.glyphs_focus {
             GlyphsFocus::List => {
                 if app.selecting_for_grid {
-                    if let Some(source_key) = selected_source_parent_key(app) {
+                    if matches!(
+                        app.selected_visible_row(),
+                        Some(VisibleGlyphRow::CompositionChild { .. })
+                    ) {
+                        app.status = Some(
+                            "Select a standalone glyph or composition parent (children cannot be selected)"
+                                .to_string(),
+                        );
+                        return Ok(());
+                    }
+                    if let Some(selected_source_key) = selected_source_parent_key(app) {
+                        let source_key = if app.config.compositions.contains_key(&selected_source_key)
+                        {
+                            duplicate_selected_parent_source_for_grid(app, &selected_source_key)?
+                        } else {
+                            selected_source_key
+                        };
                         app.grid_config = Some(GridConfig {
                             source_key,
                             rows: 2,
@@ -3867,6 +3883,104 @@ fn selected_source_parent_key(app: &App) -> Option<String> {
         VisibleGlyphRow::CompositionParent { source_key, .. }
         | VisibleGlyphRow::CompositionChild { source_key, .. } => Some(source_key),
     }
+}
+
+fn source_key_from_input_path(input_dir: &Path, source_path: &Path) -> String {
+    source_path
+        .strip_prefix(input_dir)
+        .unwrap_or(source_path)
+        .to_string_lossy()
+        .replace('\\', "/")
+}
+
+fn duplicate_selected_parent_source_for_grid(app: &mut App, source_key: &str) -> Result<String> {
+    let Some(source_path) = app
+        .glyphs
+        .iter()
+        .find(|g| g.glyph.source_parent_key == source_key)
+        .map(|g| g.glyph.source_path.clone())
+    else {
+        anyhow::bail!("unable to locate source path for {source_key}");
+    };
+    let Some(file_name) = source_path.file_name() else {
+        anyhow::bail!("invalid source file path for {source_key}");
+    };
+
+    let duplicate_path =
+        next_incremental_duplicate_destination(&app.config.input_dir, Path::new(file_name))?;
+    fs::copy(&source_path, &duplicate_path).with_context(|| {
+        format!(
+            "failed to duplicate source {} -> {}",
+            source_path.display(),
+            duplicate_path.display()
+        )
+    })?;
+    Ok(source_key_from_input_path(&app.config.input_dir, &duplicate_path))
+}
+
+fn next_incremental_duplicate_destination(input_dir: &Path, source_file_name: &Path) -> Result<PathBuf> {
+    let stem = source_file_name
+        .file_stem()
+        .and_then(|value| value.to_str())
+        .filter(|value| !value.is_empty())
+        .unwrap_or("glyph");
+    let ext = source_file_name
+        .extension()
+        .and_then(|value| value.to_str())
+        .map(|value| value.to_string());
+    let base_stem = stem_without_trailing_numeric_suffixes(stem);
+
+    let mut max_suffix = 0u32;
+    for entry in fs::read_dir(input_dir)
+        .with_context(|| format!("failed to scan {}", input_dir.display()))?
+    {
+        let entry = entry?;
+        let path = entry.path();
+        if !path.is_file() {
+            continue;
+        }
+        let candidate_ext = path
+            .extension()
+            .and_then(|value| value.to_str())
+            .map(|value| value.to_string());
+        if candidate_ext != ext {
+            continue;
+        }
+        let Some(candidate_stem) = path.file_stem().and_then(|value| value.to_str()) else {
+            continue;
+        };
+        if candidate_stem == base_stem {
+            max_suffix = max_suffix.max(0);
+            continue;
+        }
+        if let Some(rest) = candidate_stem.strip_prefix(base_stem)
+            && let Some(numeric) = rest.strip_prefix('-')
+            && let Ok(value) = numeric.parse::<u32>()
+        {
+            max_suffix = max_suffix.max(value);
+        }
+    }
+
+    let next = max_suffix.saturating_add(1);
+    let file_name = match ext {
+        Some(ext) => format!("{base_stem}-{next}.{ext}"),
+        None => format!("{base_stem}-{next}"),
+    };
+    Ok(input_dir.join(file_name))
+}
+
+fn stem_without_trailing_numeric_suffixes(stem: &str) -> &str {
+    let mut current = stem;
+    loop {
+        let Some((head, tail)) = current.rsplit_once('-') else {
+            break;
+        };
+        if tail.is_empty() || !tail.chars().all(|ch| ch.is_ascii_digit()) {
+            break;
+        }
+        current = head;
+    }
+    if current.is_empty() { stem } else { current }
 }
 
 fn apply_default_composition_to_selected(app: &mut App) -> Result<()> {
