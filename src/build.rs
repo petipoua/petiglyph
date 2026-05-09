@@ -16,7 +16,7 @@ use crate::image_pipeline::{
     coverage_map_from_image, preprocess_standard_source, terminal_cell_width_for_height,
 };
 use crate::install::reserve_project_unicode_range;
-use crate::project::{CompositionDef, RuntimeConfig, format_codepoint, parse_codepoint};
+use crate::project::{BleedLevel, CompositionDef, RuntimeConfig, format_codepoint, parse_codepoint};
 
 #[derive(Debug, Clone)]
 pub(crate) struct PreprocessedGlyph {
@@ -37,8 +37,8 @@ pub(crate) struct CompositionTileInfo {
     pub(crate) cols: usize,
     pub(crate) row: usize,
     pub(crate) col: usize,
-    pub(crate) horizontal_bleed: bool,
-    pub(crate) vertical_bleed: bool,
+    pub(crate) horizontal_bleed: BleedLevel,
+    pub(crate) vertical_bleed: BleedLevel,
 }
 
 #[derive(Debug, Clone)]
@@ -60,6 +60,8 @@ struct TtfEdgeBleed {
     right: bool,
     top: bool,
     bottom: bool,
+    horizontal_level: BleedLevel,
+    vertical_level: BleedLevel,
 }
 
 impl TtfGlyphOptions {
@@ -72,10 +74,12 @@ impl TtfGlyphOptions {
 
     fn composition_tile(tile: &CompositionTileInfo) -> Self {
         let bleed = TtfEdgeBleed {
-            left: tile.horizontal_bleed && tile.col > 0,
-            right: tile.horizontal_bleed && tile.col + 1 < tile.cols,
-            top: tile.vertical_bleed && tile.row > 0,
-            bottom: tile.vertical_bleed && tile.row + 1 < tile.rows,
+            left: !tile.horizontal_bleed.is_off() && tile.col > 0,
+            right: !tile.horizontal_bleed.is_off() && tile.col + 1 < tile.cols,
+            top: !tile.vertical_bleed.is_off() && tile.row > 0,
+            bottom: !tile.vertical_bleed.is_off() && tile.row + 1 < tile.rows,
+            horizontal_level: tile.horizontal_bleed,
+            vertical_level: tile.vertical_bleed,
         };
         Self {
             center_in_line_box: false,
@@ -1191,8 +1195,16 @@ fn build_ttf(
                     name,
                     *codepoint,
                     bleed.describe(),
-                    ttf_horizontal_edge_bleed_units(units_per_em, bitmap.height)?,
-                    ttf_vertical_edge_bleed_units(units_per_em, bitmap.height)?
+                    ttf_horizontal_edge_bleed_units(
+                        units_per_em,
+                        bitmap.height,
+                        bleed.horizontal_level
+                    )?,
+                    ttf_vertical_edge_bleed_units(
+                        units_per_em,
+                        bitmap.height,
+                        bleed.vertical_level
+                    )?
                 ),
             );
         }
@@ -1370,13 +1382,17 @@ fn bitmap_glyph_to_ttf(
     let pixel_units_i32 = i32::from(pixel_units);
     let horizontal_bleed_units = options
         .edge_bleed
-        .map(|_| ttf_horizontal_edge_bleed_units(units_per_em, bitmap.height))
+        .map(|bleed| {
+            ttf_horizontal_edge_bleed_units(units_per_em, bitmap.height, bleed.horizontal_level)
+        })
         .transpose()?
         .unwrap_or(0);
     let horizontal_bleed_units_i32 = i32::from(horizontal_bleed_units);
     let vertical_bleed_units = options
         .edge_bleed
-        .map(|_| ttf_vertical_edge_bleed_units(units_per_em, bitmap.height))
+        .map(|bleed| {
+            ttf_vertical_edge_bleed_units(units_per_em, bitmap.height, bleed.vertical_level)
+        })
         .transpose()?
         .unwrap_or(0);
     let vertical_bleed_units_i32 = i32::from(vertical_bleed_units);
@@ -1546,23 +1562,41 @@ fn center_shift(container_extent: i32, glyph_min_plus_max: i32) -> i32 {
     (container_extent - glyph_min_plus_max) / 2
 }
 
-fn ttf_horizontal_edge_bleed_units(units_per_em: u16, bitmap_height: u32) -> Result<i16> {
+fn ttf_horizontal_edge_bleed_units(
+    units_per_em: u16,
+    bitmap_height: u32,
+    level: BleedLevel,
+) -> Result<i16> {
     if bitmap_height == 0 {
         bail!("glyph bitmap height must be > 0 for TTF horizontal edge bleed");
     }
     let pixel_units = u32::from(units_per_em) / bitmap_height;
-    let bleed_units = pixel_units.max(u32::from(units_per_em) / 24).max(1);
+    let weak_units = pixel_units.max(u32::from(units_per_em) / 24).max(1);
+    let bleed_units = match level {
+        BleedLevel::Off => 0,
+        BleedLevel::Weak => weak_units,
+        BleedLevel::Strong => weak_units.saturating_mul(2),
+    };
     i16::try_from(bleed_units).context("TTF horizontal edge bleed overflowed i16 range")
 }
 
-fn ttf_vertical_edge_bleed_units(units_per_em: u16, bitmap_height: u32) -> Result<i16> {
+fn ttf_vertical_edge_bleed_units(
+    units_per_em: u16,
+    bitmap_height: u32,
+    level: BleedLevel,
+) -> Result<i16> {
     if bitmap_height == 0 {
         bail!("glyph bitmap height must be > 0 for TTF vertical edge bleed");
     }
     let pixel_units = u32::from(units_per_em) / bitmap_height;
     // Use the stable outline-expansion strategy, but keep vertical expansion
     // milder than the first seam fix to reduce visible dilation artifacts.
-    let bleed_units = pixel_units.max(u32::from(units_per_em) / 16).max(1);
+    let weak_units = pixel_units.max(u32::from(units_per_em) / 16).max(1);
+    let bleed_units = match level {
+        BleedLevel::Off => 0,
+        BleedLevel::Weak => weak_units,
+        BleedLevel::Strong => weak_units.saturating_mul(2),
+    };
     i16::try_from(bleed_units).context("TTF vertical edge bleed overflowed i16 range")
 }
 

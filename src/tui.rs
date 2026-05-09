@@ -43,7 +43,7 @@ use crate::install::{
     installed_ttf_candidates_for_manifest_font, uninstall_installed_font_file,
 };
 use crate::project::{
-    CompositionDef, RuntimeConfig, create_project_in_dir, delete_project_for_manifest,
+    BleedLevel, CompositionDef, RuntimeConfig, create_project_in_dir, delete_project_for_manifest,
     discover_project_manifests, format_codepoint, load_runtime_config, read_manifest,
     write_manifest,
 };
@@ -65,8 +65,7 @@ const TUI_MAX_HEIGHT: u16 = 46;
 const DECPNM_NUMERIC_KEYPAD_MODE: &str = "\x1B>";
 const WELCOME_HINT_WIDTH: usize = 27;
 const DELETE_CONFIRM_CANCEL_INDEX: usize = 0;
-const DELETE_CONFIRM_DELETE_INDEX: usize = 4;
-const DELETE_CONFIRM_PATH: [(i8, i8); 5] = [(0, 0), (1, 0), (1, 1), (2, 1), (3, 1)];
+const DELETE_CONFIRM_DELETE_INDEX: usize = 1;
 const HTY_FULL_REPAINT_ENV: &str = "PETIGLYPH_TUI_HTY_FULL_REPAINT";
 const GLYPH_SOURCE_COUNT_REFRESH_MS: u64 = 300;
 const INSTALL_METADATA_PREFIX: &str = ".petiglyph-install-";
@@ -112,35 +111,6 @@ pub(crate) enum WelcomeFocus {
     InstallButton,
     DeleteProjectButton,
     InstalledFontList,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum DeleteProjectConfirmSlot {
-    Cancel,
-    Hop1,
-    Hop2,
-    Hop3,
-    Delete,
-}
-
-impl DeleteProjectConfirmSlot {
-    fn from_index(index: usize) -> Self {
-        match index {
-            0 => Self::Cancel,
-            1 => Self::Hop1,
-            2 => Self::Hop2,
-            3 => Self::Hop3,
-            _ => Self::Delete,
-        }
-    }
-}
-
-fn delete_confirm_neighbor_index(current_index: usize, dx: i8, dy: i8) -> Option<usize> {
-    let &(x, y) = DELETE_CONFIRM_PATH.get(current_index)?;
-    let target = (x + dx, y + dy);
-    DELETE_CONFIRM_PATH
-        .iter()
-        .position(|&coord| coord == target)
 }
 
 #[derive(Debug, Clone)]
@@ -278,8 +248,8 @@ pub(crate) struct GridConfig {
     pub(crate) source_key: String,
     pub(crate) rows: u32,
     pub(crate) cols: u32,
-    pub(crate) horizontal_bleed: bool,
-    pub(crate) vertical_bleed: bool,
+    pub(crate) horizontal_bleed: BleedLevel,
+    pub(crate) vertical_bleed: BleedLevel,
     pub(crate) focus: GridConfigFocus,
 }
 
@@ -935,15 +905,23 @@ fn handle_grid_config_key(app: &mut App, config: &mut GridConfig, key: KeyEvent)
         KeyCode::Up | KeyCode::Char('k') => match config.focus {
             GridConfigFocus::Rows => config.rows = config.rows.saturating_add(1).max(1),
             GridConfigFocus::Cols => config.cols = config.cols.saturating_add(1).max(1),
-            GridConfigFocus::HorizontalBleed => config.horizontal_bleed = !config.horizontal_bleed,
-            GridConfigFocus::VerticalBleed => config.vertical_bleed = !config.vertical_bleed,
+            GridConfigFocus::HorizontalBleed => {
+                config.horizontal_bleed = next_bleed_level(config.horizontal_bleed)
+            }
+            GridConfigFocus::VerticalBleed => {
+                config.vertical_bleed = next_bleed_level(config.vertical_bleed)
+            }
             GridConfigFocus::Create => {}
         },
         KeyCode::Down | KeyCode::Char('j') => match config.focus {
             GridConfigFocus::Rows => config.rows = config.rows.saturating_sub(1).max(1),
             GridConfigFocus::Cols => config.cols = config.cols.saturating_sub(1).max(1),
-            GridConfigFocus::HorizontalBleed => config.horizontal_bleed = !config.horizontal_bleed,
-            GridConfigFocus::VerticalBleed => config.vertical_bleed = !config.vertical_bleed,
+            GridConfigFocus::HorizontalBleed => {
+                config.horizontal_bleed = previous_bleed_level(config.horizontal_bleed)
+            }
+            GridConfigFocus::VerticalBleed => {
+                config.vertical_bleed = previous_bleed_level(config.vertical_bleed)
+            }
             GridConfigFocus::Create => {}
         },
         KeyCode::Char(ch) if ch.is_ascii_digit() => {
@@ -969,22 +947,30 @@ fn handle_grid_config_key(app: &mut App, config: &mut GridConfig, key: KeyEvent)
                         config.cols = 1;
                     }
                 }
-                GridConfigFocus::HorizontalBleed => config.horizontal_bleed = digit != 0,
-                GridConfigFocus::VerticalBleed => config.vertical_bleed = digit != 0,
+                GridConfigFocus::HorizontalBleed => {
+                    config.horizontal_bleed = bleed_level_from_digit(digit)
+                }
+                GridConfigFocus::VerticalBleed => {
+                    config.vertical_bleed = bleed_level_from_digit(digit)
+                }
                 GridConfigFocus::Create => {}
             }
         }
         KeyCode::Char(' ') => match config.focus {
-            GridConfigFocus::HorizontalBleed => config.horizontal_bleed = !config.horizontal_bleed,
-            GridConfigFocus::VerticalBleed => config.vertical_bleed = !config.vertical_bleed,
+            GridConfigFocus::HorizontalBleed => {
+                config.horizontal_bleed = next_bleed_level(config.horizontal_bleed)
+            }
+            GridConfigFocus::VerticalBleed => {
+                config.vertical_bleed = next_bleed_level(config.vertical_bleed)
+            }
             GridConfigFocus::Rows | GridConfigFocus::Cols | GridConfigFocus::Create => {}
         },
         KeyCode::Backspace => {
             match config.focus {
                 GridConfigFocus::Rows => config.rows /= 10,
                 GridConfigFocus::Cols => config.cols /= 10,
-                GridConfigFocus::HorizontalBleed => config.horizontal_bleed = true,
-                GridConfigFocus::VerticalBleed => config.vertical_bleed = true,
+                GridConfigFocus::HorizontalBleed => config.horizontal_bleed = BleedLevel::Weak,
+                GridConfigFocus::VerticalBleed => config.vertical_bleed = BleedLevel::Weak,
                 GridConfigFocus::Create => {}
             }
             if config.rows == 0 {
@@ -1018,8 +1004,8 @@ fn handle_grid_config_key(app: &mut App, config: &mut GridConfig, key: KeyEvent)
                     rows,
                     cols,
                     source_display_name(&source_key),
-                    if config.horizontal_bleed { "on" } else { "off" },
-                    if config.vertical_bleed { "on" } else { "off" }
+                    bleed_level_label(config.horizontal_bleed),
+                    bleed_level_label(config.vertical_bleed)
                 ));
             }
         }
@@ -1131,8 +1117,8 @@ fn handle_glyphs_key(app: &mut App, key: KeyEvent) -> Result<()> {
                             source_key,
                             rows: 2,
                             cols: 2,
-                            horizontal_bleed: true,
-                            vertical_bleed: false,
+                            horizontal_bleed: BleedLevel::Weak,
+                            vertical_bleed: BleedLevel::Off,
                             focus: GridConfigFocus::Rows,
                         });
                         app.selecting_for_grid = false;
@@ -1551,33 +1537,13 @@ fn handle_delete_project_confirmation_key(app: &mut App, code: KeyCode) -> Resul
         }
         KeyCode::Left | KeyCode::Char('h') => {
             if let Some(selection) = app.delete_project_confirm_selection.as_mut() {
-                if let Some(next) = delete_confirm_neighbor_index(*selection, -1, 0) {
-                    *selection = next;
-                }
+                *selection = DELETE_CONFIRM_CANCEL_INDEX;
             }
             app.status = None;
         }
         KeyCode::Right | KeyCode::Char('l') => {
             if let Some(selection) = app.delete_project_confirm_selection.as_mut() {
-                if let Some(next) = delete_confirm_neighbor_index(*selection, 1, 0) {
-                    *selection = next;
-                }
-            }
-            app.status = None;
-        }
-        KeyCode::Up | KeyCode::Char('k') => {
-            if let Some(selection) = app.delete_project_confirm_selection.as_mut() {
-                if let Some(next) = delete_confirm_neighbor_index(*selection, 0, -1) {
-                    *selection = next;
-                }
-            }
-            app.status = None;
-        }
-        KeyCode::Down | KeyCode::Char('j') => {
-            if let Some(selection) = app.delete_project_confirm_selection.as_mut() {
-                if let Some(next) = delete_confirm_neighbor_index(*selection, 0, 1) {
-                    *selection = next;
-                }
+                *selection = DELETE_CONFIRM_DELETE_INDEX;
             }
             app.status = None;
         }
@@ -1588,9 +1554,7 @@ fn handle_delete_project_confirmation_key(app: &mut App, code: KeyCode) -> Resul
             Some(DELETE_CONFIRM_DELETE_INDEX) => {
                 app.confirm_delete_project()?;
             }
-            Some(_) => {
-                app.status = Some("follow the arrow path with turns to reach Delete".to_string());
-            }
+            Some(_) => {}
             None => {}
         },
         _ => {}
@@ -3930,8 +3894,8 @@ fn apply_default_composition_to_selected(app: &mut App) -> Result<()> {
         Some(CompositionDef {
             rows: 2,
             cols: 2,
-            horizontal_bleed: true,
-            vertical_bleed: false,
+            horizontal_bleed: BleedLevel::Weak,
+            vertical_bleed: BleedLevel::Off,
         }),
     )?;
     app.reload_glyphs()?;
@@ -4627,7 +4591,6 @@ fn draw_delete_project_confirmation_popup(
             " Confirm Deletion ",
             Style::default().fg(accent).add_modifier(Modifier::BOLD),
         ));
-    let selected_button = DeleteProjectConfirmSlot::from_index(selection);
     let selected_style = Style::default()
         .fg(Color::Black)
         .bg(Color::Yellow)
@@ -4637,61 +4600,20 @@ fn draw_delete_project_confirmation_popup(
         .bg(Color::Red)
         .add_modifier(Modifier::BOLD);
     let idle_style = Style::default().fg(Color::White).bg(Color::DarkGray);
-    let hop_style = Style::default().fg(Color::Black).bg(Color::DarkGray);
-    let slot_text = "        ";
-    let h_gap = "  ";
-    let left_pad = "  ";
-    let lower_row_indent = format!(
-        "{}{}{}",
-        left_pad,
-        " ".repeat(" CANCEL ".chars().count()),
-        h_gap
-    );
-
-    let top_row = Line::from(vec![
-        Span::raw(left_pad),
+    let buttons_row = Line::from(vec![
+        Span::raw("  "),
         Span::styled(
             " CANCEL ",
-            if selected_button == DeleteProjectConfirmSlot::Cancel {
+            if selection == DELETE_CONFIRM_CANCEL_INDEX {
                 selected_style
             } else {
                 idle_style
             },
         ),
-        Span::raw(h_gap),
-        Span::styled(
-            slot_text,
-            if selected_button == DeleteProjectConfirmSlot::Hop1 {
-                selected_style
-            } else {
-                hop_style
-            },
-        ),
-    ]);
-
-    let lower_row = Line::from(vec![
-        Span::raw(&lower_row_indent),
-        Span::styled(
-            slot_text,
-            if selected_button == DeleteProjectConfirmSlot::Hop2 {
-                selected_style
-            } else {
-                hop_style
-            },
-        ),
-        Span::raw(h_gap),
-        Span::styled(
-            slot_text,
-            if selected_button == DeleteProjectConfirmSlot::Hop3 {
-                selected_style
-            } else {
-                hop_style
-            },
-        ),
-        Span::raw(h_gap),
+        Span::raw("  "),
         Span::styled(
             " DELETE ",
-            if selected_button == DeleteProjectConfirmSlot::Delete {
+            if selection == DELETE_CONFIRM_DELETE_INDEX {
                 danger_style
             } else {
                 idle_style
@@ -4711,7 +4633,7 @@ fn draw_delete_project_confirmation_popup(
         Line::from(vec![
             Span::raw("  "),
             Span::styled(
-                "Reach DELETE by following the slot path with turns.",
+                "Start on CANCEL. Move right once to select DELETE.",
                 Style::default().fg(Color::White),
             ),
         ]),
@@ -4723,9 +4645,7 @@ fn draw_delete_project_confirmation_popup(
             ),
         ]),
         Line::from(""),
-        top_row,
-        Line::from(""),
-        lower_row,
+        buttons_row,
     ];
     frame.render_widget(
         Paragraph::new(lines)
@@ -4983,12 +4903,12 @@ fn draw_grid_config_ui(
     let size_layout = Layout::default()
         .direction(Direction::Horizontal)
         .constraints([
-            Constraint::Length(12), // Rows
-            Constraint::Length(12), // Cols
-            Constraint::Length(24), // Left/right bleed
-            Constraint::Length(24), // Top/bottom bleed
+            Constraint::Length(11), // Rows
+            Constraint::Length(11), // Cols
+            Constraint::Length(28), // Left/right bleed
+            Constraint::Length(28), // Top/bottom bleed
             Constraint::Min(0),
-            Constraint::Length(19), // Create
+            Constraint::Length(15), // Create
         ])
         .split(layout[1]);
     let rows_text = format!(" Rows: {} ", config.rows);
@@ -5078,16 +4998,48 @@ fn draw_grid_config_ui(
     frame.render_widget(Paragraph::new(help_text), layout[2]);
 }
 
-fn bleed_toggle_line(label: &'static str, enabled: bool) -> Line<'static> {
-    let value = if enabled { "ON" } else { "OFF" };
-    let value_style = if enabled {
-        Style::default()
-            .fg(Color::Green)
-            .add_modifier(Modifier::BOLD)
-    } else {
-        Style::default()
+fn next_bleed_level(level: BleedLevel) -> BleedLevel {
+    match level {
+        BleedLevel::Off => BleedLevel::Weak,
+        BleedLevel::Weak => BleedLevel::Strong,
+        BleedLevel::Strong => BleedLevel::Off,
+    }
+}
+
+fn previous_bleed_level(level: BleedLevel) -> BleedLevel {
+    match level {
+        BleedLevel::Off => BleedLevel::Strong,
+        BleedLevel::Weak => BleedLevel::Off,
+        BleedLevel::Strong => BleedLevel::Weak,
+    }
+}
+
+fn bleed_level_from_digit(digit: u32) -> BleedLevel {
+    match digit {
+        0 => BleedLevel::Off,
+        2..=9 => BleedLevel::Strong,
+        _ => BleedLevel::Weak,
+    }
+}
+
+fn bleed_level_label(level: BleedLevel) -> &'static str {
+    match level {
+        BleedLevel::Off => "OFF",
+        BleedLevel::Weak => "WEAK",
+        BleedLevel::Strong => "STRONG",
+    }
+}
+
+fn bleed_toggle_line(label: &'static str, level: BleedLevel) -> Line<'static> {
+    let value = bleed_level_label(level);
+    let value_style = match level {
+        BleedLevel::Off => Style::default()
             .fg(Color::LightRed)
-            .add_modifier(Modifier::BOLD)
+            .add_modifier(Modifier::BOLD),
+        BleedLevel::Weak => Style::default().fg(Color::Green).add_modifier(Modifier::BOLD),
+        BleedLevel::Strong => Style::default()
+            .fg(Color::Yellow)
+            .add_modifier(Modifier::BOLD),
     };
     Line::from(vec![
         Span::raw(label),
@@ -5326,6 +5278,11 @@ fn draw_glyphs_view(
                 cols,
                 ..
             } => {
+                let bleed_hint = app
+                    .config
+                    .compositions
+                    .get(source_key)
+                    .map(|def| (def.horizontal_bleed, def.vertical_bleed));
                 let threshold_hint = app
                     .glyphs
                     .iter()
@@ -5366,6 +5323,38 @@ fn draw_glyphs_view(
                             format!("({rows}x{cols})"),
                             Style::default().fg(Color::Yellow),
                         ),
+                        Span::raw(" "),
+                        Span::styled("[L/R:", Style::default().fg(muted)),
+                        Span::styled(
+                            match bleed_hint {
+                                Some((level, _)) => bleed_level_label(level),
+                                None => "n/a",
+                            },
+                            Style::default()
+                                .fg(match bleed_hint {
+                                    Some((BleedLevel::Off, _)) => Color::LightRed,
+                                    Some((BleedLevel::Weak, _)) => Color::Green,
+                                    Some((BleedLevel::Strong, _)) => Color::Yellow,
+                                    None => muted,
+                                })
+                                .add_modifier(Modifier::BOLD),
+                        ),
+                        Span::styled(" T/B:", Style::default().fg(muted)),
+                        Span::styled(
+                            match bleed_hint {
+                                Some((_, level)) => bleed_level_label(level),
+                                None => "n/a",
+                            },
+                            Style::default()
+                                .fg(match bleed_hint {
+                                    Some((_, BleedLevel::Off)) => Color::LightRed,
+                                    Some((_, BleedLevel::Weak)) => Color::Green,
+                                    Some((_, BleedLevel::Strong)) => Color::Yellow,
+                                    None => muted,
+                                })
+                                .add_modifier(Modifier::BOLD),
+                        ),
+                        Span::styled("]", Style::default().fg(muted)),
                     ]),
                     threshold_line,
                     Line::from(vec![

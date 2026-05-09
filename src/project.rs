@@ -1,5 +1,5 @@
 use anyhow::{Context, Result, bail};
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
 use std::collections::BTreeMap;
 use std::env;
 use std::fs;
@@ -27,26 +27,66 @@ pub(crate) struct Manifest {
 pub(crate) struct CompositionDef {
     pub(crate) rows: usize,
     pub(crate) cols: usize,
-    #[serde(default = "default_true", skip_serializing_if = "is_true")]
-    pub(crate) horizontal_bleed: bool,
-    #[serde(default = "default_false", skip_serializing_if = "is_false")]
-    pub(crate) vertical_bleed: bool,
+    #[serde(
+        default = "default_horizontal_bleed_level",
+        deserialize_with = "deserialize_bleed_level_legacy",
+        skip_serializing_if = "is_default_horizontal_bleed_level"
+    )]
+    pub(crate) horizontal_bleed: BleedLevel,
+    #[serde(
+        default = "default_vertical_bleed_level",
+        deserialize_with = "deserialize_bleed_level_legacy",
+        skip_serializing_if = "is_default_vertical_bleed_level"
+    )]
+    pub(crate) vertical_bleed: BleedLevel,
 }
 
-fn default_true() -> bool {
-    true
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub(crate) enum BleedLevel {
+    Off,
+    Weak,
+    Strong,
 }
 
-fn default_false() -> bool {
-    false
+impl BleedLevel {
+    pub(crate) fn is_off(self) -> bool {
+        matches!(self, Self::Off)
+    }
 }
 
-fn is_true(value: &bool) -> bool {
-    *value
+fn default_horizontal_bleed_level() -> BleedLevel {
+    BleedLevel::Weak
 }
 
-fn is_false(value: &bool) -> bool {
-    !*value
+fn default_vertical_bleed_level() -> BleedLevel {
+    BleedLevel::Off
+}
+
+fn is_default_horizontal_bleed_level(value: &BleedLevel) -> bool {
+    *value == default_horizontal_bleed_level()
+}
+
+fn is_default_vertical_bleed_level(value: &BleedLevel) -> bool {
+    *value == default_vertical_bleed_level()
+}
+
+fn deserialize_bleed_level_legacy<'de, D>(deserializer: D) -> Result<BleedLevel, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum LegacyBleedLevel {
+        Bool(bool),
+        Level(BleedLevel),
+    }
+
+    match LegacyBleedLevel::deserialize(deserializer)? {
+        LegacyBleedLevel::Bool(true) => Ok(BleedLevel::Weak),
+        LegacyBleedLevel::Bool(false) => Ok(BleedLevel::Off),
+        LegacyBleedLevel::Level(level) => Ok(level),
+    }
 }
 
 impl Default for Manifest {

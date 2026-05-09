@@ -24,8 +24,9 @@ use crate::install::{
     expected_install_ttf_path_for_mode, reserve_project_unicode_range,
 };
 use crate::project::{
-    CompositionDef, Manifest, RuntimeConfig, auto_detect_manifest_path, discover_project_manifests,
-    format_codepoint, load_runtime_config, parse_codepoint, read_manifest, write_manifest,
+    BleedLevel, CompositionDef, Manifest, RuntimeConfig, auto_detect_manifest_path,
+    discover_project_manifests, format_codepoint, load_runtime_config, parse_codepoint,
+    read_manifest, write_manifest,
 };
 use crate::tui::{
     App, AppView, GlyphsFocus, GridConfig, GridConfigFocus, InstalledFontSample, InteractiveGlyph,
@@ -1004,8 +1005,8 @@ fn glyph_view_c_shortcuts_create_and_remove_composition_in_manifest() {
         Some(&CompositionDef {
             rows: 2,
             cols: 2,
-            horizontal_bleed: true,
-            vertical_bleed: true
+            horizontal_bleed: BleedLevel::Weak,
+            vertical_bleed: BleedLevel::Off
         })
     );
     assert!(
@@ -1326,8 +1327,8 @@ fn build_outputs_composition_writes_grid_sample_and_contiguous_codepoints() {
         CompositionDef {
             rows: 2,
             cols: 2,
-            horizontal_bleed: true,
-            vertical_bleed: false,
+            horizontal_bleed: BleedLevel::Weak,
+            vertical_bleed: BleedLevel::Off,
         },
     );
     write_manifest(&manifest_path, &manifest).expect("manifest is written");
@@ -1398,8 +1399,8 @@ codepoint_start = "U+100000"
         .compositions
         .get("icon.png")
         .expect("composition exists");
-    assert!(composition.horizontal_bleed);
-    assert!(!composition.vertical_bleed);
+    assert_eq!(composition.horizontal_bleed, BleedLevel::Weak);
+    assert_eq!(composition.vertical_bleed, BleedLevel::Off);
 
     fs::remove_dir_all(project_dir).expect("temp project dir is removed");
 }
@@ -1430,8 +1431,8 @@ fn preprocess_composition_tiles_keep_corner_alignment_without_recentering() {
         CompositionDef {
             rows: 1,
             cols: 2,
-            horizontal_bleed: true,
-            vertical_bleed: false,
+            horizontal_bleed: BleedLevel::Weak,
+            vertical_bleed: BleedLevel::Off,
         },
     );
     let sources = vec![input_dir.join("dot.png")];
@@ -1504,8 +1505,8 @@ fn preprocess_composition_tiles_use_global_grid_scaling() {
         CompositionDef {
             rows: 3,
             cols: 3,
-            horizontal_bleed: true,
-            vertical_bleed: false,
+            horizontal_bleed: BleedLevel::Weak,
+            vertical_bleed: BleedLevel::Off,
         },
     );
     let sources = vec![source_path.clone()];
@@ -1564,8 +1565,8 @@ fn preprocess_composition_tiles_keep_raw_internal_threshold_gradient() {
         CompositionDef {
             rows: 1,
             cols: 2,
-            horizontal_bleed: true,
-            vertical_bleed: false,
+            horizontal_bleed: BleedLevel::Weak,
+            vertical_bleed: BleedLevel::Off,
         },
     );
     let glyphs =
@@ -1617,8 +1618,8 @@ fn build_outputs_composition_preserves_tile_offsets_in_ttf() {
         CompositionDef {
             rows: 1,
             cols: 2,
-            horizontal_bleed: true,
-            vertical_bleed: false,
+            horizontal_bleed: BleedLevel::Weak,
+            vertical_bleed: BleedLevel::Off,
         },
     );
     write_manifest(&manifest_path, &manifest).expect("manifest is written");
@@ -1689,8 +1690,8 @@ fn build_outputs_composition_bleeds_internal_ttf_edges() {
         CompositionDef {
             rows: 1,
             cols: 2,
-            horizontal_bleed: true,
-            vertical_bleed: false,
+            horizontal_bleed: BleedLevel::Weak,
+            vertical_bleed: BleedLevel::Off,
         },
     );
     write_manifest(&manifest_path, &manifest).expect("manifest is written");
@@ -1786,8 +1787,8 @@ fn build_outputs_composition_can_disable_horizontal_ttf_bleed() {
         CompositionDef {
             rows: 1,
             cols: 2,
-            horizontal_bleed: false,
-            vertical_bleed: true,
+            horizontal_bleed: BleedLevel::Off,
+            vertical_bleed: BleedLevel::Weak,
         },
     );
     write_manifest(&manifest_path, &manifest).expect("manifest is written");
@@ -1863,8 +1864,8 @@ fn build_outputs_composition_overlaps_internal_ttf_edges_vertically() {
         CompositionDef {
             rows: 2,
             cols: 1,
-            horizontal_bleed: true,
-            vertical_bleed: true,
+            horizontal_bleed: BleedLevel::Weak,
+            vertical_bleed: BleedLevel::Weak,
         },
     );
     write_manifest(&manifest_path, &manifest).expect("manifest is written");
@@ -1941,8 +1942,8 @@ fn build_outputs_composition_can_disable_vertical_ttf_bleed() {
         CompositionDef {
             rows: 2,
             cols: 1,
-            horizontal_bleed: true,
-            vertical_bleed: false,
+            horizontal_bleed: BleedLevel::Weak,
+            vertical_bleed: BleedLevel::Off,
         },
     );
     write_manifest(&manifest_path, &manifest).expect("manifest is written");
@@ -2014,8 +2015,8 @@ fn build_outputs_empty_composition_tile_keeps_ttf_advance() {
         CompositionDef {
             rows: 1,
             cols: 3,
-            horizontal_bleed: true,
-            vertical_bleed: false,
+            horizontal_bleed: BleedLevel::Weak,
+            vertical_bleed: BleedLevel::Off,
         },
     );
     write_manifest(&manifest_path, &manifest).expect("manifest is written");
@@ -2067,8 +2068,8 @@ fn build_outputs_remaps_noncontiguous_composition_lock_into_contiguous_run() {
         CompositionDef {
             rows: 2,
             cols: 2,
-            horizontal_bleed: true,
-            vertical_bleed: false,
+            horizontal_bleed: BleedLevel::Weak,
+            vertical_bleed: BleedLevel::Off,
         },
     );
     write_manifest(&manifest_path, &manifest).expect("manifest is written");
@@ -2892,8 +2893,8 @@ fn grid_config_tui_persists_bleed_toggles() {
         source_key: "icon.png".to_string(),
         rows: 3,
         cols: 2,
-        horizontal_bleed: true,
-        vertical_bleed: false,
+        horizontal_bleed: BleedLevel::Weak,
+        vertical_bleed: BleedLevel::Off,
         focus: GridConfigFocus::Rows,
     });
 
@@ -2917,26 +2918,26 @@ fn grid_config_tui_persists_bleed_toggles() {
         app.grid_config.as_ref().map(|config| config.focus),
         Some(GridConfigFocus::HorizontalBleed)
     );
-    handle_key(&mut app, KeyCode::Down).expect("down toggles horizontal bleed off");
+    handle_key(&mut app, KeyCode::Down).expect("down cycles horizontal bleed to off");
     assert_eq!(
         app.grid_config
             .as_ref()
             .map(|config| config.horizontal_bleed),
-        Some(false)
+        Some(BleedLevel::Off)
     );
-    handle_key(&mut app, KeyCode::Up).expect("up toggles horizontal bleed on");
+    handle_key(&mut app, KeyCode::Up).expect("up cycles horizontal bleed to weak");
     assert_eq!(
         app.grid_config
             .as_ref()
             .map(|config| config.horizontal_bleed),
-        Some(true)
+        Some(BleedLevel::Weak)
     );
-    handle_key(&mut app, KeyCode::Down).expect("down toggles horizontal bleed off again");
+    handle_key(&mut app, KeyCode::Down).expect("down cycles horizontal bleed to off again");
     assert_eq!(
         app.grid_config
             .as_ref()
             .map(|config| config.horizontal_bleed),
-        Some(false)
+        Some(BleedLevel::Off)
     );
 
     handle_key(&mut app, KeyCode::Right).expect("right moves to vertical bleed");
@@ -2944,20 +2945,20 @@ fn grid_config_tui_persists_bleed_toggles() {
         app.grid_config.as_ref().map(|config| config.focus),
         Some(GridConfigFocus::VerticalBleed)
     );
-    handle_key(&mut app, KeyCode::Down).expect("down toggles vertical bleed on");
+    handle_key(&mut app, KeyCode::Down).expect("down cycles vertical bleed to strong");
     assert_eq!(
         app.grid_config.as_ref().map(|config| config.vertical_bleed),
-        Some(true)
+        Some(BleedLevel::Strong)
     );
-    handle_key(&mut app, KeyCode::Up).expect("up toggles vertical bleed off");
+    handle_key(&mut app, KeyCode::Up).expect("up cycles vertical bleed to off");
     assert_eq!(
         app.grid_config.as_ref().map(|config| config.vertical_bleed),
-        Some(false)
+        Some(BleedLevel::Off)
     );
-    handle_key(&mut app, KeyCode::Down).expect("down toggles vertical bleed on again");
+    handle_key(&mut app, KeyCode::Down).expect("down cycles vertical bleed to strong again");
     assert_eq!(
         app.grid_config.as_ref().map(|config| config.vertical_bleed),
-        Some(true)
+        Some(BleedLevel::Strong)
     );
 
     handle_key(&mut app, KeyCode::Right).expect("right moves to create");
@@ -2970,10 +2971,10 @@ fn grid_config_tui_persists_bleed_toggles() {
         app.grid_config.as_ref().map(|config| config.focus),
         Some(GridConfigFocus::VerticalBleed)
     );
-    handle_key(&mut app, KeyCode::Down).expect("down disables vertical bleed again");
+    handle_key(&mut app, KeyCode::Down).expect("down cycles vertical bleed to weak");
     assert_eq!(
         app.grid_config.as_ref().map(|config| config.vertical_bleed),
-        Some(false)
+        Some(BleedLevel::Weak)
     );
     handle_key(&mut app, KeyCode::Right).expect("right returns to create");
     handle_key(&mut app, KeyCode::Enter).expect("enter creates grid");
@@ -2983,8 +2984,8 @@ fn grid_config_tui_persists_bleed_toggles() {
         Some(&CompositionDef {
             rows: 3,
             cols: 2,
-            horizontal_bleed: false,
-            vertical_bleed: false,
+            horizontal_bleed: BleedLevel::Off,
+            vertical_bleed: BleedLevel::Weak,
         })
     );
 
