@@ -882,21 +882,12 @@ fn installed_animation_source_block(
     by_source: &BTreeMap<String, String>,
     source_key: &str,
 ) -> Option<String> {
-    by_source
+    let codepoint = by_source
         .get(source_key)
         .cloned()
-        .or_else(|| {
-            let (parent, row, col) = parse_compose_tile_key(source_key)?;
-            by_source.iter().find_map(|(candidate_key, codepoint)| {
-                let (candidate_parent, candidate_row, candidate_col) =
-                    parse_compose_tile_key(candidate_key)?;
-                if candidate_parent == parent && candidate_row == row && candidate_col == col {
-                    Some(codepoint.clone())
-                } else {
-                    None
-                }
-            })
-        })
+        .or_else(|| remap_compose_source_key_unambiguous(by_source.keys(), source_key)
+            .and_then(|resolved| by_source.get(&resolved).cloned()));
+    codepoint
         .as_deref()
         .and_then(|cp| format_codepoint_char(cp))
         .map(|c| c.to_string())
@@ -905,15 +896,6 @@ fn installed_animation_source_block(
 fn format_codepoint_char(codepoint: &str) -> Option<char> {
     let raw = codepoint.strip_prefix("U+").unwrap_or(codepoint);
     u32::from_str_radix(raw, 16).ok().and_then(char::from_u32)
-}
-
-fn parse_compose_tile_key(source_key: &str) -> Option<(&str, usize, usize)> {
-    let (parent, compose) = source_key.split_once("#compose:")?;
-    let (_, pos) = compose.split_once(':')?;
-    let mut pos_parts = pos.split(':');
-    let row = pos_parts.next()?.parse::<usize>().ok()?;
-    let col = pos_parts.next()?.parse::<usize>().ok()?;
-    Some((parent, row, col))
 }
 
 fn glyph_matches_animation_frame_source(glyph: &InteractiveGlyph, frame_source_key: &str) -> bool {
@@ -926,12 +908,40 @@ fn glyph_matches_animation_frame_source(glyph: &InteractiveGlyph, frame_source_k
     else {
         return false;
     };
-    let Some((glyph_parent, glyph_row, glyph_col)) =
-        parse_compose_tile_key(&glyph.glyph.source_key)
+    let Some((glyph_parent, glyph_row, glyph_col)) = parse_compose_tile_key(&glyph.glyph.source_key)
     else {
         return false;
     };
     glyph_parent == frame_parent && glyph_row == frame_row && glyph_col == frame_col
+}
+
+fn parse_compose_tile_key(source_key: &str) -> Option<(&str, usize, usize)> {
+    let (parent, compose) = source_key.split_once("#compose:")?;
+    let (_, pos) = compose.split_once(':')?;
+    let mut pos_parts = pos.split(':');
+    let row = pos_parts.next()?.parse::<usize>().ok()?;
+    let col = pos_parts.next()?.parse::<usize>().ok()?;
+    Some((parent, row, col))
+}
+
+fn remap_compose_source_key_unambiguous<'a>(
+    existing_keys: impl Iterator<Item = &'a String>,
+    source_key: &str,
+) -> Option<String> {
+    let (parent, row, col) = parse_compose_tile_key(source_key)?;
+    let mut matched = existing_keys.filter_map(|candidate| {
+        let (candidate_parent, candidate_row, candidate_col) = parse_compose_tile_key(candidate)?;
+        if candidate_parent == parent && candidate_row == row && candidate_col == col {
+            Some(candidate.clone())
+        } else {
+            None
+        }
+    });
+    let first = matched.next()?;
+    if matched.next().is_some() {
+        return None;
+    }
+    Some(first)
 }
 
 pub(crate) fn regroup_installed_sample_blocks(blocks: Vec<String>) -> Vec<String> {
@@ -3100,9 +3110,10 @@ impl App {
                 .iter()
                 .cloned()
                 .collect::<Vec<_>>();
-            fallback.sort();
+            sort_source_keys_alphabetically(&mut fallback);
             frames = fallback;
         }
+        sort_source_keys_alphabetically(&mut frames);
         let name = default_animation_name(&self.config);
         self.glyph_tool_mode = GlyphToolMode::ConfigureAnimation(AnimationConfig {
             selected_frames: frames,
@@ -3131,9 +3142,11 @@ impl App {
             self.status = Some(format!("animation `{name}` already exists"));
             return Ok(());
         }
+        let mut selected_frames = config.selected_frames.clone();
+        sort_source_keys_alphabetically(&mut selected_frames);
 
         if config.animation_type == AnimationType::Grid {
-            for frame in &config.selected_frames {
+            for frame in &selected_frames {
                 let desired = CompositionDef {
                     rows: config.rows as usize,
                     cols: config.cols as usize,
@@ -3168,7 +3181,7 @@ impl App {
             match create_standard_animation_parent_and_children(
                 &self.config.input_dir,
                 &self.glyphs,
-                &config.selected_frames,
+                &selected_frames,
             ) {
                 Ok((parent_key, frames)) => {
                     let composition = CompositionDef {
@@ -3195,7 +3208,7 @@ impl App {
                 }
             }
         } else {
-            config.selected_frames.clone()
+            selected_frames
         };
 
         let def = AnimationDef {
@@ -4564,6 +4577,10 @@ impl App {
             self.switch_notice = None;
         }
     }
+}
+
+fn sort_source_keys_alphabetically(keys: &mut [String]) {
+    keys.sort_by_cached_key(|key| source_display_name(key).to_ascii_lowercase());
 }
 
 impl BuildSummary {
@@ -6785,7 +6802,7 @@ fn draw_glyphs_view(
                             .iter()
                             .filter(|g| g.glyph.source_parent_key == *frame_source_key)
                             .collect::<Vec<_>>();
-                        composition_preview_lines(
+                        composition_preview_lines_stable_frame(
                             &tiles,
                             threshold,
                             rows,
@@ -6798,7 +6815,7 @@ fn draw_glyphs_view(
                             .iter()
                             .find(|g| glyph_matches_animation_frame_source(g, frame_source_key))
                             .map(|g| {
-                                preview_lines(
+                                preview_lines_stable_frame(
                                     &g.glyph,
                                     threshold,
                                     preview_area.width.saturating_sub(4) / 2,
@@ -6934,10 +6951,64 @@ fn composition_preview_lines(
     if let Some((cropped, cropped_w, cropped_h)) =
         crop_binary_matrix_to_active_bounds(&matrix, width, height)
     {
-        render_binary_preview_lines(&cropped, cropped_w, cropped_h, max_w, max_h, false)
+        render_binary_preview_lines(&cropped, cropped_w, cropped_h, max_w, max_h, false, true)
     } else {
         vec![Line::from("    [No visible pixels at threshold]")]
     }
+}
+
+fn composition_preview_lines_stable_frame(
+    tiles: &[&InteractiveGlyph],
+    threshold: u8,
+    rows: usize,
+    cols: usize,
+    max_w: u16,
+    max_h: u16,
+) -> Vec<Line<'static>> {
+    if rows == 0 || cols == 0 {
+        return vec![Line::from("    [Composition preview unavailable]")];
+    }
+    let Some(first) = tiles.first() else {
+        return vec![Line::from("    [Composition preview unavailable]")];
+    };
+    let tile_width = first.glyph.width as usize;
+    let tile_height = first.glyph.height as usize;
+    if tile_width == 0 || tile_height == 0 {
+        return vec![Line::from("    [Composition preview unavailable]")];
+    }
+
+    let width = cols.saturating_mul(tile_width);
+    let height = rows.saturating_mul(tile_height);
+    if width == 0 || height == 0 {
+        return vec![Line::from("    [Composition preview unavailable]")];
+    }
+
+    let mut matrix = vec![false; width.saturating_mul(height)];
+    for tile in tiles {
+        let Some(info) = &tile.glyph.composition_tile else {
+            continue;
+        };
+        if info.rows != rows || info.cols != cols {
+            continue;
+        }
+        if tile.glyph.width as usize != tile_width || tile.glyph.height as usize != tile_height {
+            continue;
+        }
+        for y in 0..tile_height {
+            for x in 0..tile_width {
+                let src_idx = y * tile_width + x;
+                let dst_x = info.col * tile_width + x;
+                let dst_y = info.row * tile_height + y;
+                if dst_x >= width || dst_y >= height || src_idx >= tile.glyph.coverage.len() {
+                    continue;
+                }
+                let dst_idx = dst_y * width + dst_x;
+                matrix[dst_idx] = tile.glyph.coverage[src_idx] >= threshold;
+            }
+        }
+    }
+
+    render_binary_preview_lines(&matrix, width, height, max_w, max_h, true, false)
 }
 
 fn crop_binary_matrix_to_active_bounds(
@@ -7031,6 +7102,7 @@ fn render_binary_preview_lines(
     max_w: u16,
     max_h: u16,
     allow_upscale: bool,
+    trim_empty_rows: bool,
 ) -> Vec<Line<'static>> {
     const PREVIEW_X_COMP: f32 = 0.88;
 
@@ -7088,7 +7160,9 @@ fn render_binary_preview_lines(
         }
         rows.push(row);
     }
-    rows.retain(|row| row.contains('█') || row.contains('▀') || row.contains('▄'));
+    if trim_empty_rows {
+        rows.retain(|row| row.contains('█') || row.contains('▀') || row.contains('▄'));
+    }
     if rows.is_empty() {
         return vec![Line::from("    [No visible pixels at threshold]")];
     }
@@ -7124,7 +7198,32 @@ fn preview_lines(
         return vec![Line::from("    [No visible pixels at threshold]")];
     };
 
-    render_binary_preview_lines(&cropped, crop_w, crop_h, max_w, max_h, true)
+    render_binary_preview_lines(&cropped, crop_w, crop_h, max_w, max_h, true, true)
+}
+
+fn preview_lines_stable_frame(
+    glyph: &PreprocessedGlyph,
+    threshold: u8,
+    max_w: u16,
+    max_h: u16,
+) -> Vec<Line<'static>> {
+    let src_w = glyph.width as usize;
+    let src_h = glyph.height as usize;
+    if src_w == 0 || src_h == 0 || max_w == 0 || max_h == 0 {
+        return vec![Line::from("    [Preview too small]")];
+    }
+
+    let mut matrix = vec![false; src_w.saturating_mul(src_h)];
+    for y in 0..src_h {
+        for x in 0..src_w {
+            let idx = y * src_w + x;
+            if glyph.coverage[idx] >= threshold {
+                matrix[idx] = true;
+            }
+        }
+    }
+
+    render_binary_preview_lines(&matrix, src_w, src_h, max_w, max_h, true, false)
 }
 
 fn looks_like_path_payload(payload: &str) -> bool {
@@ -7828,12 +7927,15 @@ fn installed_animation_preview_lines(
 #[cfg(test)]
 mod tests {
     use super::{
-        App, AppView, InteractiveGlyph, KeyCode, RuntimeConfig, drag_images_here_lines,
+        AnimationConfig, AnimationConfigFocus, AnimationType, App, AppView, BleedLevel, Input,
+        InteractiveGlyph, KeyCode, RuntimeConfig, drag_images_here_lines,
         glyph_matches_animation_frame_source, handle_key, installed_animation_frame_index,
-        installed_animation_source_block, preview_lines, remove_imported_animation_sources,
+        installed_animation_source_block, preview_lines,
+        remove_imported_animation_sources,
         scrollbar_thumb_geometry, visible_window_bounds,
     };
     use crate::build::PreprocessedGlyph;
+    use crate::project::{Manifest, read_manifest, write_manifest};
     use std::collections::BTreeMap;
     use std::fs;
     use std::path::PathBuf;
@@ -7958,7 +8060,7 @@ mod tests {
     }
 
     #[test]
-    fn installed_animation_source_block_falls_back_to_matching_compose_row_col() {
+    fn installed_animation_source_block_remaps_unambiguous_compose_row_col() {
         let by_source = BTreeMap::from([
             (
                 "strip.png#compose:1x4:0:0".to_string(),
@@ -7977,7 +8079,7 @@ mod tests {
     }
 
     #[test]
-    fn glyph_matches_animation_frame_source_falls_back_to_matching_compose_row_col() {
+    fn glyph_matches_animation_frame_source_remaps_unambiguous_compose_row_col() {
         let glyph = InteractiveGlyph {
             glyph: PreprocessedGlyph {
                 source_path: PathBuf::from("icons/strip.png"),
@@ -7998,6 +8100,22 @@ mod tests {
             &glyph,
             "strip.png#compose:1x2:0:1"
         ));
+    }
+
+    #[test]
+    fn installed_animation_source_block_does_not_remap_ambiguous_compose_row_col() {
+        let by_source = BTreeMap::from([
+            (
+                "strip.png#compose:1x4:0:1".to_string(),
+                "U+100001".to_string(),
+            ),
+            (
+                "strip.png#compose:1x8:0:1".to_string(),
+                "U+1000AA".to_string(),
+            ),
+        ]);
+        let block = installed_animation_source_block(&by_source, "strip.png#compose:1x2:0:1");
+        assert_eq!(block, None);
     }
 
     #[test]
@@ -8169,6 +8287,63 @@ mod tests {
             rendered.iter().all(|line| line.chars().count() == 70),
             "37-cell preview width with x compensation should render as 4 spaces + 33 block pairs"
         );
+    }
+
+    #[test]
+    fn create_grid_animation_sorts_frames_alphabetically_before_persisting() {
+        let project_dir = make_temp_dir("animation-frame-sort");
+        let manifest_path = project_dir.join("petiglyph.toml");
+        write_manifest(&manifest_path, &Manifest::default()).expect("manifest is written");
+
+        let icons_dir = project_dir.join("icons");
+        fs::create_dir_all(&icons_dir).expect("icons dir is created");
+
+        let config = RuntimeConfig {
+            project_dir: project_dir.clone(),
+            project_id: "test-animation-frame-sort".to_string(),
+            input_dir: icons_dir,
+            out_dir: project_dir.join("build"),
+            font_name: "Petiglyph".to_string(),
+            glyph_size: 8,
+            base_threshold: 64,
+            threshold_overrides: BTreeMap::new(),
+            compositions: BTreeMap::new(),
+            animations: Vec::new(),
+            codepoint_start: 0x10_0000,
+        };
+
+        let mut app = App::new(manifest_path.clone(), config);
+        let animation_config = AnimationConfig {
+            selected_frames: vec![
+                "f_03.png".to_string(),
+                "f_01.png".to_string(),
+                "f_02.png".to_string(),
+            ],
+            name_input: Input::new("walk".to_string()),
+            animation_type: AnimationType::Grid,
+            fps: 8,
+            rows: 1,
+            cols: 1,
+            horizontal_bleed: BleedLevel::Weak,
+            vertical_bleed: BleedLevel::Off,
+            focus: AnimationConfigFocus::Name,
+        };
+
+        app.create_animation_from_config(&animation_config)
+            .expect("animation should persist");
+
+        let manifest = read_manifest(&manifest_path).expect("manifest reloads");
+        assert_eq!(manifest.animations.len(), 1);
+        assert_eq!(
+            manifest.animations[0].frames,
+            vec![
+                "f_01.png".to_string(),
+                "f_02.png".to_string(),
+                "f_03.png".to_string()
+            ]
+        );
+
+        fs::remove_dir_all(project_dir).expect("temp dir is removed");
     }
 
     #[test]

@@ -3636,3 +3636,8 @@ fn tui_launch_overrides_persist_through_reload_and_build() {
 
     fs::remove_dir_all(project_dir).expect("temp project dir is removed");
 }
+honor glyph_size override; bdf={bdf}"
+    );
+
+    fs::remove_dir_all(project_dir).expect("temp project dir is removed");
+}
