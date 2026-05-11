@@ -21,6 +21,8 @@ pub(crate) struct Manifest {
     pub(crate) threshold_overrides: BTreeMap<String, u8>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub(crate) compositions: BTreeMap<String, CompositionDef>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub(crate) animations: Vec<AnimationDef>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -47,6 +49,30 @@ pub(crate) enum BleedLevel {
     Off,
     Weak,
     Strong,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub(crate) struct AnimationDef {
+    pub(crate) name: String,
+    #[serde(rename = "type")]
+    pub(crate) animation_type: AnimationType,
+    pub(crate) fps: u8,
+    pub(crate) frames: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) rows: Option<usize>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) cols: Option<usize>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) horizontal_bleed: Option<BleedLevel>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) vertical_bleed: Option<BleedLevel>,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum AnimationType {
+    Standard,
+    Grid,
 }
 
 impl BleedLevel {
@@ -101,6 +127,7 @@ impl Default for Manifest {
             project_id: None,
             threshold_overrides: BTreeMap::new(),
             compositions: BTreeMap::new(),
+            animations: Vec::new(),
         }
     }
 }
@@ -116,6 +143,7 @@ pub(crate) struct RuntimeConfig {
     pub(crate) base_threshold: u8,
     pub(crate) threshold_overrides: BTreeMap<String, u8>,
     pub(crate) compositions: BTreeMap<String, CompositionDef>,
+    pub(crate) animations: Vec<AnimationDef>,
     pub(crate) codepoint_start: u32,
 }
 
@@ -354,10 +382,6 @@ pub(crate) fn load_runtime_config(
         }
     };
 
-    if manifest_changed {
-        write_manifest(manifest_path, &manifest)?;
-    }
-
     for (source_key, composition) in &manifest.compositions {
         if source_key.trim().is_empty() {
             bail!("composition entry has an empty source key");
@@ -372,6 +396,72 @@ pub(crate) fn load_runtime_config(
         }
     }
 
+    let mut animation_names = BTreeMap::new();
+    for (idx, animation) in manifest.animations.iter_mut().enumerate() {
+        let name = animation.name.trim().to_string();
+        if name.is_empty() {
+            bail!("animation #{idx} has an empty name");
+        }
+        if animation.name != name {
+            animation.name = name.clone();
+            manifest_changed = true;
+        }
+        if animation_names.insert(name.clone(), idx).is_some() {
+            bail!("duplicate animation name: {name}");
+        }
+        if !(1..=30).contains(&animation.fps) {
+            bail!(
+                "animation {name} has invalid fps {}; expected 1..=30",
+                animation.fps
+            );
+        }
+        if animation.frames.is_empty() {
+            bail!("animation {name} has no frames");
+        }
+        for frame in &animation.frames {
+            if frame.trim().is_empty() {
+                bail!("animation {name} has an empty frame source key");
+            }
+        }
+        match animation.animation_type {
+            AnimationType::Standard => {
+                if animation.rows.is_some() || animation.cols.is_some() {
+                    bail!("animation {name} is standard and must not define rows/cols");
+                }
+                if animation.horizontal_bleed.is_some() || animation.vertical_bleed.is_some() {
+                    bail!("animation {name} is standard and must not define bleed settings");
+                }
+            }
+            AnimationType::Grid => {
+                let rows = animation
+                    .rows
+                    .ok_or_else(|| anyhow::anyhow!("animation {name} is grid and requires rows"))?;
+                let cols = animation
+                    .cols
+                    .ok_or_else(|| anyhow::anyhow!("animation {name} is grid and requires cols"))?;
+                if rows == 0 || cols == 0 {
+                    bail!(
+                        "animation {name} has invalid grid {}x{}; rows/cols must be > 0",
+                        rows,
+                        cols
+                    );
+                }
+                if animation.horizontal_bleed.is_none() {
+                    animation.horizontal_bleed = Some(default_horizontal_bleed_level());
+                    manifest_changed = true;
+                }
+                if animation.vertical_bleed.is_none() {
+                    animation.vertical_bleed = Some(default_vertical_bleed_level());
+                    manifest_changed = true;
+                }
+            }
+        }
+    }
+
+    if manifest_changed {
+        write_manifest(manifest_path, &manifest)?;
+    }
+
     Ok(RuntimeConfig {
         project_dir: base.to_path_buf(),
         project_id,
@@ -382,6 +472,7 @@ pub(crate) fn load_runtime_config(
         base_threshold,
         threshold_overrides: manifest.threshold_overrides,
         compositions: manifest.compositions,
+        animations: manifest.animations,
         codepoint_start,
     })
 }

@@ -11,7 +11,7 @@ use std::thread;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use crate::project::{
-    format_codepoint, load_runtime_config, parse_codepoint, read_manifest, slugify,
+    AnimationType, format_codepoint, load_runtime_config, parse_codepoint, read_manifest, slugify,
 };
 
 const INSTALL_METADATA_PREFIX: &str = ".petiglyph-install-";
@@ -79,6 +79,17 @@ struct InstalledFontMetadata {
     project_id: Option<String>,
     #[serde(default)]
     install_key: Option<String>,
+    #[serde(default)]
+    animation_snapshots: Vec<InstalledAnimationSnapshot>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct InstalledAnimationSnapshot {
+    name: String,
+    #[serde(rename = "type")]
+    animation_type: AnimationType,
+    fps: u8,
+    frame_blocks: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1250,6 +1261,111 @@ fn parse_sample_codepoints(sample: &str) -> Vec<u32> {
         .collect()
 }
 
+fn compose_tile_source_key(
+    parent_source_key: &str,
+    rows: usize,
+    cols: usize,
+    row: usize,
+    col: usize,
+) -> String {
+    format!("{parent_source_key}#compose:{rows}x{cols}:{row}:{col}")
+}
+
+fn mapped_source_block(by_source: &BTreeMap<String, String>, source_key: &str) -> Option<String> {
+    by_source
+        .get(source_key)
+        .cloned()
+        .or_else(|| {
+            let (parent, row, col) = parse_compose_tile_key(source_key)?;
+            by_source.iter().find_map(|(candidate_key, codepoint)| {
+                let (candidate_parent, candidate_row, candidate_col) =
+                    parse_compose_tile_key(candidate_key)?;
+                if candidate_parent == parent && candidate_row == row && candidate_col == col {
+                    Some(codepoint.clone())
+                } else {
+                    None
+                }
+            })
+        })
+        .as_deref()
+        .and_then(|cp| parse_codepoint(cp).ok())
+        .and_then(char::from_u32)
+        .map(|c| c.to_string())
+}
+
+fn parse_compose_tile_key(source_key: &str) -> Option<(&str, usize, usize)> {
+    let (parent, compose) = source_key.split_once("#compose:")?;
+    let (_, pos) = compose.split_once(':')?;
+    let mut pos_parts = pos.split(':');
+    let row = pos_parts.next()?.parse::<usize>().ok()?;
+    let col = pos_parts.next()?.parse::<usize>().ok()?;
+    Some((parent, row, col))
+}
+
+fn animation_snapshots_from_manifest_and_mapping(
+    manifest_path: &Path,
+) -> Vec<InstalledAnimationSnapshot> {
+    let manifest = match read_manifest(manifest_path) {
+        Ok(v) => v,
+        Err(_) => return Vec::new(),
+    };
+    let mapping_path = manifest_path
+        .parent()
+        .unwrap_or_else(|| Path::new("."))
+        .join(&manifest.out_dir)
+        .join("glyph-map.json");
+    let mapping_raw = match fs::read_to_string(mapping_path) {
+        Ok(v) => v,
+        Err(_) => return Vec::new(),
+    };
+    let mappings: Vec<crate::build::MappingEntry> = match serde_json::from_str(&mapping_raw) {
+        Ok(v) => v,
+        Err(_) => return Vec::new(),
+    };
+    let mut by_source = BTreeMap::new();
+    for entry in mappings {
+        by_source.insert(entry.source_file, entry.codepoint);
+    }
+
+    let mut out = Vec::new();
+    for animation in manifest.animations {
+        let mut frame_blocks = Vec::new();
+        for frame in &animation.frames {
+            let block = match animation.animation_type {
+                AnimationType::Standard => mapped_source_block(&by_source, frame)
+                    .unwrap_or_else(|| format!("[missing:{frame}]")),
+                AnimationType::Grid => {
+                    let rows = animation.rows.unwrap_or(1);
+                    let cols = animation.cols.unwrap_or(1);
+                    let mut lines = Vec::new();
+                    for row in 0..rows {
+                        let mut line = String::new();
+                        for col in 0..cols {
+                            let key = compose_tile_source_key(frame, rows, cols, row, col);
+                            let ch = by_source
+                                .get(&key)
+                                .and_then(|cp| parse_codepoint(cp).ok())
+                                .and_then(char::from_u32)
+                                .unwrap_or(' ');
+                            line.push(ch);
+                        }
+                        lines.push(line);
+                    }
+                    lines.join("\n")
+                }
+            };
+            frame_blocks.push(block);
+        }
+        out.push(InstalledAnimationSnapshot {
+            name: animation.name,
+            animation_type: animation.animation_type,
+            fps: animation.fps,
+            frame_blocks,
+        });
+    }
+    out
+}
+
 fn fc_match_file_for_codepoint(codepoint: u32) -> Result<String> {
     let pattern = format!(":charset={codepoint:x}");
     let output = ProcessCommand::new("fc-match")
@@ -1350,6 +1466,7 @@ pub(crate) fn install_built_font(
         version: CLI_VERSION.to_string(),
         project_id: Some(project_id.to_string()),
         install_key: Some(install_identity),
+        animation_snapshots: animation_snapshots_from_manifest_and_mapping(manifest_path),
     };
     let metadata_json =
         serde_json::to_string_pretty(&metadata).context("failed to serialize install metadata")?;
@@ -1736,9 +1853,9 @@ pub(crate) fn uninstall_tool_state() -> Result<ToolUninstallResult> {
 #[cfg(test)]
 mod tests {
     use super::{
-        first_install_state_path, immutable_ttf_file_name, immutable_ttf_install_path,
-        install_dir_for_project, install_dir_has_any_ttf, mark_first_install_state,
-        uninstall_tool_state_for_font_root,
+        animation_snapshots_from_manifest_and_mapping, first_install_state_path,
+        immutable_ttf_file_name, immutable_ttf_install_path, install_dir_for_project,
+        install_dir_has_any_ttf, mark_first_install_state, uninstall_tool_state_for_font_root,
     };
     use std::fs;
     use std::path::PathBuf;
@@ -1752,6 +1869,102 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("petiglyph-install-{name}-{nonce}"));
         fs::create_dir_all(&dir).expect("temp dir is created");
         dir
+    }
+
+    #[test]
+    fn standard_animation_snapshot_resolves_composed_frame_keys() {
+        let project_dir = make_temp_dir("standard-animation-composed-frames");
+        let manifest_path = project_dir.join("petiglyph.toml");
+        fs::create_dir_all(project_dir.join("build")).expect("build dir is created");
+        fs::write(
+            &manifest_path,
+            r#"input_dir = "icons"
+out_dir = "build"
+font_name = "Demo"
+glyph_size = 32
+threshold = 128
+codepoint_start = "U+100000"
+
+[[animations]]
+name = "demo"
+type = "standard"
+fps = 6
+frames = [
+  "strip.png#compose:1x2:0:0",
+  "strip.png#compose:1x2:0:1",
+]
+"#,
+        )
+        .expect("manifest is written");
+        fs::write(
+            project_dir.join("build").join("glyph-map.json"),
+            r#"[
+  { "glyph_name": "strip_r1_c1", "source_file": "strip.png#compose:1x2:0:0", "codepoint": "U+100000" },
+  { "glyph_name": "strip_r1_c2", "source_file": "strip.png#compose:1x2:0:1", "codepoint": "U+100001" }
+]"#,
+        )
+        .expect("glyph map is written");
+
+        let snapshots = animation_snapshots_from_manifest_and_mapping(&manifest_path);
+
+        assert_eq!(snapshots.len(), 1);
+        assert_eq!(
+            snapshots[0].frame_blocks,
+            vec![
+                char::from_u32(0x100000).unwrap().to_string(),
+                char::from_u32(0x100001).unwrap().to_string(),
+            ]
+        );
+
+        fs::remove_dir_all(project_dir).expect("temp dir is removed");
+    }
+
+    #[test]
+    fn standard_animation_snapshot_falls_back_to_matching_compose_row_col() {
+        let project_dir = make_temp_dir("standard-animation-compose-fallback");
+        let manifest_path = project_dir.join("petiglyph.toml");
+        fs::create_dir_all(project_dir.join("build")).expect("build dir is created");
+        fs::write(
+            &manifest_path,
+            r#"input_dir = "icons"
+out_dir = "build"
+font_name = "Demo"
+glyph_size = 32
+threshold = 128
+codepoint_start = "U+100000"
+
+[[animations]]
+name = "demo"
+type = "standard"
+fps = 6
+frames = [
+  "strip.png#compose:1x2:0:0",
+  "strip.png#compose:1x2:0:1",
+]
+"#,
+        )
+        .expect("manifest is written");
+        fs::write(
+            project_dir.join("build").join("glyph-map.json"),
+            r#"[
+  { "glyph_name": "strip_r1_c1", "source_file": "strip.png#compose:1x4:0:0", "codepoint": "U+100000" },
+  { "glyph_name": "strip_r1_c2", "source_file": "strip.png#compose:1x4:0:1", "codepoint": "U+100001" }
+]"#,
+        )
+        .expect("glyph map is written");
+
+        let snapshots = animation_snapshots_from_manifest_and_mapping(&manifest_path);
+
+        assert_eq!(snapshots.len(), 1);
+        assert_eq!(
+            snapshots[0].frame_blocks,
+            vec![
+                char::from_u32(0x100000).unwrap().to_string(),
+                char::from_u32(0x100001).unwrap().to_string(),
+            ]
+        );
+
+        fs::remove_dir_all(project_dir).expect("temp dir is removed");
     }
 
     #[test]

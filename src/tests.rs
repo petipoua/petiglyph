@@ -49,6 +49,19 @@ fn make_temp_dir(name: &str) -> PathBuf {
     dir
 }
 
+fn drain_background_tasks(app: &mut App) {
+    let deadline = Instant::now() + Duration::from_secs(2);
+    while app.background_task_in_progress() && Instant::now() < deadline {
+        app.poll_background_tasks_for_test();
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    app.poll_background_tasks_for_test();
+    assert!(
+        !app.background_task_in_progress(),
+        "background task should complete before test continues"
+    );
+}
+
 fn wait_for_background_tasks(app: &mut App) {
     let deadline = Instant::now() + Duration::from_secs(3);
     while app.background_task_in_progress() && Instant::now() < deadline {
@@ -853,7 +866,7 @@ fn projects_card_hint_keeps_fixed_width_and_stays_local() {
 }
 
 #[test]
-fn delete_project_flow_requires_arrow_hops_to_reach_delete() {
+fn delete_project_flow_requires_explicit_focus_on_delete_button() {
     let workspace = make_temp_dir("home-delete-confirm");
     let project_dir = workspace.join("delete-me");
     let icons_dir = project_dir.join("icons");
@@ -886,22 +899,9 @@ fn delete_project_flow_requires_arrow_hops_to_reach_delete() {
     app.welcome_focus = WelcomeFocus::DeleteProjectButton;
     handle_key(&mut app, KeyCode::Enter).expect("reopen delete confirmation for hop validation");
     assert!(app.status.is_none());
-    handle_key(&mut app, KeyCode::Right).expect("move to first hop");
-    handle_key(&mut app, KeyCode::Right).expect("right should not bypass turn");
-    handle_key(&mut app, KeyCode::Enter).expect("enter on first hop should be blocked");
-    assert!(project_dir.exists());
-    assert!(
-        app.status
-            .as_deref()
-            .is_some_and(|status| status.contains("path with turns"))
-    );
-
-    let hop_path = [KeyCode::Down, KeyCode::Right, KeyCode::Right];
-    for key in hop_path {
-        handle_key(&mut app, key).expect("hop movement should work");
-    }
-
+    handle_key(&mut app, KeyCode::Right).expect("move to delete button");
     handle_key(&mut app, KeyCode::Enter).expect("confirm deletion at delete button");
+
     assert!(!project_dir.exists());
     assert_eq!(app.active_project, None);
     assert_eq!(app.welcome_focus, WelcomeFocus::CreateInput);
@@ -968,10 +968,11 @@ fn glyph_view_animate_button_runs_placeholder_action() {
         base_threshold: 64,
         threshold_overrides: BTreeMap::new(),
         compositions: BTreeMap::new(),
+        animations: Vec::new(),
         codepoint_start: 0x10_0000,
     };
 
-    let mut app = App::new(manifest_path, config);
+    let mut app = App::new(manifest_path.clone(), config);
     app.view = AppView::Glyphs;
     app.glyphs_focus = GlyphsFocus::AnimateButton;
 
@@ -979,9 +980,70 @@ fn glyph_view_animate_button_runs_placeholder_action() {
     assert!(
         app.status
             .as_deref()
-            .is_some_and(|status| status.contains("Animate Glyph is planned for Glyphs tools"))
+            .is_some_and(|status| status.contains("Choose animation type"))
     );
     assert_eq!(app.view, AppView::Glyphs);
+
+    fs::remove_dir_all(project_dir).expect("temp project dir is removed");
+}
+
+#[test]
+fn standard_animation_config_escape_cancels_popup() {
+    let project_dir = make_temp_dir("standard-animation-config-esc");
+    let manifest_path = project_dir.join("petiglyph.toml");
+    write_manifest(&manifest_path, &Manifest::default()).expect("manifest is written");
+
+    let icons_dir = project_dir.join("icons");
+    fs::create_dir_all(&icons_dir).expect("icons dir is created");
+    let imports_dir = project_dir.join("imports");
+    fs::create_dir_all(&imports_dir).expect("imports dir is created");
+    let frame = imports_dir.join("frame.png");
+    write_test_png(&frame);
+
+    let config = RuntimeConfig {
+        project_dir: project_dir.clone(),
+        project_id: "test-standard-animation-config-esc".to_string(),
+        input_dir: icons_dir,
+        out_dir: project_dir.join("build"),
+        font_name: "Petiglyph".to_string(),
+        glyph_size: 8,
+        base_threshold: 64,
+        threshold_overrides: BTreeMap::new(),
+        compositions: BTreeMap::new(),
+        animations: Vec::new(),
+        codepoint_start: 0x10_0000,
+    };
+
+    let mut app = App::new(manifest_path.clone(), config);
+    app.view = AppView::Glyphs;
+    app.glyphs_focus = GlyphsFocus::AnimateButton;
+
+    handle_key(&mut app, KeyCode::Enter).expect("open animation type chooser");
+    handle_key(&mut app, KeyCode::Enter).expect("choose standard animation");
+    handle_paste_event_for_test(&mut app, &frame.display().to_string())
+        .expect("import animation frame");
+    assert!(
+        app.background_task_in_progress(),
+        "animation frame import should run as a visible background task"
+    );
+    assert!(
+        app.status
+            .as_deref()
+            .is_some_and(|status| status.contains("loading animation frames"))
+    );
+    drain_background_tasks(&mut app);
+    handle_key(&mut app, KeyCode::Enter).expect("advance to frame selection");
+    handle_key(&mut app, KeyCode::Enter).expect("open standard animation config");
+
+    handle_key(&mut app, KeyCode::Esc).expect("escape cancels animation config");
+    assert!(
+        app.status
+            .as_deref()
+            .is_some_and(|status| status.contains("animation configuration canceled"))
+    );
+    handle_key(&mut app, KeyCode::Enter).expect("enter after cancellation should not create");
+    let manifest = read_manifest(&manifest_path).expect("manifest reloads");
+    assert!(manifest.animations.is_empty());
 
     fs::remove_dir_all(project_dir).expect("temp project dir is removed");
 }
@@ -1056,6 +1118,7 @@ fn home_installed_font_buttons_can_be_navigated() {
         base_threshold: 64,
         threshold_overrides: BTreeMap::new(),
         compositions: BTreeMap::new(),
+        animations: Vec::new(),
         codepoint_start: 0x10_0000,
     };
 
@@ -1065,12 +1128,18 @@ fn home_installed_font_buttons_can_be_navigated() {
             file_name: "alpha.ttf".to_string(),
             path: PathBuf::from("/tmp/alpha.ttf"),
             blocks: vec!["AB".to_string()],
+            animation_rows: Vec::new(),
+            animation_previews: Vec::new(),
+            animation_exports: Vec::new(),
             truncated: false,
         },
         InstalledFontSample {
             file_name: "beta.ttf".to_string(),
             path: PathBuf::from("/tmp/beta.ttf"),
             blocks: vec!["CD".to_string()],
+            animation_rows: Vec::new(),
+            animation_previews: Vec::new(),
+            animation_exports: Vec::new(),
             truncated: false,
         },
     ];
@@ -1114,6 +1183,55 @@ fn home_installed_font_buttons_can_be_navigated() {
 }
 
 #[test]
+fn home_installed_font_animation_row_is_selectable_and_copyable() {
+    let project_dir = make_temp_dir("home-installed-animation-copy");
+    let manifest_path = project_dir.join("petiglyph.toml");
+    write_manifest(&manifest_path, &Manifest::default()).expect("manifest is written");
+
+    let icons_dir = project_dir.join("icons");
+    fs::create_dir_all(&icons_dir).expect("icons dir is created");
+    write_test_png(&icons_dir.join("icon.png"));
+
+    let config = RuntimeConfig {
+        project_dir: project_dir.clone(),
+        project_id: "test-home-installed-animation-copy".to_string(),
+        input_dir: icons_dir,
+        out_dir: project_dir.join("build"),
+        font_name: "Petiglyph".to_string(),
+        glyph_size: 8,
+        base_threshold: 64,
+        threshold_overrides: BTreeMap::new(),
+        compositions: BTreeMap::new(),
+        animations: Vec::new(),
+        codepoint_start: 0x10_0000,
+    };
+
+    let mut app = App::new(manifest_path, config);
+    app.installed_fonts = vec![InstalledFontSample {
+        file_name: "alpha.ttf".to_string(),
+        path: PathBuf::from("/tmp/alpha.ttf"),
+        blocks: vec!["AB".to_string()],
+        animation_rows: vec!["Animation: walk (standard, 8 fps, 2 frames)".to_string()],
+        animation_previews: Vec::new(),
+        animation_exports: vec!["name: walk\ntype: standard\nfps: 8\n\nA\n\nB".to_string()],
+        truncated: false,
+    }];
+
+    app.welcome_focus = WelcomeFocus::InstalledFontList;
+    app.selected_installed_font = 0;
+    app.selected_installed_font_sub_index = 2; // title=0, sample=1, animation=2
+    handle_key(&mut app, KeyCode::Enter).expect("copy from animation row should work");
+    assert!(
+        app.last_copy_notification
+            .as_ref()
+            .is_some_and(|(_, id)| id == "0-animation-0"),
+        "animation copy row should register copy notification"
+    );
+
+    fs::remove_dir_all(project_dir).expect("temp project dir is removed");
+}
+
+#[test]
 fn home_view_renders_without_panicking() {
     let project_dir = make_temp_dir("home-render");
     let manifest_path = project_dir.join("petiglyph.toml");
@@ -1133,6 +1251,7 @@ fn home_view_renders_without_panicking() {
         base_threshold: 64,
         threshold_overrides: BTreeMap::new(),
         compositions: BTreeMap::new(),
+        animations: Vec::new(),
         codepoint_start: 0x10_0000,
     };
 
@@ -1264,6 +1383,7 @@ fn build_outputs_generates_non_empty_repo_icon_font() {
         base_threshold: 64,
         threshold_overrides: BTreeMap::new(),
         compositions: BTreeMap::new(),
+        animations: Vec::new(),
         codepoint_start: 0x10_0000,
     };
 
@@ -2164,6 +2284,7 @@ fn build_outputs_centers_non_square_glyphs_in_ttf_line_box() {
         base_threshold: 64,
         threshold_overrides: BTreeMap::new(),
         compositions: BTreeMap::new(),
+        animations: Vec::new(),
         codepoint_start: 0x10_0000,
     };
 
@@ -2233,6 +2354,7 @@ fn build_outputs_embeds_project_identity_in_ttf_unique_name() {
         base_threshold: 64,
         threshold_overrides: BTreeMap::new(),
         compositions: BTreeMap::new(),
+        animations: Vec::new(),
         codepoint_start: 0x10_0000,
     };
 
@@ -2279,6 +2401,7 @@ fn sample_glyphs_from_ttf_bytes_limits_preview_to_requested_count() {
         base_threshold: 64,
         threshold_overrides: BTreeMap::new(),
         compositions: BTreeMap::new(),
+        animations: Vec::new(),
         codepoint_start: 0x10_0000,
     };
     let summary = build_outputs(&config).expect("build succeeds");
@@ -2312,6 +2435,7 @@ fn build_outputs_supports_upper_unicode_edge() {
         base_threshold: 64,
         threshold_overrides: BTreeMap::new(),
         compositions: BTreeMap::new(),
+        animations: Vec::new(),
         codepoint_start: 0x10_FFFE,
     };
 
@@ -2353,6 +2477,7 @@ fn build_outputs_rejects_codepoint_range_above_unicode_max() {
         base_threshold: 64,
         threshold_overrides: BTreeMap::new(),
         compositions: BTreeMap::new(),
+        animations: Vec::new(),
         codepoint_start: 0x10_FFFF,
     };
 
@@ -2386,6 +2511,7 @@ fn build_outputs_rejects_codepoint_range_crossing_surrogates() {
         base_threshold: 64,
         threshold_overrides: BTreeMap::new(),
         compositions: BTreeMap::new(),
+        animations: Vec::new(),
         codepoint_start: 0xD7FF,
     };
 
@@ -2443,6 +2569,7 @@ fn build_outputs_preserves_existing_codepoints_when_new_sorted_source_is_added()
         base_threshold: 64,
         threshold_overrides: BTreeMap::new(),
         compositions: BTreeMap::new(),
+        animations: Vec::new(),
         codepoint_start: 0x10_0000,
     };
 
@@ -2526,6 +2653,7 @@ fn build_outputs_tombstones_removed_sources_and_does_not_reuse_their_codepoints(
         base_threshold: 64,
         threshold_overrides: BTreeMap::new(),
         compositions: BTreeMap::new(),
+        animations: Vec::new(),
         codepoint_start: 0x10_0000,
     };
 
@@ -2744,6 +2872,7 @@ fn build_force_remap_recovers_from_foreign_codepoint_conflict() {
         base_threshold: 64,
         threshold_overrides: BTreeMap::new(),
         compositions: BTreeMap::new(),
+        animations: Vec::new(),
         codepoint_start: 0x10_0000,
     };
 
@@ -2809,6 +2938,7 @@ fn app_new_hydrates_previous_build_outputs_from_disk() {
         base_threshold: 64,
         threshold_overrides: BTreeMap::new(),
         compositions: BTreeMap::new(),
+        animations: Vec::new(),
         codepoint_start: 0x10_0000,
     };
 
@@ -2841,6 +2971,7 @@ fn handle_key_updates_and_clears_selected_threshold_override() {
         base_threshold: 64,
         threshold_overrides: BTreeMap::new(),
         compositions: BTreeMap::new(),
+        animations: Vec::new(),
         codepoint_start: 0x10_0000,
     };
 
@@ -3039,6 +3170,7 @@ fn handle_key_supports_keypad_plus_minus_aliases_for_threshold() {
         base_threshold: 64,
         threshold_overrides: BTreeMap::new(),
         compositions: BTreeMap::new(),
+        animations: Vec::new(),
         codepoint_start: 0x10_0000,
     };
 
@@ -3089,6 +3221,41 @@ fn handle_key_supports_keypad_plus_minus_aliases_for_threshold() {
 }
 
 #[test]
+fn empty_glyphs_panel_focuses_create_grid() {
+    let project_dir = make_temp_dir("empty-glyphs-focus");
+    let manifest_path = project_dir.join("petiglyph.toml");
+    write_manifest(&manifest_path, &Manifest::default()).expect("manifest is written");
+
+    let config = RuntimeConfig {
+        project_dir: project_dir.clone(),
+        project_id: "test-empty-glyphs-focus".to_string(),
+        input_dir: project_dir.join("icons"),
+        out_dir: project_dir.join("build"),
+        font_name: "Petiglyph".to_string(),
+        glyph_size: 8,
+        base_threshold: 64,
+        threshold_overrides: BTreeMap::new(),
+        compositions: BTreeMap::new(),
+        animations: Vec::new(),
+        codepoint_start: 0x10_0000,
+    };
+
+    let mut app = App::new(manifest_path, config);
+    app.view = AppView::Welcome;
+    app.glyphs_focus = GlyphsFocus::List;
+    assert!(app.glyphs.is_empty());
+
+    handle_key(&mut app, KeyCode::Char('2')).expect("panel jump should work");
+    assert_eq!(app.view, AppView::Glyphs);
+    assert_eq!(app.glyphs_focus, GlyphsFocus::GridButton);
+
+    handle_key(&mut app, KeyCode::Down).expect("down should not enter an empty list");
+    assert_eq!(app.glyphs_focus, GlyphsFocus::GridButton);
+
+    fs::remove_dir_all(project_dir).expect("temp project dir is removed");
+}
+
+#[test]
 fn tab_cycles_panels_and_glyph_controls_stay_in_glyph_view() {
     let project_dir = make_temp_dir("handle-key-tab-cycle");
     let manifest_path = project_dir.join("petiglyph.toml");
@@ -3104,6 +3271,7 @@ fn tab_cycles_panels_and_glyph_controls_stay_in_glyph_view() {
         base_threshold: 64,
         threshold_overrides: BTreeMap::new(),
         compositions: BTreeMap::new(),
+        animations: Vec::new(),
         codepoint_start: 0x10_0000,
     };
 
@@ -3183,6 +3351,7 @@ fn dropped_image_on_home_imports_and_switches_to_glyphs() {
         base_threshold: 64,
         threshold_overrides: BTreeMap::new(),
         compositions: BTreeMap::new(),
+        animations: Vec::new(),
         codepoint_start: 0x10_0000,
     };
 
@@ -3236,6 +3405,7 @@ fn dropped_image_with_conflicting_name_is_renamed_without_overwrite() {
         base_threshold: 64,
         threshold_overrides: BTreeMap::new(),
         compositions: BTreeMap::new(),
+        animations: Vec::new(),
         codepoint_start: 0x10_0000,
     };
 
@@ -3289,6 +3459,7 @@ fn handle_key_w_is_not_a_navigation_path() {
         base_threshold: 64,
         threshold_overrides: BTreeMap::new(),
         compositions: BTreeMap::new(),
+        animations: Vec::new(),
         codepoint_start: 0x10_0000,
     };
 
@@ -3330,6 +3501,7 @@ fn build_shortcut_rebuilds_and_clears_previous_outputs() {
         base_threshold: 64,
         threshold_overrides: BTreeMap::new(),
         compositions: BTreeMap::new(),
+        animations: Vec::new(),
         codepoint_start: 0x10_0000,
     };
 
@@ -3408,6 +3580,7 @@ fn tui_launch_overrides_persist_through_reload_and_build() {
         project_id: Some("test-tui-overrides".to_string()),
         threshold_overrides: BTreeMap::new(),
         compositions: BTreeMap::new(),
+        animations: Vec::new(),
     };
     write_manifest(&manifest_path, &manifest).expect("manifest is written");
 

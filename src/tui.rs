@@ -8,6 +8,7 @@ use crossterm::event::{
 use crossterm::terminal::{
     EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode,
 };
+use image::{GenericImage, RgbaImage};
 use ratatui::backend::CrosstermBackend;
 use ratatui::layout::{Alignment, Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
@@ -16,7 +17,7 @@ use ratatui::widgets::{
     Block, BorderType, Borders, Clear, List, ListItem, ListState, Paragraph, Tabs, Wrap,
 };
 use ratatui::{Frame, Terminal};
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::env;
 use std::fs::{self, OpenOptions};
 use std::hash::{Hash, Hasher};
@@ -43,14 +44,15 @@ use crate::install::{
     installed_ttf_candidates_for_manifest_font, uninstall_installed_font_file,
 };
 use crate::project::{
-    BleedLevel, CompositionDef, RuntimeConfig, create_project_in_dir, delete_project_for_manifest,
-    discover_project_manifests, format_codepoint, load_runtime_config, read_manifest,
-    write_manifest,
+    AnimationDef, AnimationType, BleedLevel, CompositionDef, RuntimeConfig, create_project_in_dir,
+    delete_project_for_manifest, discover_project_manifests, format_codepoint, load_runtime_config,
+    read_manifest, write_manifest,
 };
 
 const CLI_VERSION: &str = env!("CARGO_PKG_VERSION");
 const INSTALL_SPINNER_FRAMES: [&str; 4] = ["-", "\\", "|", "/"];
 const UNINSTALL_SPINNER_FRAMES: [&str; 4] = ["/", "|", "\\", "-"];
+const ANIMATION_IMPORT_SPINNER_FRAMES: [&str; 4] = ["-", "\\", "|", "/"];
 const FONT_TASK_SPINNER_FRAME_MS: u64 = 43;
 const BUILD_TASK_MIN_VISIBLE_MS: u64 = 100;
 const WELCOME_SAMPLE_LIMIT: usize = 15;
@@ -93,13 +95,34 @@ pub(crate) struct InstalledFontSample {
     pub(crate) file_name: String,
     pub(crate) path: PathBuf,
     pub(crate) blocks: Vec<String>,
+    pub(crate) animation_rows: Vec<String>,
+    pub(crate) animation_previews: Vec<InstalledFontAnimationPreview>,
+    pub(crate) animation_exports: Vec<String>,
     pub(crate) truncated: bool,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct InstalledFontAnimationPreview {
+    pub(crate) fps: u8,
+    pub(crate) frame_blocks: Vec<String>,
 }
 
 #[derive(Debug, Clone, serde::Deserialize)]
 struct InstalledFontMetadataRecord {
     manifest_path: String,
     installed_ttf: String,
+    #[serde(default)]
+    animation_snapshots: Vec<InstalledAnimationSnapshotRecord>,
+}
+
+#[derive(Debug, Clone, serde::Deserialize)]
+struct InstalledAnimationSnapshotRecord {
+    name: String,
+    #[serde(rename = "type")]
+    animation_type: AnimationType,
+    fps: u8,
+    #[serde(default)]
+    frame_blocks: Vec<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -163,6 +186,8 @@ pub(crate) fn tui_workspace(
     while !app.quit {
         app.poll_build_task();
         app.poll_font_task();
+        app.poll_animation_import_task();
+        app.update_animation_preview();
         app.clear_expired_switch_notice();
         app.refresh_live_glyph_source_count();
         app.refresh_pipeline_debug_log();
@@ -253,6 +278,52 @@ pub(crate) struct GridConfig {
     pub(crate) focus: GridConfigFocus,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AnimationTypeChoiceFocus {
+    Standard,
+    Grid,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AnimationConfigFocus {
+    Name,
+    Fps,
+    Rows,
+    Cols,
+    HorizontalBleed,
+    VerticalBleed,
+    Create,
+}
+
+#[derive(Debug, Clone)]
+struct AnimationConfig {
+    selected_frames: Vec<String>,
+    name_input: Input,
+    animation_type: AnimationType,
+    fps: u8,
+    rows: u32,
+    cols: u32,
+    horizontal_bleed: BleedLevel,
+    vertical_bleed: BleedLevel,
+    focus: AnimationConfigFocus,
+}
+
+#[derive(Debug, Clone)]
+struct AnimationPreview {
+    animation_name: String,
+    frame_index: usize,
+    last_frame_at: Instant,
+}
+
+#[derive(Debug, Clone)]
+enum GlyphToolMode {
+    None,
+    ChooseAnimationType { focus: AnimationTypeChoiceFocus },
+    ImportAnimationFrames(AnimationType),
+    SelectAnimationFrames(AnimationType),
+    ConfigureAnimation(AnimationConfig),
+}
+
 pub(crate) struct App {
     pub(crate) manifest_path: PathBuf,
     pub(crate) project_dir: PathBuf,
@@ -266,6 +337,7 @@ pub(crate) struct App {
     pub(crate) welcome_input_editing: bool,
     pub(crate) verbose_paths: bool,
     pub(crate) installed_fonts: Vec<InstalledFontSample>,
+    installed_animation_started_at: Instant,
     pub(crate) selected_installed_font: usize,
     pub(crate) selected_installed_font_sub_index: usize,
     pub(crate) installed_font_horizontal_focus_uninstall: bool,
@@ -281,6 +353,12 @@ pub(crate) struct App {
     pub(crate) glyphs_focus: GlyphsFocus,
     pub(crate) grid_config: Option<GridConfig>,
     pub(crate) selecting_for_grid: bool,
+    glyph_tool_mode: GlyphToolMode,
+    animation_selection_order: Vec<String>,
+    animation_selection_set: BTreeSet<String>,
+    animation_imported_set: BTreeSet<String>,
+    animation_preview: Option<AnimationPreview>,
+    selecting_for_animation_frames: bool,
     pub(crate) last_build: Option<BuildSummary>,
     pub(crate) last_sample: Option<String>,
     pub(crate) installed_font_path: Option<PathBuf>,
@@ -291,6 +369,7 @@ pub(crate) struct App {
     launch_overrides: TuiLaunchOverrides,
     build_task: Option<BuildTask>,
     install_task: Option<InstallTask>,
+    animation_import_task: Option<AnimationImportTask>,
     live_glyph_source_count: Option<usize>,
     live_glyph_source_probe_fingerprint: Option<u64>,
     live_glyph_source_probe_at: Option<Instant>,
@@ -347,10 +426,38 @@ struct InstallTask {
     spinner_last_frame_at: Instant,
 }
 
+struct AnimationImportTask {
+    receiver: Receiver<Result<AnimationImportTaskOutput, String>>,
+    spinner_index: usize,
+    spinner_last_frame_at: Instant,
+}
+
 #[derive(Debug, Clone)]
 struct BuildTaskOutput {
     summary: BuildSummary,
     sample: String,
+}
+
+#[derive(Debug, Clone)]
+struct DropImportResult {
+    imported: usize,
+    renamed: usize,
+    skipped_existing: usize,
+    skipped_unsupported: usize,
+    skipped_missing: usize,
+    imported_source_keys: Vec<String>,
+}
+
+#[derive(Debug, Clone)]
+struct LoadedGlyphs {
+    glyphs: Vec<InteractiveGlyph>,
+    source_fingerprint: u64,
+}
+
+#[derive(Debug, Clone)]
+struct AnimationImportTaskOutput {
+    import: DropImportResult,
+    loaded: Option<LoadedGlyphs>,
 }
 
 #[derive(Debug, Clone)]
@@ -556,21 +663,33 @@ fn scan_installed_petiglyph_fonts(cwd: &Path) -> Result<Vec<InstalledFontSample>
         let sample_from_manifest = sample_from_installed_font_metadata(&install_dir, &path)
             .ok()
             .flatten();
-        let (raw_blocks, truncated) = if let Some(blocks) = sample_from_manifest {
-            (blocks, false)
-        } else {
-            let (sample, truncated) = fs::read(&path)
-                .ok()
-                .and_then(|bytes| sample_glyphs_from_ttf_bytes(&bytes, WELCOME_SAMPLE_LIMIT))
-                .unwrap_or_default();
-            (vec![sample], truncated)
-        };
+        let (raw_blocks, animation_rows, animation_previews, animation_exports, truncated) =
+            if let Some((blocks, animation_rows, animation_previews, animation_exports)) =
+                sample_from_manifest
+            {
+                (
+                    blocks,
+                    animation_rows,
+                    animation_previews,
+                    animation_exports,
+                    false,
+                )
+            } else {
+                let (sample, truncated) = fs::read(&path)
+                    .ok()
+                    .and_then(|bytes| sample_glyphs_from_ttf_bytes(&bytes, WELCOME_SAMPLE_LIMIT))
+                    .unwrap_or_default();
+                (vec![sample], Vec::new(), Vec::new(), Vec::new(), truncated)
+            };
         let blocks = regroup_installed_sample_blocks(raw_blocks);
 
         samples.push(InstalledFontSample {
             file_name,
             path,
             blocks,
+            animation_rows,
+            animation_previews,
+            animation_exports,
             truncated,
         });
     }
@@ -581,7 +700,14 @@ fn scan_installed_petiglyph_fonts(cwd: &Path) -> Result<Vec<InstalledFontSample>
 fn sample_from_installed_font_metadata(
     install_dir: &Path,
     installed_ttf: &Path,
-) -> Result<Option<Vec<String>>> {
+) -> Result<
+    Option<(
+        Vec<String>,
+        Vec<String>,
+        Vec<InstalledFontAnimationPreview>,
+        Vec<String>,
+    )>,
+> {
     let installed_canonical = installed_ttf.canonicalize().ok();
     let mut metadata_candidates = Vec::new();
 
@@ -625,7 +751,48 @@ fn sample_from_installed_font_metadata(
             continue;
         }
         if let Some(sample) = sample_from_manifest_path(Path::new(&metadata.manifest_path)) {
-            return Ok(Some(sample));
+            let mut animation_rows = Vec::new();
+            let mut animation_previews = Vec::new();
+            let mut animation_exports = Vec::new();
+            let manifest_path = Path::new(&metadata.manifest_path);
+            let resolved_animation_blocks = installed_animation_blocks_from_manifest(manifest_path);
+            for snapshot in metadata.animation_snapshots {
+                let type_label = match snapshot.animation_type {
+                    AnimationType::Standard => "standard",
+                    AnimationType::Grid => "grid",
+                };
+                let frame_blocks = resolved_animation_blocks
+                    .get(&snapshot.name)
+                    .filter(|blocks| !blocks.is_empty())
+                    .cloned()
+                    .unwrap_or(snapshot.frame_blocks);
+                animation_rows.push(format!(
+                    "Animation: {} ({}, {} fps, {} frames)",
+                    snapshot.name,
+                    type_label,
+                    snapshot.fps,
+                    frame_blocks.len()
+                ));
+                animation_previews.push(InstalledFontAnimationPreview {
+                    fps: snapshot.fps,
+                    frame_blocks: frame_blocks.clone(),
+                });
+                let mut export = format!(
+                    "name: {}\ntype: {}\nfps: {}\n",
+                    snapshot.name, type_label, snapshot.fps
+                );
+                if !frame_blocks.is_empty() {
+                    export.push('\n');
+                    export.push_str(&frame_blocks.join("\n\n"));
+                }
+                animation_exports.push(export);
+            }
+            return Ok(Some((
+                sample,
+                animation_rows,
+                animation_previews,
+                animation_exports,
+            )));
         }
     }
 
@@ -648,6 +815,123 @@ fn sample_from_manifest_path(manifest_path: &Path) -> Option<Vec<String>> {
                 .collect::<Vec<_>>(),
         ))
     }
+}
+
+fn installed_animation_blocks_from_manifest(manifest_path: &Path) -> BTreeMap<String, Vec<String>> {
+    let manifest = match read_manifest(manifest_path) {
+        Ok(manifest) => manifest,
+        Err(_) => return BTreeMap::new(),
+    };
+    let project_dir = manifest_path.parent().unwrap_or_else(|| Path::new("."));
+    let mapping_path = project_dir.join(&manifest.out_dir).join("glyph-map.json");
+    let mapping_raw = match fs::read_to_string(mapping_path) {
+        Ok(raw) => raw,
+        Err(_) => return BTreeMap::new(),
+    };
+    let mappings: Vec<MappingEntry> = match serde_json::from_str(&mapping_raw) {
+        Ok(mappings) => mappings,
+        Err(_) => return BTreeMap::new(),
+    };
+    let by_source = mappings
+        .into_iter()
+        .map(|entry| (entry.source_file, entry.codepoint))
+        .collect::<BTreeMap<_, _>>();
+
+    manifest
+        .animations
+        .into_iter()
+        .map(|animation| {
+            let blocks = installed_animation_blocks_for_definition(&animation, &by_source);
+            (animation.name, blocks)
+        })
+        .collect()
+}
+
+fn installed_animation_blocks_for_definition(
+    animation: &AnimationDef,
+    by_source: &BTreeMap<String, String>,
+) -> Vec<String> {
+    animation
+        .frames
+        .iter()
+        .map(|frame| match animation.animation_type {
+            AnimationType::Standard => installed_animation_source_block(by_source, frame)
+                .unwrap_or_else(|| format!("[missing:{frame}]")),
+            AnimationType::Grid => {
+                let rows = animation.rows.unwrap_or(1);
+                let cols = animation.cols.unwrap_or(1);
+                (0..rows)
+                    .map(|row| {
+                        (0..cols)
+                            .map(|col| {
+                                let key = format!("{frame}#compose:{rows}x{cols}:{row}:{col}");
+                                installed_animation_source_block(by_source, &key)
+                                    .and_then(|block| block.chars().next())
+                                    .unwrap_or(' ')
+                            })
+                            .collect::<String>()
+                    })
+                    .collect::<Vec<_>>()
+                    .join("\n")
+            }
+        })
+        .collect()
+}
+
+fn installed_animation_source_block(
+    by_source: &BTreeMap<String, String>,
+    source_key: &str,
+) -> Option<String> {
+    by_source
+        .get(source_key)
+        .cloned()
+        .or_else(|| {
+            let (parent, row, col) = parse_compose_tile_key(source_key)?;
+            by_source.iter().find_map(|(candidate_key, codepoint)| {
+                let (candidate_parent, candidate_row, candidate_col) =
+                    parse_compose_tile_key(candidate_key)?;
+                if candidate_parent == parent && candidate_row == row && candidate_col == col {
+                    Some(codepoint.clone())
+                } else {
+                    None
+                }
+            })
+        })
+        .as_deref()
+        .and_then(|cp| format_codepoint_char(cp))
+        .map(|c| c.to_string())
+}
+
+fn format_codepoint_char(codepoint: &str) -> Option<char> {
+    let raw = codepoint.strip_prefix("U+").unwrap_or(codepoint);
+    u32::from_str_radix(raw, 16).ok().and_then(char::from_u32)
+}
+
+fn parse_compose_tile_key(source_key: &str) -> Option<(&str, usize, usize)> {
+    let (parent, compose) = source_key.split_once("#compose:")?;
+    let (_, pos) = compose.split_once(':')?;
+    let mut pos_parts = pos.split(':');
+    let row = pos_parts.next()?.parse::<usize>().ok()?;
+    let col = pos_parts.next()?.parse::<usize>().ok()?;
+    Some((parent, row, col))
+}
+
+fn glyph_matches_animation_frame_source(glyph: &InteractiveGlyph, frame_source_key: &str) -> bool {
+    if glyph.glyph.source_key == frame_source_key
+        || glyph.glyph.source_parent_key == frame_source_key
+    {
+        return true;
+    }
+    let Some((frame_parent, frame_row, frame_col)) = parse_compose_tile_key(frame_source_key)
+    else {
+        return false;
+    };
+    let Some((glyph_parent, glyph_row, glyph_col)) =
+        parse_compose_tile_key(&glyph.glyph.source_key)
+    else {
+        return false;
+    };
+    glyph_parent == frame_parent && glyph_row == frame_row && glyph_col == frame_col
 }
 
 pub(crate) fn regroup_installed_sample_blocks(blocks: Vec<String>) -> Vec<String> {
@@ -1048,6 +1332,7 @@ fn copy_to_clipboard(text: String) {
 
 fn handle_glyphs_key(app: &mut App, key: KeyEvent) -> Result<()> {
     let code = key.code;
+    app.normalize_glyphs_focus();
 
     if is_keypad_plus_alias(&key) {
         adjust_selected_threshold_by(app, 1);
@@ -1068,11 +1353,210 @@ fn handle_glyphs_key(app: &mut App, key: KeyEvent) -> Result<()> {
         return res;
     }
 
+    if let GlyphToolMode::ChooseAnimationType { mut focus } = app.glyph_tool_mode.clone() {
+        match code {
+            KeyCode::Esc => {
+                app.glyph_tool_mode = GlyphToolMode::None;
+                app.clear_animation_draft();
+                app.status = Some("animation creation canceled".to_string());
+            }
+            KeyCode::Left | KeyCode::Char('h') => {
+                focus = AnimationTypeChoiceFocus::Standard;
+                app.glyph_tool_mode = GlyphToolMode::ChooseAnimationType { focus };
+            }
+            KeyCode::Right | KeyCode::Char('l') => {
+                focus = AnimationTypeChoiceFocus::Grid;
+                app.glyph_tool_mode = GlyphToolMode::ChooseAnimationType { focus };
+            }
+            KeyCode::Enter => {
+                let animation_type = match focus {
+                    AnimationTypeChoiceFocus::Standard => AnimationType::Standard,
+                    AnimationTypeChoiceFocus::Grid => AnimationType::Grid,
+                };
+                app.glyph_tool_mode = GlyphToolMode::ImportAnimationFrames(animation_type);
+                app.selecting_for_animation_frames = true;
+                app.status = Some(
+                    "Import animation frame images now, then press Enter to continue".to_string(),
+                );
+            }
+            _ => {}
+        }
+        return Ok(());
+    }
+
+    if let GlyphToolMode::ImportAnimationFrames(animation_type) = app.glyph_tool_mode.clone() {
+        match code {
+            KeyCode::Esc => {
+                if app.animation_import_task.is_some() {
+                    app.status = Some("animation frames are still loading".to_string());
+                    return Ok(());
+                }
+                app.glyph_tool_mode = GlyphToolMode::None;
+                app.clear_animation_draft();
+                app.status = Some("animation import canceled".to_string());
+            }
+            KeyCode::Enter => {
+                if app.animation_import_task.is_some() {
+                    app.status = Some("animation frames are still loading".to_string());
+                    return Ok(());
+                }
+                app.glyph_tool_mode = GlyphToolMode::SelectAnimationFrames(animation_type);
+                app.selecting_for_animation_frames = true;
+                app.status = Some(
+                    "Select imported frame glyphs with Space, then Enter to configure".to_string(),
+                );
+            }
+            _ => {}
+        }
+        return Ok(());
+    }
+
+    if let GlyphToolMode::SelectAnimationFrames(animation_type) = app.glyph_tool_mode.clone() {
+        match code {
+            KeyCode::Esc => {
+                app.glyph_tool_mode = GlyphToolMode::None;
+                app.clear_animation_draft();
+                app.status = Some("animation frame selection canceled".to_string());
+            }
+            KeyCode::Char(' ') => {
+                if let Some(selected_source_key) = selected_source_parent_key(app) {
+                    if !app.animation_imported_set.contains(&selected_source_key) {
+                        app.status = Some(
+                            "only images imported in this animation flow can be used as frames"
+                                .to_string(),
+                        );
+                        return Ok(());
+                    }
+                    if app.animation_selection_set.contains(&selected_source_key) {
+                        app.animation_selection_set.remove(&selected_source_key);
+                        app.animation_selection_order
+                            .retain(|k| k != &selected_source_key);
+                    } else {
+                        app.animation_selection_set
+                            .insert(selected_source_key.clone());
+                        app.animation_selection_order.push(selected_source_key);
+                    }
+                }
+            }
+            KeyCode::Enter => {
+                if app.animation_selection_order.is_empty() {
+                    app.status = Some("select at least one frame".to_string());
+                } else {
+                    app.start_animation_config(animation_type);
+                    app.selecting_for_animation_frames = false;
+                }
+            }
+            _ => {}
+        }
+        return Ok(());
+    }
+
+    if let GlyphToolMode::ConfigureAnimation(mut animation_config) = app.glyph_tool_mode.clone() {
+        match code {
+            KeyCode::Esc => {
+                app.glyph_tool_mode = GlyphToolMode::None;
+                app.clear_animation_draft();
+                app.status = Some("animation configuration canceled".to_string());
+                return Ok(());
+            }
+            KeyCode::Left | KeyCode::Char('h') => {
+                animation_config.focus = match animation_config.focus {
+                    AnimationConfigFocus::Name => AnimationConfigFocus::Name,
+                    AnimationConfigFocus::Fps => AnimationConfigFocus::Name,
+                    AnimationConfigFocus::Rows => AnimationConfigFocus::Fps,
+                    AnimationConfigFocus::Cols => AnimationConfigFocus::Rows,
+                    AnimationConfigFocus::HorizontalBleed => AnimationConfigFocus::Cols,
+                    AnimationConfigFocus::VerticalBleed => AnimationConfigFocus::HorizontalBleed,
+                    AnimationConfigFocus::Create => {
+                        if animation_config.animation_type == AnimationType::Grid {
+                            AnimationConfigFocus::VerticalBleed
+                        } else {
+                            AnimationConfigFocus::Fps
+                        }
+                    }
+                };
+            }
+            KeyCode::Right | KeyCode::Char('l') => {
+                animation_config.focus = match animation_config.focus {
+                    AnimationConfigFocus::Name => AnimationConfigFocus::Fps,
+                    AnimationConfigFocus::Fps => {
+                        if animation_config.animation_type == AnimationType::Grid {
+                            AnimationConfigFocus::Rows
+                        } else {
+                            AnimationConfigFocus::Create
+                        }
+                    }
+                    AnimationConfigFocus::Rows => AnimationConfigFocus::Cols,
+                    AnimationConfigFocus::Cols => AnimationConfigFocus::HorizontalBleed,
+                    AnimationConfigFocus::HorizontalBleed => AnimationConfigFocus::VerticalBleed,
+                    AnimationConfigFocus::VerticalBleed => AnimationConfigFocus::Create,
+                    AnimationConfigFocus::Create => AnimationConfigFocus::Create,
+                };
+            }
+            KeyCode::Up | KeyCode::Char('k') => match animation_config.focus {
+                AnimationConfigFocus::Fps => {
+                    animation_config.fps = animation_config.fps.saturating_add(1).clamp(1, 30)
+                }
+                AnimationConfigFocus::Rows => {
+                    animation_config.rows = animation_config.rows.saturating_add(1).max(1)
+                }
+                AnimationConfigFocus::Cols => {
+                    animation_config.cols = animation_config.cols.saturating_add(1).max(1)
+                }
+                AnimationConfigFocus::HorizontalBleed => {
+                    animation_config.horizontal_bleed =
+                        next_bleed_level(animation_config.horizontal_bleed)
+                }
+                AnimationConfigFocus::VerticalBleed => {
+                    animation_config.vertical_bleed =
+                        next_bleed_level(animation_config.vertical_bleed)
+                }
+                _ => {}
+            },
+            KeyCode::Down | KeyCode::Char('j') => match animation_config.focus {
+                AnimationConfigFocus::Fps => {
+                    animation_config.fps = animation_config.fps.saturating_sub(1).clamp(1, 30)
+                }
+                AnimationConfigFocus::Rows => {
+                    animation_config.rows = animation_config.rows.saturating_sub(1).max(1)
+                }
+                AnimationConfigFocus::Cols => {
+                    animation_config.cols = animation_config.cols.saturating_sub(1).max(1)
+                }
+                AnimationConfigFocus::HorizontalBleed => {
+                    animation_config.horizontal_bleed =
+                        previous_bleed_level(animation_config.horizontal_bleed)
+                }
+                AnimationConfigFocus::VerticalBleed => {
+                    animation_config.vertical_bleed =
+                        previous_bleed_level(animation_config.vertical_bleed)
+                }
+                _ => {}
+            },
+            KeyCode::Enter => {
+                app.create_animation_from_config(&animation_config)?;
+                return Ok(());
+            }
+            _ => {
+                if animation_config.focus == AnimationConfigFocus::Name {
+                    animation_config.name_input.handle_event(&Event::Key(key));
+                }
+            }
+        }
+        app.glyph_tool_mode = GlyphToolMode::ConfigureAnimation(animation_config);
+        return Ok(());
+    }
+
     match code {
         KeyCode::Esc => {
             if app.selecting_for_grid {
                 app.selecting_for_grid = false;
                 app.status = Some("grid selection canceled".to_string());
+            } else if app.selecting_for_animation_frames {
+                app.selecting_for_animation_frames = false;
+                app.glyph_tool_mode = GlyphToolMode::None;
+                app.clear_animation_draft();
+                app.status = Some("animation selection canceled".to_string());
             } else {
                 app.view = AppView::Welcome;
                 app.welcome_focus = WelcomeFocus::BuildButton;
@@ -1091,9 +1575,11 @@ fn handle_glyphs_key(app: &mut App, key: KeyEvent) -> Result<()> {
             } else if app.glyphs_focus == GlyphsFocus::GridButton
                 || app.glyphs_focus == GlyphsFocus::AnimateButton
             {
-                app.glyphs_focus = GlyphsFocus::List;
-                app.selected_visible = 0;
-                app.clamp_glyph_selection();
+                if !app.visible_glyph_rows().is_empty() {
+                    app.glyphs_focus = GlyphsFocus::List;
+                    app.selected_visible = 0;
+                    app.clamp_glyph_selection();
+                }
             }
         }
         KeyCode::Up | KeyCode::Char('k') => {
@@ -1168,10 +1654,11 @@ fn handle_glyphs_key(app: &mut App, key: KeyEvent) -> Result<()> {
                     Some("Select a glyph to use as grid source and press Enter".to_string());
             }
             GlyphsFocus::AnimateButton => {
-                app.status = Some(
-                    "Animate Glyph is planned for Glyphs tools but is not implemented yet"
-                        .to_string(),
-                );
+                app.clear_animation_draft();
+                app.glyph_tool_mode = GlyphToolMode::ChooseAnimationType {
+                    focus: AnimationTypeChoiceFocus::Standard,
+                };
+                app.status = Some("Choose animation type".to_string());
             }
         },
         KeyCode::Char('c') => {
@@ -1179,6 +1666,29 @@ fn handle_glyphs_key(app: &mut App, key: KeyEvent) -> Result<()> {
         }
         KeyCode::Char('C') => {
             clear_selected_composition(app)?;
+        }
+        KeyCode::Char('D') => {
+            let Some(source_key) = selected_source_parent_key(app) else {
+                app.status = Some("no glyph selected".to_string());
+                return Ok(());
+            };
+            let matches = app
+                .config
+                .animations
+                .iter()
+                .filter(|a| a.frames.iter().any(|f| f == &source_key))
+                .map(|a| a.name.clone())
+                .collect::<Vec<_>>();
+            if matches.is_empty() {
+                app.status = Some("no animation linked to selected glyph".to_string());
+            } else {
+                let target = matches[0].clone();
+                if remove_animation_definition(&app.manifest_path, &target)? {
+                    app.reload_glyphs()?;
+                    app.refresh_workspace_discovery()?;
+                    app.status = Some(format!("deleted animation `{target}`"));
+                }
+            }
         }
         KeyCode::PageUp => {
             if let Some(glyph) = selected_glyph(app) {
@@ -1522,10 +2032,17 @@ fn handle_welcome_key(app: &mut App, key: KeyEvent) -> Result<()> {
                         let content = if app.selected_installed_font_sub_index == 0 {
                             font.path.display().to_string()
                         } else {
-                            font.blocks
-                                .get(app.selected_installed_font_sub_index - 1)
-                                .cloned()
-                                .unwrap_or_default()
+                            let sample_count = font.blocks.len();
+                            let sub = app.selected_installed_font_sub_index - 1;
+                            if sub < sample_count {
+                                font.blocks.get(sub).cloned().unwrap_or_default()
+                            } else {
+                                let anim_idx = sub - sample_count;
+                                font.animation_exports
+                                    .get(anim_idx)
+                                    .cloned()
+                                    .unwrap_or_default()
+                            }
                         };
 
                         if !content.is_empty() {
@@ -1533,7 +2050,13 @@ fn handle_welcome_key(app: &mut App, key: KeyEvent) -> Result<()> {
                             let row_id = if app.selected_installed_font_sub_index == 0 {
                                 "path".to_string()
                             } else {
-                                format!("sample-{}", app.selected_installed_font_sub_index - 1)
+                                let sample_count = font.blocks.len();
+                                let sub = app.selected_installed_font_sub_index - 1;
+                                if sub < sample_count {
+                                    format!("sample-{sub}")
+                                } else {
+                                    format!("animation-{}", sub - sample_count)
+                                }
                             };
                             app.last_copy_notification = Some((
                                 Instant::now(),
@@ -2400,6 +2923,109 @@ fn draw_welcome_view(
                 }
             }
 
+            for (a_idx, animation_row) in font.animation_rows.iter().enumerate() {
+                let sub_idx = 1 + font.blocks.len() + a_idx;
+                let is_focused = is_selected_font
+                    && app.selected_installed_font_sub_index == sub_idx
+                    && app.welcome_focus == WelcomeFocus::InstalledFontList;
+                let preview = font.animation_previews.get(a_idx);
+                let preview_lines = preview
+                    .and_then(|preview| {
+                        installed_animation_preview_lines(
+                            preview,
+                            sample_wrap_width,
+                            app.installed_animation_started_at,
+                            now,
+                        )
+                    })
+                    .unwrap_or_default();
+
+                if is_focused {
+                    selected_font_row_idx = font_rows.len() + preview_lines.len().saturating_sub(1);
+                }
+
+                let bullet = if is_selected_font && app.selected_installed_font_sub_index == sub_idx
+                {
+                    " ● "
+                } else {
+                    " ○ "
+                };
+                let mut spans = vec![
+                    Span::styled(
+                        bullet,
+                        Style::default().fg(if is_focused {
+                            Color::White
+                        } else {
+                            Color::Reset
+                        }),
+                    ),
+                    Span::styled(
+                        animation_row.clone(),
+                        if is_focused {
+                            Style::default()
+                                .bg(accent)
+                                .fg(Color::Black)
+                                .add_modifier(Modifier::BOLD)
+                        } else {
+                            Style::default()
+                                .fg(Color::Magenta)
+                                .add_modifier(Modifier::BOLD)
+                        },
+                    ),
+                ];
+                if let Some(preview) = preview {
+                    if preview.frame_blocks.len() > 1 {
+                        spans.push(Span::styled(
+                            format!(
+                                "  frame {}/{}",
+                                installed_animation_frame_index(
+                                    preview.fps,
+                                    preview.frame_blocks.len(),
+                                    app.installed_animation_started_at,
+                                    now,
+                                ) + 1,
+                                preview.frame_blocks.len()
+                            ),
+                            if is_focused {
+                                Style::default().bg(accent).fg(Color::Black)
+                            } else {
+                                Style::default().fg(muted)
+                            },
+                        ));
+                    }
+                }
+                if is_focused {
+                    if let Some((at, id)) = &app.last_copy_notification {
+                        if id == &format!("{}-animation-{}", f_idx, a_idx)
+                            && now.duration_since(*at) < Duration::from_millis(1500)
+                        {
+                            spans.push(Span::raw("  "));
+                            spans.push(Span::styled(
+                                "copied to clipboard",
+                                Style::default()
+                                    .fg(Color::Yellow)
+                                    .add_modifier(Modifier::BOLD),
+                            ));
+                        }
+                    }
+                }
+                font_rows.push(Line::from(spans));
+                let preview_style = if is_focused {
+                    Style::default()
+                        .bg(accent)
+                        .fg(Color::Black)
+                        .add_modifier(Modifier::BOLD)
+                } else {
+                    Style::default().fg(accent).add_modifier(Modifier::BOLD)
+                };
+                for line_text in preview_lines {
+                    font_rows.push(Line::from(vec![
+                        Span::raw("   "),
+                        Span::styled(line_text, preview_style),
+                    ]));
+                }
+            }
+
             font_rows.push(Line::from(""));
         }
     }
@@ -2459,6 +3085,179 @@ fn draw_welcome_view(
 }
 
 impl App {
+    fn clear_animation_draft(&mut self) {
+        self.animation_selection_order.clear();
+        self.animation_selection_set.clear();
+        self.animation_imported_set.clear();
+        self.selecting_for_animation_frames = false;
+    }
+
+    fn start_animation_config(&mut self, animation_type: AnimationType) {
+        let mut frames = self.animation_selection_order.clone();
+        if frames.is_empty() {
+            let mut fallback = self
+                .animation_selection_set
+                .iter()
+                .cloned()
+                .collect::<Vec<_>>();
+            fallback.sort();
+            frames = fallback;
+        }
+        let name = default_animation_name(&self.config);
+        self.glyph_tool_mode = GlyphToolMode::ConfigureAnimation(AnimationConfig {
+            selected_frames: frames,
+            name_input: Input::new(name),
+            animation_type,
+            fps: 8,
+            rows: 2,
+            cols: 2,
+            horizontal_bleed: BleedLevel::Weak,
+            vertical_bleed: BleedLevel::Off,
+            focus: AnimationConfigFocus::Name,
+        });
+    }
+
+    fn create_animation_from_config(&mut self, config: &AnimationConfig) -> Result<()> {
+        let name = config.name_input.value().trim().to_string();
+        if name.is_empty() {
+            self.status = Some("animation name cannot be empty".to_string());
+            return Ok(());
+        }
+        if config.selected_frames.is_empty() {
+            self.status = Some("animation requires at least one frame".to_string());
+            return Ok(());
+        }
+        if self.config.animations.iter().any(|a| a.name == name) {
+            self.status = Some(format!("animation `{name}` already exists"));
+            return Ok(());
+        }
+
+        if config.animation_type == AnimationType::Grid {
+            for frame in &config.selected_frames {
+                let desired = CompositionDef {
+                    rows: config.rows as usize,
+                    cols: config.cols as usize,
+                    horizontal_bleed: config.horizontal_bleed,
+                    vertical_bleed: config.vertical_bleed,
+                };
+                if let Some(existing) = self.config.compositions.get(frame) {
+                    if existing != &desired {
+                        self.status = Some(format!(
+                            "grid mismatch for {} (expected {}x{} with selected bleed)",
+                            source_display_name(frame),
+                            config.rows,
+                            config.cols
+                        ));
+                        return Ok(());
+                    }
+                } else {
+                    persist_composition_definition(&self.manifest_path, frame, Some(desired))?;
+                }
+            }
+            self.reload_config()?;
+        }
+
+        let imported_selected_frames = config
+            .selected_frames
+            .iter()
+            .filter(|source| self.animation_imported_set.contains(*source))
+            .cloned()
+            .collect::<Vec<_>>();
+
+        let frames = if config.animation_type == AnimationType::Standard {
+            match create_standard_animation_parent_and_children(
+                &self.config.input_dir,
+                &self.glyphs,
+                &config.selected_frames,
+            ) {
+                Ok((parent_key, frames)) => {
+                    let composition = CompositionDef {
+                        rows: 1,
+                        cols: frames.len(),
+                        horizontal_bleed: BleedLevel::Weak,
+                        vertical_bleed: BleedLevel::Off,
+                    };
+                    persist_composition_definition(
+                        &self.manifest_path,
+                        &parent_key,
+                        Some(composition),
+                    )?;
+                    remove_imported_animation_sources(
+                        &self.config.input_dir,
+                        &imported_selected_frames,
+                    )?;
+                    self.reload_config()?;
+                    frames
+                }
+                Err(err) => {
+                    self.status = Some(err.to_string());
+                    return Ok(());
+                }
+            }
+        } else {
+            config.selected_frames.clone()
+        };
+
+        let def = AnimationDef {
+            name: name.clone(),
+            animation_type: config.animation_type,
+            fps: config.fps,
+            frames,
+            rows: (config.animation_type == AnimationType::Grid).then_some(config.rows as usize),
+            cols: (config.animation_type == AnimationType::Grid).then_some(config.cols as usize),
+            horizontal_bleed: (config.animation_type == AnimationType::Grid)
+                .then_some(config.horizontal_bleed),
+            vertical_bleed: (config.animation_type == AnimationType::Grid)
+                .then_some(config.vertical_bleed),
+        };
+        persist_animation_definition(&self.manifest_path, def)?;
+        self.reload_glyphs()?;
+        self.refresh_workspace_discovery()?;
+        self.glyph_tool_mode = GlyphToolMode::None;
+        self.clear_animation_draft();
+        self.status = Some(format!("created animation `{name}`"));
+        Ok(())
+    }
+
+    fn update_animation_preview(&mut self) {
+        if self.config.animations.is_empty() {
+            self.animation_preview = None;
+            return;
+        }
+        let Some(source_key) = selected_source_parent_key(self) else {
+            self.animation_preview = None;
+            return;
+        };
+        let Some(animation) = self.config.animations.iter().find(|a| {
+            a.frames.iter().any(|frame| frame == &source_key)
+                || a.frames
+                    .iter()
+                    .any(|frame| frame.starts_with(&format!("{source_key}#compose:")))
+        }) else {
+            self.animation_preview = None;
+            return;
+        };
+        let now = Instant::now();
+        let mut preview = self.animation_preview.clone().unwrap_or(AnimationPreview {
+            animation_name: animation.name.clone(),
+            frame_index: 0,
+            last_frame_at: now,
+        });
+        if preview.animation_name != animation.name {
+            preview = AnimationPreview {
+                animation_name: animation.name.clone(),
+                frame_index: 0,
+                last_frame_at: now,
+            };
+        }
+        let interval_ms = (1000u64 / u64::from(animation.fps.max(1))).max(1);
+        if now.duration_since(preview.last_frame_at) >= Duration::from_millis(interval_ms) {
+            preview.frame_index = (preview.frame_index + 1) % animation.frames.len().max(1);
+            preview.last_frame_at = now;
+        }
+        self.animation_preview = Some(preview);
+    }
+
     fn current_project_is_built(&self) -> bool {
         self.active_project.is_some() && self.last_build.is_some()
     }
@@ -2520,6 +3319,7 @@ impl App {
             welcome_input_editing: false,
             verbose_paths: false,
             installed_fonts: Vec::new(),
+            installed_animation_started_at: Instant::now(),
             selected_installed_font: 0,
             selected_installed_font_sub_index: 0,
             installed_font_horizontal_focus_uninstall: false,
@@ -2535,6 +3335,12 @@ impl App {
             glyphs_focus: GlyphsFocus::List,
             grid_config: None,
             selecting_for_grid: false,
+            glyph_tool_mode: GlyphToolMode::None,
+            animation_selection_order: Vec::new(),
+            animation_selection_set: BTreeSet::new(),
+            animation_imported_set: BTreeSet::new(),
+            animation_preview: None,
+            selecting_for_animation_frames: false,
             last_build: None,
             last_sample: None,
             installed_font_path: None,
@@ -2545,6 +3351,7 @@ impl App {
             launch_overrides,
             build_task: None,
             install_task: None,
+            animation_import_task: None,
             live_glyph_source_count: None,
             live_glyph_source_probe_fingerprint: None,
             live_glyph_source_probe_at: None,
@@ -2583,6 +3390,7 @@ impl App {
             welcome_input_editing: false,
             verbose_paths: false,
             installed_fonts: Vec::new(),
+            installed_animation_started_at: Instant::now(),
             selected_installed_font: 0,
             selected_installed_font_sub_index: 0,
             installed_font_horizontal_focus_uninstall: false,
@@ -2598,6 +3406,12 @@ impl App {
             glyphs_focus: GlyphsFocus::List,
             grid_config: None,
             selecting_for_grid: false,
+            glyph_tool_mode: GlyphToolMode::None,
+            animation_selection_order: Vec::new(),
+            animation_selection_set: BTreeSet::new(),
+            animation_imported_set: BTreeSet::new(),
+            animation_preview: None,
+            selecting_for_animation_frames: false,
             last_build,
             last_sample,
             installed_font_path,
@@ -2608,6 +3422,7 @@ impl App {
             launch_overrides,
             build_task: None,
             install_task: None,
+            animation_import_task: None,
             live_glyph_source_count: None,
             live_glyph_source_probe_fingerprint: None,
             live_glyph_source_probe_at: None,
@@ -2725,8 +3540,8 @@ impl App {
             Some(f) => f,
             None => return 0,
         };
-        // 1 (Title) + number of blocks
-        1 + font.blocks.len()
+        // 1 (Title) + number of sample blocks + animation rows
+        1 + font.blocks.len() + font.animation_rows.len()
     }
 
     fn visible_glyph_rows(&self) -> Vec<VisibleGlyphRow> {
@@ -2787,6 +3602,15 @@ impl App {
                 first_child_idx, ..
             } => *first_child_idx,
         };
+    }
+
+    fn normalize_glyphs_focus(&mut self) {
+        if self.active_project.is_some()
+            && self.visible_glyph_rows().is_empty()
+            && self.glyphs_focus == GlyphsFocus::List
+        {
+            self.glyphs_focus = GlyphsFocus::GridButton;
+        }
     }
 
     fn selected_visible_row(&self) -> Option<VisibleGlyphRow> {
@@ -3213,7 +4037,10 @@ impl App {
     }
 
     fn import_dropped_images(&mut self, payload: &str) -> Result<()> {
-        if self.build_in_progress() || self.install_in_progress() {
+        if self.build_in_progress()
+            || self.install_in_progress()
+            || self.animation_import_task.is_some()
+        {
             self.status =
                 Some("a background task is in progress; wait before importing images".to_string());
             return Ok(());
@@ -3226,60 +4053,17 @@ impl App {
         }
 
         self.reload_config()?;
-        fs::create_dir_all(&self.config.input_dir)
-            .with_context(|| format!("failed to create {}", self.config.input_dir.display()))?;
-
-        let dropped_paths = collect_dropped_paths(payload);
-        if dropped_paths.is_empty() {
-            self.status = Some("drop did not include readable file paths".to_string());
+        if matches!(
+            self.glyph_tool_mode,
+            GlyphToolMode::ImportAnimationFrames(_)
+        ) {
+            self.start_animation_frame_import(payload.to_string())?;
             return Ok(());
         }
 
-        let mut imported = 0usize;
-        let mut renamed = 0usize;
-        let mut skipped_existing = 0usize;
-        let mut skipped_unsupported = 0usize;
-        let mut skipped_missing = 0usize;
+        let import = import_image_files_to_input(&self.config.input_dir, payload)?;
 
-        for source in dropped_paths {
-            if !source.is_file() {
-                skipped_missing += 1;
-                continue;
-            }
-
-            if !is_supported_source(&source) {
-                skipped_unsupported += 1;
-                continue;
-            }
-
-            let Some(file_name) = source.file_name() else {
-                skipped_missing += 1;
-                continue;
-            };
-
-            let canonical_destination = self.config.input_dir.join(file_name);
-            if paths_resolve_to_same_file(&source, &canonical_destination) {
-                skipped_existing += 1;
-                continue;
-            }
-
-            let (destination, was_renamed) =
-                next_available_import_destination(&self.config.input_dir, file_name);
-            fs::copy(&source, &destination).with_context(|| {
-                format!(
-                    "failed to import {} into {}",
-                    source.display(),
-                    destination.display()
-                )
-            })?;
-
-            imported += 1;
-            if was_renamed {
-                renamed += 1;
-            }
-        }
-
-        if imported > 0 {
+        if import.imported > 0 {
             self.reload_glyphs()?;
             if self.view == AppView::Welcome {
                 self.welcome_input_editing = false;
@@ -3288,12 +4072,43 @@ impl App {
         }
 
         self.status = Some(format_drop_import_status(
-            imported,
-            renamed,
-            skipped_existing,
-            skipped_unsupported,
-            skipped_missing,
+            import.imported,
+            import.renamed,
+            import.skipped_existing,
+            import.skipped_unsupported,
+            import.skipped_missing,
         ));
+        Ok(())
+    }
+
+    fn start_animation_frame_import(&mut self, payload: String) -> Result<()> {
+        if self.animation_import_task.is_some() {
+            self.status = Some("animation frames are already loading".to_string());
+            return Ok(());
+        }
+
+        let config = self.config.clone();
+        let (sender, receiver) = mpsc::channel();
+        thread::spawn(move || {
+            let result = (|| -> Result<AnimationImportTaskOutput> {
+                let import = import_image_files_to_input(&config.input_dir, &payload)?;
+                let loaded = if import.imported > 0 {
+                    Some(load_interactive_glyphs_from_config(&config)?)
+                } else {
+                    None
+                };
+                Ok(AnimationImportTaskOutput { import, loaded })
+            })()
+            .map_err(|err| err.to_string());
+            let _ = sender.send(result);
+        });
+
+        self.animation_import_task = Some(AnimationImportTask {
+            receiver,
+            spinner_index: 0,
+            spinner_last_frame_at: Instant::now(),
+        });
+        self.status = Some("loading animation frames...".to_string());
         Ok(())
     }
 
@@ -3573,6 +4388,83 @@ impl App {
         }
     }
 
+    fn poll_animation_import_task(&mut self) {
+        let mut task_result = None;
+        let mut disconnected = false;
+
+        if let Some(task) = self.animation_import_task.as_mut() {
+            let frame_duration = Duration::from_millis(FONT_TASK_SPINNER_FRAME_MS);
+            let now = Instant::now();
+            while now.duration_since(task.spinner_last_frame_at) >= frame_duration {
+                task.spinner_index =
+                    (task.spinner_index + 1) % ANIMATION_IMPORT_SPINNER_FRAMES.len();
+                task.spinner_last_frame_at += frame_duration;
+            }
+            match task.receiver.try_recv() {
+                Ok(result) => task_result = Some(result),
+                Err(TryRecvError::Empty) => {}
+                Err(TryRecvError::Disconnected) => disconnected = true,
+            }
+        }
+
+        if disconnected {
+            self.animation_import_task = None;
+            self.status = Some("animation frame import task terminated unexpectedly".to_string());
+            return;
+        }
+
+        let Some(result) = task_result else {
+            return;
+        };
+
+        self.animation_import_task = None;
+        match result {
+            Ok(output) => self.finish_animation_import(output),
+            Err(err) => self.status = Some(format!("animation frame import failed: {err}")),
+        }
+    }
+
+    fn finish_animation_import(&mut self, output: AnimationImportTaskOutput) {
+        if let Some(loaded) = output.loaded {
+            self.glyphs = loaded.glyphs;
+            self.clamp_glyph_selection();
+            self.live_glyph_source_count = Some(self.glyphs.len());
+            self.live_glyph_source_probe_fingerprint = Some(loaded.source_fingerprint);
+            self.live_glyph_source_probe_at = Some(Instant::now());
+            if self.view == AppView::Welcome {
+                self.welcome_input_editing = false;
+                self.view = AppView::Glyphs;
+            }
+        }
+
+        for source_key in output.import.imported_source_keys {
+            self.animation_imported_set.insert(source_key.clone());
+            if self.animation_selection_set.insert(source_key.clone()) {
+                self.animation_selection_order.push(source_key);
+            }
+        }
+
+        if output.import.imported > 0 {
+            self.status = Some(format!(
+                "animation draft import: {} frame{} selected",
+                self.animation_selection_order.len(),
+                if self.animation_selection_order.len() == 1 {
+                    ""
+                } else {
+                    "s"
+                }
+            ));
+        } else {
+            self.status = Some(format_drop_import_status(
+                output.import.imported,
+                output.import.renamed,
+                output.import.skipped_existing,
+                output.import.skipped_unsupported,
+                output.import.skipped_missing,
+            ));
+        }
+    }
+
     fn build_task_kind(&self) -> Option<BuildTaskKind> {
         self.build_task.as_ref().map(|task| task.kind)
     }
@@ -3591,6 +4483,13 @@ impl App {
         self.install_task.as_ref().map(|task| {
             let frames = task.kind.spinner_frames();
             frames[task.spinner_index % frames.len()]
+        })
+    }
+
+    fn animation_import_spinner_frame(&self) -> Option<&'static str> {
+        self.animation_import_task.as_ref().map(|task| {
+            ANIMATION_IMPORT_SPINNER_FRAMES
+                [task.spinner_index % ANIMATION_IMPORT_SPINNER_FRAMES.len()]
         })
     }
 
@@ -3615,13 +4514,16 @@ impl App {
 
     #[cfg(test)]
     pub(crate) fn background_task_in_progress(&self) -> bool {
-        self.build_in_progress() || self.install_in_progress()
+        self.build_in_progress()
+            || self.install_in_progress()
+            || self.animation_import_task.is_some()
     }
 
     #[cfg(test)]
     pub(crate) fn poll_background_tasks_for_test(&mut self) {
         self.poll_build_task();
         self.poll_font_task();
+        self.poll_animation_import_task();
     }
 
     fn active_project_label(&self) -> String {
@@ -3681,6 +4583,7 @@ fn inactive_runtime_config(workspace_root: &Path) -> RuntimeConfig {
         base_threshold: 64,
         threshold_overrides: Default::default(),
         compositions: Default::default(),
+        animations: Vec::new(),
         codepoint_start: 0x10_0000,
     }
 }
@@ -3887,6 +4790,54 @@ fn persist_composition_definition(
     write_manifest(manifest_path, &manifest)
 }
 
+fn persist_animation_definition(manifest_path: &Path, animation: AnimationDef) -> Result<()> {
+    let mut manifest = read_manifest(manifest_path)?;
+    manifest.animations.push(animation);
+    write_manifest(manifest_path, &manifest)
+}
+
+fn remove_animation_definition(manifest_path: &Path, animation_name: &str) -> Result<bool> {
+    let mut manifest = read_manifest(manifest_path)?;
+    let original_len = manifest.animations.len();
+    manifest.animations.retain(|a| a.name != animation_name);
+    let removed = manifest.animations.len() != original_len;
+    if removed {
+        write_manifest(manifest_path, &manifest)?;
+    }
+    Ok(removed)
+}
+
+fn default_animation_name(config: &RuntimeConfig) -> String {
+    let existing = config
+        .animations
+        .iter()
+        .map(|a| a.name.as_str())
+        .collect::<BTreeSet<_>>();
+    for idx in 1..=9999 {
+        let candidate = format!("animation_{idx}");
+        if !existing.contains(candidate.as_str()) {
+            return candidate;
+        }
+    }
+    "animation".to_string()
+}
+
+fn remove_imported_animation_sources(input_dir: &Path, source_keys: &[String]) -> Result<usize> {
+    let mut removed = 0usize;
+    for source_key in source_keys {
+        let path = input_dir.join(source_key);
+        if !path.exists() {
+            continue;
+        }
+        if path.is_file() {
+            fs::remove_file(&path)
+                .with_context(|| format!("failed to remove imported frame {}", path.display()))?;
+            removed += 1;
+        }
+    }
+    Ok(removed)
+}
+
 fn selected_source_parent_key(app: &App) -> Option<String> {
     let row = app.selected_visible_row()?;
     match row {
@@ -3933,6 +4884,91 @@ fn duplicate_selected_parent_source_for_grid(app: &mut App, source_key: &str) ->
         &app.config.input_dir,
         &duplicate_path,
     ))
+}
+
+fn create_standard_animation_parent_and_children(
+    input_dir: &Path,
+    glyphs: &[InteractiveGlyph],
+    selected_frames: &[String],
+) -> Result<(String, Vec<String>)> {
+    if selected_frames.is_empty() {
+        bail!("animation requires at least one frame");
+    }
+
+    let frame_paths = selected_frames
+        .iter()
+        .map(|frame_key| {
+            glyphs
+                .iter()
+                .find(|g| &g.glyph.source_parent_key == frame_key)
+                .map(|g| g.glyph.source_path.clone())
+                .ok_or_else(|| {
+                    anyhow::anyhow!("unable to locate frame source file for {frame_key}")
+                })
+        })
+        .collect::<Result<Vec<_>>>()?;
+
+    let first_stem = Path::new(&selected_frames[0])
+        .file_stem()
+        .and_then(|v| v.to_str())
+        .filter(|v| !v.is_empty())
+        .unwrap_or("animation");
+    let anchor_file_name = format!("{first_stem}-animation.png");
+    let (anchor_path, _) =
+        next_available_import_destination(input_dir, std::ffi::OsStr::new(&anchor_file_name));
+
+    let rendered_frames = frame_paths
+        .iter()
+        .map(|path| {
+            image::open(path)
+                .with_context(|| format!("failed to open animation frame {}", path.display()))
+                .map(|img| img.to_rgba8())
+        })
+        .collect::<Result<Vec<_>>>()?;
+
+    let width = rendered_frames[0].width();
+    let height = rendered_frames[0].height();
+    if width == 0 || height == 0 {
+        bail!("animation frame has invalid dimensions 0x0");
+    }
+    for (idx, frame) in rendered_frames.iter().enumerate().skip(1) {
+        if frame.width() != width || frame.height() != height {
+            bail!(
+                "all standard animation frames must have same dimensions; frame {} is {}x{} instead of {}x{}",
+                idx + 1,
+                frame.width(),
+                frame.height(),
+                width,
+                height
+            );
+        }
+    }
+
+    let total_width = width
+        .checked_mul(rendered_frames.len() as u32)
+        .ok_or_else(|| anyhow::anyhow!("animation strip is too wide"))?;
+    let mut strip = RgbaImage::new(total_width, height);
+    for (index, frame) in rendered_frames.iter().enumerate() {
+        let x = width
+            .checked_mul(index as u32)
+            .ok_or_else(|| anyhow::anyhow!("animation strip overflow"))?;
+        strip.copy_from(frame, x, 0).map_err(|err| {
+            anyhow::anyhow!(
+                "failed to assemble animation strip at frame {}: {err}",
+                index + 1
+            )
+        })?;
+    }
+    strip
+        .save(&anchor_path)
+        .with_context(|| format!("failed to save animation strip {}", anchor_path.display()))?;
+
+    let parent_key = source_key_from_input_path(input_dir, &anchor_path);
+    let frame_count = rendered_frames.len();
+    let frame_keys = (0..frame_count)
+        .map(|col| format!("{parent_key}#compose:1x{frame_count}:0:{col}"))
+        .collect::<Vec<_>>();
+    Ok((parent_key, frame_keys))
 }
 
 fn next_incremental_duplicate_destination(
@@ -4279,6 +5315,7 @@ fn handle_key_event(app: &mut App, key: KeyEvent) -> Result<()> {
         KeyCode::Char('2') => {
             app.welcome_input_editing = false;
             app.view = AppView::Glyphs;
+            app.normalize_glyphs_focus();
         }
         KeyCode::Tab => {
             app.welcome_input_editing = false;
@@ -4286,6 +5323,9 @@ fn handle_key_event(app: &mut App, key: KeyEvent) -> Result<()> {
                 AppView::Welcome => AppView::Glyphs,
                 AppView::Glyphs => AppView::Welcome,
             };
+            if app.view == AppView::Glyphs {
+                app.normalize_glyphs_focus();
+            }
             if app.view == AppView::Welcome && app.active_project.is_some() {
                 app.welcome_focus = WelcomeFocus::BuildButton;
             }
@@ -4296,6 +5336,9 @@ fn handle_key_event(app: &mut App, key: KeyEvent) -> Result<()> {
                 AppView::Welcome => AppView::Glyphs,
                 AppView::Glyphs => AppView::Welcome,
             };
+            if app.view == AppView::Glyphs {
+                app.normalize_glyphs_focus();
+            }
             if app.view == AppView::Welcome && app.active_project.is_some() {
                 app.welcome_focus = WelcomeFocus::InstalledFontList;
             }
@@ -4501,6 +5544,7 @@ fn draw_ui(frame: &mut Frame, app: &App) {
     }
     draw_delete_project_confirmation_popup(frame, app, area, accent, muted);
     draw_first_install_notice_popup(frame, app, area, accent, muted);
+    draw_animation_popup(frame, app, area, accent, muted);
 
     // Footer
     let mut footer_spans = vec![
@@ -4959,6 +6003,130 @@ fn draw_blocked_project_view(
     frame.render_widget(Paragraph::new(text).block(block), area);
 }
 
+fn draw_animation_popup(frame: &mut Frame, app: &App, area: Rect, accent: Color, muted: Color) {
+    let text = match &app.glyph_tool_mode {
+        GlyphToolMode::None => return,
+        GlyphToolMode::ChooseAnimationType { focus } => {
+            let standard = if *focus == AnimationTypeChoiceFocus::Standard {
+                "[Standard]"
+            } else {
+                " Standard "
+            };
+            let grid = if *focus == AnimationTypeChoiceFocus::Grid {
+                "[Grid]"
+            } else {
+                " Grid "
+            };
+            vec![
+                Line::from("Choose animation type"),
+                Line::from(""),
+                Line::from(format!("  {standard}   {grid}")),
+                Line::from(""),
+                Line::from("Left/Right to choose, Enter to continue, Esc to cancel."),
+            ]
+        }
+        GlyphToolMode::ImportAnimationFrames(animation_type) => {
+            let mut lines = vec![
+                Line::from(format!("Importing {:?} animation frames", animation_type)),
+                Line::from(""),
+            ];
+            if let Some(spinner) = app.animation_import_spinner_frame() {
+                lines.push(Line::from(format!("{spinner} Loading animation frames...")));
+            } else {
+                lines.push(Line::from("Drag/paste frame images now."));
+                lines.push(Line::from("Press Enter when done, Esc to cancel."));
+            }
+            lines.push(Line::from(format!(
+                "Current draft frames: {}",
+                app.animation_selection_order.len()
+            )));
+            lines
+        }
+        GlyphToolMode::SelectAnimationFrames(animation_type) => vec![
+            Line::from(format!("Selecting {:?} animation frames", animation_type)),
+            Line::from(""),
+            Line::from("Space toggles selected imported glyph row as frame."),
+            Line::from("Enter to configure, Esc to cancel."),
+            Line::from(format!(
+                "Current draft frames: {}",
+                app.animation_selection_order.len()
+            )),
+        ],
+        GlyphToolMode::ConfigureAnimation(config) => {
+            let type_label = match config.animation_type {
+                AnimationType::Standard => "standard",
+                AnimationType::Grid => "grid",
+            };
+            let focus_label = |target: AnimationConfigFocus, label: String| {
+                if config.focus == target {
+                    format!("[{label}]")
+                } else {
+                    label
+                }
+            };
+            let mut lines = vec![
+                Line::from(format!("Configure {type_label} animation")),
+                Line::from(""),
+                Line::from(focus_label(
+                    AnimationConfigFocus::Name,
+                    format!("Name: {}", config.name_input.value()),
+                )),
+                Line::from(focus_label(
+                    AnimationConfigFocus::Fps,
+                    format!("FPS: {}", config.fps),
+                )),
+            ];
+            if config.animation_type == AnimationType::Grid {
+                lines.push(Line::from(focus_label(
+                    AnimationConfigFocus::Rows,
+                    format!("Rows: {}", config.rows),
+                )));
+                lines.push(Line::from(focus_label(
+                    AnimationConfigFocus::Cols,
+                    format!("Cols: {}", config.cols),
+                )));
+                lines.push(Line::from(focus_label(
+                    AnimationConfigFocus::HorizontalBleed,
+                    format!("L/R bleed: {}", bleed_level_label(config.horizontal_bleed)),
+                )));
+                lines.push(Line::from(focus_label(
+                    AnimationConfigFocus::VerticalBleed,
+                    format!("T/B bleed: {}", bleed_level_label(config.vertical_bleed)),
+                )));
+            }
+            lines.push(Line::from(format!(
+                "Frames: {}",
+                config.selected_frames.len()
+            )));
+            lines.push(Line::from(focus_label(
+                AnimationConfigFocus::Create,
+                "Create animation".to_string(),
+            )));
+            lines.push(Line::from(
+                "Left/Right move focus, Up/Down adjust, Enter creates, Esc cancels.",
+            ));
+            lines
+        }
+    };
+    let popup = centered_popup_rect(area, 90, 14);
+    frame.render_widget(Clear, popup);
+    let block = Block::default()
+        .title(Span::styled(
+            " Animation ",
+            Style::default().fg(accent).add_modifier(Modifier::BOLD),
+        ))
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(Style::default().fg(muted));
+    frame.render_widget(
+        Paragraph::new(text)
+            .block(block)
+            .wrap(Wrap { trim: true })
+            .style(Style::default().fg(Color::White)),
+        popup,
+    );
+}
+
 fn draw_grid_config_ui(
     frame: &mut Frame,
     _app: &App,
@@ -5138,7 +6306,9 @@ fn draw_grid_config_ui(
         ]),
         Line::from(vec![
             Span::styled(" Left/right bleed: ", Style::default().fg(accent)),
-            Span::raw("to hide vertical seams; usually safe across terminals (Ghostty, Alacritty, etc)."),
+            Span::raw(
+                "to hide vertical seams; usually safe across terminals (Ghostty, Alacritty, etc).",
+            ),
         ]),
         Line::from(vec![
             Span::styled(" Top/bottom bleed: ", Style::default().fg(accent)),
@@ -5253,7 +6423,7 @@ fn draw_glyphs_view(
         Span::raw("  "),
         Span::styled(" Create Grid ", grid_button_style),
         Span::raw(" "),
-        Span::styled(" Animate Glyph ", animate_button_style),
+        Span::styled(" Create Animation ", animate_button_style),
     ]);
     frame.render_widget(Paragraph::new(button_line), left_chunks[0]);
 
@@ -5261,6 +6431,13 @@ fn draw_glyphs_view(
     if app.selecting_for_grid {
         list_title.push(Span::styled(
             " select a glyph for the grid ",
+            Style::default()
+                .fg(Color::Yellow)
+                .add_modifier(Modifier::BOLD),
+        ));
+    } else if app.selecting_for_animation_frames {
+        list_title.push(Span::styled(
+            " select frames (Space toggle) ",
             Style::default()
                 .fg(Color::Yellow)
                 .add_modifier(Modifier::BOLD),
@@ -5284,6 +6461,8 @@ fn draw_glyphs_view(
             .fg(Color::Black)
             .bg(if app.selecting_for_grid {
                 Color::Yellow
+            } else if app.selecting_for_animation_frames {
+                Color::Yellow
             } else {
                 accent
             })
@@ -5300,8 +6479,13 @@ fn draw_glyphs_view(
             .map(|row| match row {
                 VisibleGlyphRow::Single { glyph_idx } => {
                     let glyph = &app.glyphs[*glyph_idx];
+                    let is_selected_for_animation = app
+                        .animation_selection_set
+                        .contains(&glyph.glyph.source_parent_key);
                     let marker = if glyph.saved_threshold.is_some() {
                         " *"
+                    } else if is_selected_for_animation {
+                        " +"
                     } else {
                         "  "
                     };
@@ -5320,11 +6504,16 @@ fn draw_glyphs_view(
                     cols,
                     ..
                 } => {
+                    let marker = if app.animation_selection_set.contains(source_key) {
+                        "+"
+                    } else {
+                        " "
+                    };
                     let expanded = app.expanded_compositions.contains(source_key);
                     let arrow = if expanded { "[-]" } else { "[+]" };
                     let label = source_display_name(source_key);
                     ListItem::new(Line::from(vec![
-                        Span::styled("  ", Style::default().fg(Color::Yellow)),
+                        Span::styled(format!(" {marker}"), Style::default().fg(Color::Yellow)),
                         Span::styled(arrow, Style::default().fg(accent)),
                         Span::raw(" "),
                         Span::styled(label, Style::default().fg(Color::White)),
@@ -5386,6 +6575,32 @@ fn draw_glyphs_view(
 
     let preview_area = preview_block.inner(chunks[1]);
 
+    let selected_source_for_animation = selected_source_parent_key(app);
+    let active_animation = selected_source_for_animation
+        .as_ref()
+        .and_then(|source_key| {
+            app.config.animations.iter().find(|a| {
+                a.frames.iter().any(|f| f == source_key)
+                    || a.frames
+                        .iter()
+                        .any(|f| f.starts_with(&format!("{source_key}#compose:")))
+            })
+        });
+    let active_animation_frame = active_animation.and_then(|animation| {
+        let preview = app.animation_preview.as_ref()?;
+        if preview.animation_name != animation.name {
+            return None;
+        }
+        animation
+            .frames
+            .get(
+                preview
+                    .frame_index
+                    .min(animation.frames.len().saturating_sub(1)),
+            )
+            .cloned()
+    });
+
     let mut preview_content = if visible_rows.is_empty() {
         vec![
             Line::from(""),
@@ -5427,6 +6642,17 @@ fn draw_glyphs_view(
                             } else {
                                 " (default)"
                             },
+                            Style::default().fg(muted),
+                        ),
+                    ]),
+                    Line::from(vec![
+                        Span::raw("  Animation: "),
+                        Span::styled(
+                            active_animation
+                                .map(|a| {
+                                    format!("{} ({:?}, {} fps)", a.name, a.animation_type, a.fps)
+                                })
+                                .unwrap_or_else(|| "none".to_string()),
                             Style::default().fg(muted),
                         ),
                     ]),
@@ -5522,6 +6748,17 @@ fn draw_glyphs_view(
                         Span::raw("  Preview: "),
                         Span::styled("Assembled composition", Style::default().fg(muted)),
                     ]),
+                    Line::from(vec![
+                        Span::raw("  Animation: "),
+                        Span::styled(
+                            active_animation
+                                .map(|a| {
+                                    format!("{} ({:?}, {} fps)", a.name, a.animation_type, a.fps)
+                                })
+                                .unwrap_or_else(|| "none".to_string()),
+                            Style::default().fg(muted),
+                        ),
+                    ]),
                     Line::from(""),
                 ]
             }
@@ -5530,41 +6767,95 @@ fn draw_glyphs_view(
 
     if !visible_rows.is_empty() {
         match &visible_rows[app.selected_visible.min(visible_rows.len() - 1)] {
-            VisibleGlyphRow::Single { glyph_idx }
-            | VisibleGlyphRow::CompositionChild { glyph_idx, .. } => {
-                let active = &app.glyphs[*glyph_idx];
-                let mut ascii = preview_lines(
-                    &active.glyph,
-                    active.working_threshold,
-                    preview_area.width.saturating_sub(4) / 2,
-                    preview_area.height.saturating_sub(6),
-                );
-                preview_content.append(&mut ascii);
-            }
-            VisibleGlyphRow::CompositionParent {
-                source_key,
-                rows,
-                cols,
-                ..
-            } => {
-                let tiles = app
-                    .glyphs
-                    .iter()
-                    .filter(|g| g.glyph.source_parent_key == *source_key)
-                    .collect::<Vec<_>>();
-                let threshold = tiles
-                    .first()
-                    .map(|g| g.working_threshold)
-                    .unwrap_or(app.config.base_threshold);
-                let mut ascii = composition_preview_lines(
-                    &tiles,
-                    threshold,
-                    *rows,
-                    *cols,
-                    preview_area.width.saturating_sub(4) / 2,
-                    preview_area.height.saturating_sub(6),
-                );
-                preview_content.append(&mut ascii);
+            _ => {
+                if let (Some(animation), Some(frame_source_key)) =
+                    (active_animation, active_animation_frame.as_ref())
+                {
+                    let threshold = app
+                        .glyphs
+                        .iter()
+                        .find(|g| glyph_matches_animation_frame_source(g, frame_source_key))
+                        .map(|g| g.working_threshold)
+                        .unwrap_or(app.config.base_threshold);
+                    let mut ascii = if animation.animation_type == AnimationType::Grid {
+                        let rows = animation.rows.unwrap_or(2);
+                        let cols = animation.cols.unwrap_or(2);
+                        let tiles = app
+                            .glyphs
+                            .iter()
+                            .filter(|g| g.glyph.source_parent_key == *frame_source_key)
+                            .collect::<Vec<_>>();
+                        composition_preview_lines(
+                            &tiles,
+                            threshold,
+                            rows,
+                            cols,
+                            preview_area.width.saturating_sub(4) / 2,
+                            preview_area.height.saturating_sub(8),
+                        )
+                    } else {
+                        app.glyphs
+                            .iter()
+                            .find(|g| glyph_matches_animation_frame_source(g, frame_source_key))
+                            .map(|g| {
+                                preview_lines(
+                                    &g.glyph,
+                                    threshold,
+                                    preview_area.width.saturating_sub(4) / 2,
+                                    preview_area.height.saturating_sub(8),
+                                )
+                            })
+                            .unwrap_or_else(|| vec![Line::from("    [Animation frame missing]")])
+                    };
+                    preview_content.push(Line::from(vec![
+                        Span::raw("  Frame: "),
+                        Span::styled(
+                            source_display_name(frame_source_key),
+                            Style::default().fg(Color::Yellow),
+                        ),
+                    ]));
+                    preview_content.push(Line::from(""));
+                    preview_content.append(&mut ascii);
+                } else {
+                    match &visible_rows[app.selected_visible.min(visible_rows.len() - 1)] {
+                        VisibleGlyphRow::Single { glyph_idx }
+                        | VisibleGlyphRow::CompositionChild { glyph_idx, .. } => {
+                            let active = &app.glyphs[*glyph_idx];
+                            let mut ascii = preview_lines(
+                                &active.glyph,
+                                active.working_threshold,
+                                preview_area.width.saturating_sub(4) / 2,
+                                preview_area.height.saturating_sub(6),
+                            );
+                            preview_content.append(&mut ascii);
+                        }
+                        VisibleGlyphRow::CompositionParent {
+                            source_key,
+                            rows,
+                            cols,
+                            ..
+                        } => {
+                            let tiles = app
+                                .glyphs
+                                .iter()
+                                .filter(|g| g.glyph.source_parent_key == *source_key)
+                                .collect::<Vec<_>>();
+                            let threshold = tiles
+                                .first()
+                                .map(|g| g.working_threshold)
+                                .unwrap_or(app.config.base_threshold);
+                            let mut ascii = composition_preview_lines(
+                                &tiles,
+                                threshold,
+                                *rows,
+                                *cols,
+                                preview_area.width.saturating_sub(4) / 2,
+                                preview_area.height.saturating_sub(6),
+                            );
+                            preview_content.append(&mut ascii);
+                        }
+                    }
+                }
             }
         }
     }
@@ -6118,6 +7409,108 @@ fn format_drop_import_status(
     )
 }
 
+fn import_image_files_to_input(input_dir: &Path, payload: &str) -> Result<DropImportResult> {
+    fs::create_dir_all(input_dir)
+        .with_context(|| format!("failed to create {}", input_dir.display()))?;
+
+    let dropped_paths = collect_dropped_paths(payload);
+    if dropped_paths.is_empty() {
+        bail!("drop did not include readable file paths");
+    }
+
+    let mut imported = 0usize;
+    let mut renamed = 0usize;
+    let mut skipped_existing = 0usize;
+    let mut skipped_unsupported = 0usize;
+    let mut skipped_missing = 0usize;
+    let mut imported_source_keys = Vec::new();
+
+    for source in dropped_paths {
+        if !source.is_file() {
+            skipped_missing += 1;
+            continue;
+        }
+
+        if !is_supported_source(&source) {
+            skipped_unsupported += 1;
+            continue;
+        }
+
+        let Some(file_name) = source.file_name() else {
+            skipped_missing += 1;
+            continue;
+        };
+
+        let canonical_destination = input_dir.join(file_name);
+        if paths_resolve_to_same_file(&source, &canonical_destination) {
+            skipped_existing += 1;
+            continue;
+        }
+
+        let (destination, was_renamed) = next_available_import_destination(input_dir, file_name);
+        fs::copy(&source, &destination).with_context(|| {
+            format!(
+                "failed to import {} into {}",
+                source.display(),
+                destination.display()
+            )
+        })?;
+
+        imported_source_keys.push(source_key_from_input_path(input_dir, &destination));
+        imported += 1;
+        if was_renamed {
+            renamed += 1;
+        }
+    }
+
+    Ok(DropImportResult {
+        imported,
+        renamed,
+        skipped_existing,
+        skipped_unsupported,
+        skipped_missing,
+        imported_source_keys,
+    })
+}
+
+fn load_interactive_glyphs_from_config(config: &RuntimeConfig) -> Result<LoadedGlyphs> {
+    let mut sources = Vec::new();
+    for entry in WalkDir::new(&config.input_dir).follow_links(true) {
+        let entry = entry
+            .with_context(|| format!("failed while scanning {}", config.input_dir.display()))?;
+        if entry.file_type().is_file() && is_supported_source(entry.path()) {
+            sources.push(entry.path().to_path_buf());
+        }
+    }
+    sources.sort();
+
+    let glyphs = preprocess_sources_with_compositions(
+        &sources,
+        &config.input_dir,
+        config.glyph_size,
+        &config.compositions,
+    )?
+    .into_iter()
+    .map(|glyph| {
+        let saved_threshold = config
+            .threshold_overrides
+            .get(&glyph.source_parent_key)
+            .copied();
+        let working_threshold = saved_threshold.unwrap_or(config.base_threshold);
+        InteractiveGlyph {
+            glyph,
+            saved_threshold,
+            working_threshold,
+        }
+    })
+    .collect::<Vec<_>>();
+
+    Ok(LoadedGlyphs {
+        glyphs,
+        source_fingerprint: glyph_source_fingerprint(&config.input_dir)?,
+    })
+}
+
 fn detected_terminal_name() -> Option<&'static str> {
     let term_program = env::var("TERM_PROGRAM")
         .unwrap_or_default()
@@ -6399,17 +7792,52 @@ pub(crate) fn installed_font_block_display_lines_with_reference(
     out
 }
 
+fn installed_animation_frame_index(
+    fps: u8,
+    frame_count: usize,
+    started_at: Instant,
+    now: Instant,
+) -> usize {
+    if frame_count <= 1 {
+        return 0;
+    }
+
+    let fps = u128::from(fps.max(1));
+    let elapsed_ms = now.duration_since(started_at).as_millis();
+    ((elapsed_ms.saturating_mul(fps) / 1000) as usize) % frame_count
+}
+
+fn installed_animation_preview_lines(
+    preview: &InstalledFontAnimationPreview,
+    max_chars: usize,
+    started_at: Instant,
+    now: Instant,
+) -> Option<Vec<String>> {
+    if preview.frame_blocks.is_empty() {
+        return None;
+    }
+
+    let frame_index =
+        installed_animation_frame_index(preview.fps, preview.frame_blocks.len(), started_at, now);
+    preview
+        .frame_blocks
+        .get(frame_index)
+        .map(|block| installed_font_block_display_lines_with_reference(block, max_chars))
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
-        App, AppView, KeyCode, RuntimeConfig, drag_images_here_lines, handle_key, preview_lines,
+        App, AppView, InteractiveGlyph, KeyCode, RuntimeConfig, drag_images_here_lines,
+        glyph_matches_animation_frame_source, handle_key, installed_animation_frame_index,
+        installed_animation_source_block, preview_lines, remove_imported_animation_sources,
         scrollbar_thumb_geometry, visible_window_bounds,
     };
     use crate::build::PreprocessedGlyph;
     use std::collections::BTreeMap;
     use std::fs;
     use std::path::PathBuf;
-    use std::time::{SystemTime, UNIX_EPOCH};
+    use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
     fn make_temp_dir(name: &str) -> PathBuf {
         let nonce = SystemTime::now()
@@ -6435,6 +7863,7 @@ mod tests {
             base_threshold: 64,
             threshold_overrides: BTreeMap::new(),
             compositions: BTreeMap::new(),
+            animations: Vec::new(),
             codepoint_start: 0x10_0000,
         };
 
@@ -6475,6 +7904,7 @@ mod tests {
             base_threshold: 64,
             threshold_overrides: BTreeMap::new(),
             compositions: BTreeMap::new(),
+            animations: Vec::new(),
             codepoint_start: 0x10_0000,
         };
 
@@ -6486,6 +7916,111 @@ mod tests {
 
         handle_key(&mut app, KeyCode::Char('V')).expect("V should toggle verbose paths off");
         assert!(!app.verbose_paths, "verbose paths should toggle off");
+
+        fs::remove_dir_all(project_dir).expect("temp dir is removed");
+    }
+
+    #[test]
+    fn installed_animation_preview_advances_one_frame_at_a_time() {
+        let started_at = Instant::now();
+
+        assert_eq!(
+            installed_animation_frame_index(4, 3, started_at, started_at),
+            0
+        );
+        assert_eq!(
+            installed_animation_frame_index(
+                4,
+                3,
+                started_at,
+                started_at + Duration::from_millis(250),
+            ),
+            1
+        );
+        assert_eq!(
+            installed_animation_frame_index(
+                4,
+                3,
+                started_at,
+                started_at + Duration::from_millis(500),
+            ),
+            2
+        );
+        assert_eq!(
+            installed_animation_frame_index(
+                4,
+                3,
+                started_at,
+                started_at + Duration::from_millis(750),
+            ),
+            0
+        );
+    }
+
+    #[test]
+    fn installed_animation_source_block_falls_back_to_matching_compose_row_col() {
+        let by_source = BTreeMap::from([
+            (
+                "strip.png#compose:1x4:0:0".to_string(),
+                "U+100000".to_string(),
+            ),
+            (
+                "strip.png#compose:1x4:0:1".to_string(),
+                "U+100001".to_string(),
+            ),
+        ]);
+        let block0 = installed_animation_source_block(&by_source, "strip.png#compose:1x2:0:0");
+        let block1 = installed_animation_source_block(&by_source, "strip.png#compose:1x2:0:1");
+
+        assert_eq!(block0, Some(char::from_u32(0x100000).unwrap().to_string()));
+        assert_eq!(block1, Some(char::from_u32(0x100001).unwrap().to_string()));
+    }
+
+    #[test]
+    fn glyph_matches_animation_frame_source_falls_back_to_matching_compose_row_col() {
+        let glyph = InteractiveGlyph {
+            glyph: PreprocessedGlyph {
+                source_path: PathBuf::from("icons/strip.png"),
+                source_key: "strip.png#compose:1x4:0:1".to_string(),
+                source_parent_key: "strip.png".to_string(),
+                glyph_name: "strip_r1_c2".to_string(),
+                width: 8,
+                height: 8,
+                coverage: vec![0; 64],
+                image_fingerprint: "fnv1a64:test".to_string(),
+                composition_tile: None,
+            },
+            working_threshold: 64,
+            saved_threshold: None,
+        };
+
+        assert!(glyph_matches_animation_frame_source(
+            &glyph,
+            "strip.png#compose:1x2:0:1"
+        ));
+    }
+
+    #[test]
+    fn remove_imported_animation_sources_removes_only_existing_files() {
+        let project_dir = make_temp_dir("remove-imported-animation-sources");
+        let input_dir = project_dir.join("icons");
+        fs::create_dir_all(&input_dir).expect("icons dir is created");
+        fs::write(input_dir.join("f1.png"), b"x").expect("frame1 is written");
+        fs::write(input_dir.join("f2.png"), b"x").expect("frame2 is written");
+
+        let removed = remove_imported_animation_sources(
+            &input_dir,
+            &[
+                "f1.png".to_string(),
+                "f2.png".to_string(),
+                "missing.png".to_string(),
+            ],
+        )
+        .expect("remove imported sources should work");
+
+        assert_eq!(removed, 2);
+        assert!(!input_dir.join("f1.png").exists());
+        assert!(!input_dir.join("f2.png").exists());
 
         fs::remove_dir_all(project_dir).expect("temp dir is removed");
     }
@@ -6504,6 +8039,7 @@ mod tests {
             base_threshold: 64,
             threshold_overrides: BTreeMap::new(),
             compositions: BTreeMap::new(),
+            animations: Vec::new(),
             codepoint_start: 0x10_0000,
         };
 
@@ -6540,6 +8076,7 @@ mod tests {
             base_threshold: 64,
             threshold_overrides: BTreeMap::new(),
             compositions: BTreeMap::new(),
+            animations: Vec::new(),
             codepoint_start: 0x10_0000,
         };
 
