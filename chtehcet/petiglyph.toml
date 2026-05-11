@@ -1,7 +1,0 @@
-input_dir = "icons"
-out_dir = "build"
-font_name = "Chtehcet"
-glyph_size = 64
-threshold = 64
-codepoint_start = "U+100000"
-project_id = "4aec933e2c314b97be5d678daca18f3a"
