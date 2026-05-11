@@ -25,6 +25,7 @@
   - `petiglyph nuke-everything`
   - `petiglyph doctor`
 - If no subcommand is provided, `petiglyph` launches the interactive workspace TUI.
+- `petiglyph uninstall` is a hidden, intentionally ambiguous stub that exits with guidance to use `uninstall-font` or `nuke-everything`.
 - In non-interactive contexts (no TTY), TUI launch fails with an explicit terminal-required error.
 - Manifest auto-detection when `--manifest` is omitted checks:
   - `./petiglyph.toml` first
@@ -43,6 +44,9 @@
   - [src/tui.rs](/home/peti_poua/Code/petiglyph/src/tui.rs)
   - [src/project.rs](/home/peti_poua/Code/petiglyph/src/project.rs)
   - [src/build.rs](/home/peti_poua/Code/petiglyph/src/build.rs)
+  - [src/compose.rs](/home/peti_poua/Code/petiglyph/src/compose.rs)
+  - [src/image_pipeline.rs](/home/peti_poua/Code/petiglyph/src/image_pipeline.rs)
+  - [src/glyph_debug.rs](/home/peti_poua/Code/petiglyph/src/glyph_debug.rs)
   - [src/install.rs](/home/peti_poua/Code/petiglyph/src/install.rs)
   - [src/doctor.rs](/home/peti_poua/Code/petiglyph/src/doctor.rs)
   - [src/artifact_warning.rs](/home/peti_poua/Code/petiglyph/src/artifact_warning.rs)
@@ -53,7 +57,7 @@
   - [Cargo.toml](/home/peti_poua/Code/petiglyph/Cargo.toml)
   - [README.md](/home/peti_poua/Code/petiglyph/README.md)
   - [petiglyph.toml](/home/peti_poua/Code/petiglyph/petiglyph.toml) (sample/root manifest)
-  - [PLAN.md](/home/peti_poua/Code/petiglyph/PLAN.md)
+  - [PLAN-ANIMATE.md](/home/peti_poua/Code/petiglyph/PLAN-ANIMATE.md)
 - Local Arch packaging helpers:
   - [PKGBUILD](/home/peti_poua/Code/petiglyph/PKGBUILD)
   - `scripts/aur.sh`

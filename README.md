@@ -43,7 +43,21 @@ After `create`, place your images in `icons/` and use the TUI to tune thresholds
 petiglyph create my-font
 petiglyph create my-font --no-launch
 
-# launch the TUI for the current project
+# list local projects and managed installed fonts
+petiglyph list
+petiglyph list --json
+
+# delete a project
+petiglyph delete --manifest ./my-font/petiglyph.toml
+petiglyph delete --manifest ./my-font/petiglyph.toml --json
+
+# per-glyph threshold overrides
+petiglyph set-threshold alpha.png 128
+petiglyph set-threshold alpha.png 128 --json
+petiglyph clear-threshold alpha.png
+petiglyph clear-threshold alpha.png --json
+
+# launch the TUI for the current project/workspace
 petiglyph
 petiglyph tui
 
@@ -84,6 +98,8 @@ When `--manifest` is omitted, petiglyph checks `./petiglyph.toml` first, then sc
 
 - if exactly one project is found, it auto-selects that project while keeping the Home panel available
 - if none or multiple projects are found, `petiglyph` / `petiglyph tui` start on the integrated Home panel where you can create a project folder
+
+`petiglyph uninstall` is intentionally ambiguous and exits with guidance to use either `uninstall-font` or `nuke-everything`.
 
 ## Automation API Contract
 
@@ -192,7 +208,7 @@ Both are installed into a flat `petiglyph` directory under the user font root.
 
 `install-font` is idempotent for a given effective font name.
 
-`sample` now performs a managed install before printing glyphs so the sample codepoints are immediately available without terminal restart/cache-manual steps.
+`sample` performs a managed install before printing glyphs so the sample codepoints are immediately available without terminal restart/cache-manual steps.
 
 Install artifacts are immutable per build:
 
@@ -202,7 +218,7 @@ Install artifacts are immutable per build:
 
 `uninstall-font` removes the active immutable artifact for the current manifest font identity.
 
-`uninstall` is tool-level cleanup for the current user:
+`nuke-everything` is tool-level cleanup for the current user:
 - removes all managed petiglyph TTFs in the managed install directory
 - removes petiglyph install metadata and machine state files
 - removes the managed `petiglyph` install directory when empty
@@ -282,7 +298,7 @@ cargo run -- sample --manifest ./petiglyph.toml
 cargo run -- tui --manifest ./petiglyph.toml
 cargo run -- install-font --manifest ./petiglyph.toml --json
 cargo run -- uninstall-font --manifest ./petiglyph.toml --json
-cargo run -- uninstall --json
+cargo run -- nuke-everything --json
 cargo run -- doctor --manifest ./petiglyph.toml --json
 ```
 
@@ -413,8 +429,5 @@ For composition grids, `ttf.bleed` log lines show which internal tile edges rece
 - composition tile TTF outlines can use small internal-edge expansion to hide rasterizer seams without changing glyph advance; vertical expansion is stronger than horizontal when enabled, but can be disabled for straighter row-crossing geometry
 - default `codepoint_start` is `U+100000` to avoid common BMP private-use collisions
 - private-use codepoints are East Asian Ambiguous width in Unicode; for stable terminal alignment keep ambiguous width as single-cell (for example: WezTerm `treat_east_asian_ambiguous_width_as_wide = false`, iTerm2 disable “Ambiguous characters are double-width”)
-- while validating composite grids, avoid custom terminal line/cell spacing tweaks (`line_height`, `cell_height`, `font.offset.y`) that can introduce artificial row gaps
-- if metadata/lock artifacts are incompatible, CLI errors include an actionable `petiglyph doctor --repair` hint
-us width in Unicode; for stable terminal alignment keep ambiguous width as single-cell (for example: WezTerm `treat_east_asian_ambiguous_width_as_wide = false`, iTerm2 disable “Ambiguous characters are double-width”)
 - while validating composite grids, avoid custom terminal line/cell spacing tweaks (`line_height`, `cell_height`, `font.offset.y`) that can introduce artificial row gaps
 - if metadata/lock artifacts are incompatible, CLI errors include an actionable `petiglyph doctor --repair` hint
