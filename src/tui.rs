@@ -1009,7 +1009,6 @@ fn handle_grid_config_key(app: &mut App, config: &mut GridConfig, key: KeyEvent)
                     }),
                 )?;
                 app.reload_glyphs()?;
-                app.expanded_compositions.insert(source_key.clone());
                 app.grid_config = None;
                 app.status = Some(format!(
                     "Created {}x{} grid for {} (left/right bleed: {}, top/bottom bleed: {})",
@@ -5252,7 +5251,7 @@ fn draw_glyphs_view(
 
     let button_line = Line::from(vec![
         Span::raw("  "),
-        Span::styled(" Glyph Grid ", grid_button_style),
+        Span::styled(" Create Grid ", grid_button_style),
         Span::raw(" "),
         Span::styled(" Animate Glyph ", animate_button_style),
     ]);
@@ -5331,7 +5330,7 @@ fn draw_glyphs_view(
                         Span::styled(label, Style::default().fg(Color::White)),
                         Span::raw(" "),
                         Span::styled(
-                            format!("(compo. {}x{})", rows, cols),
+                            format!("(grid {}x{})", rows, cols),
                             Style::default().fg(Color::Yellow),
                         ),
                     ]))
@@ -6245,7 +6244,7 @@ fn drag_images_here_lines(
     let top_border = format!("╭{}╮", dashed_pattern(inner_width));
     let bottom_border = format!("╰{}╯", dashed_pattern(inner_width));
     let side_for_row = |row: usize| if row % 2 == 0 { " " } else { "│" };
-    let centered_label = center_label("DRAG IMAGES HERE", inner_width);
+    let centered_label = center_label("DRAG/PASTE IMAGES HERE", inner_width);
     let border_style = Style::default().fg(accent);
     let label_style = Style::default().fg(accent).add_modifier(Modifier::BOLD);
 
@@ -6656,8 +6655,8 @@ mod tests {
         assert!(
             rendered
                 .iter()
-                .any(|line| line.contains("DRAG IMAGES HERE")),
-            "placeholder body should include drag label"
+                .any(|line| line.contains("DRAG/PASTE IMAGES HERE")),
+            "placeholder body should include drag/paste label"
         );
     }
 }
