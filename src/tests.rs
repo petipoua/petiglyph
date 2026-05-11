@@ -980,7 +980,7 @@ fn glyph_view_animate_button_runs_placeholder_action() {
     assert!(
         app.status
             .as_deref()
-            .is_some_and(|status| status.contains("Choose animation type"))
+            .is_some_and(|status| status.contains("Import animation frame images now"))
     );
     assert_eq!(app.view, AppView::Glyphs);
 
@@ -1018,8 +1018,7 @@ fn standard_animation_config_escape_cancels_popup() {
     app.view = AppView::Glyphs;
     app.glyphs_focus = GlyphsFocus::AnimateButton;
 
-    handle_key(&mut app, KeyCode::Enter).expect("open animation type chooser");
-    handle_key(&mut app, KeyCode::Enter).expect("choose standard animation");
+    handle_key(&mut app, KeyCode::Enter).expect("open animation import");
     handle_paste_event_for_test(&mut app, &frame.display().to_string())
         .expect("import animation frame");
     assert!(
@@ -1032,6 +1031,7 @@ fn standard_animation_config_escape_cancels_popup() {
             .is_some_and(|status| status.contains("loading animation frames"))
     );
     drain_background_tasks(&mut app);
+    handle_key(&mut app, KeyCode::Enter).expect("choose animation type");
     handle_key(&mut app, KeyCode::Enter).expect("advance to frame selection");
     handle_key(&mut app, KeyCode::Enter).expect("open standard animation config");
 
@@ -3632,11 +3632,6 @@ fn tui_launch_overrides_persist_through_reload_and_build() {
     assert!(
         bdf.contains("SIZE 16 75 75"),
         "build should honor glyph_size override; bdf={bdf}"
-    );
-
-    fs::remove_dir_all(project_dir).expect("temp project dir is removed");
-}
-honor glyph_size override; bdf={bdf}"
     );
 
     fs::remove_dir_all(project_dir).expect("temp project dir is removed");

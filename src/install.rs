@@ -1276,11 +1276,16 @@ fn mapped_source_block(by_source: &BTreeMap<String, String>, source_key: &str) -
         .get(source_key)
         .cloned()
         .or_else(|| {
-            let (parent, row, col) = parse_compose_tile_key(source_key)?;
+            let (parent, rows, cols, row, col) = parse_compose_tile_key(source_key)?;
             by_source.iter().find_map(|(candidate_key, codepoint)| {
-                let (candidate_parent, candidate_row, candidate_col) =
+                let (candidate_parent, candidate_rows, candidate_cols, candidate_row, candidate_col) =
                     parse_compose_tile_key(candidate_key)?;
-                if candidate_parent == parent && candidate_row == row && candidate_col == col {
+                if candidate_parent == parent
+                    && candidate_rows == rows
+                    && candidate_cols == cols
+                    && candidate_row == row
+                    && candidate_col == col
+                {
                     Some(codepoint.clone())
                 } else {
                     None
@@ -1293,13 +1298,16 @@ fn mapped_source_block(by_source: &BTreeMap<String, String>, source_key: &str) -
         .map(|c| c.to_string())
 }
 
-fn parse_compose_tile_key(source_key: &str) -> Option<(&str, usize, usize)> {
+fn parse_compose_tile_key(source_key: &str) -> Option<(&str, usize, usize, usize, usize)> {
     let (parent, compose) = source_key.split_once("#compose:")?;
-    let (_, pos) = compose.split_once(':')?;
+    let (dims, pos) = compose.split_once(':')?;
+    let mut dim_parts = dims.split('x');
+    let rows = dim_parts.next()?.parse::<usize>().ok()?;
+    let cols = dim_parts.next()?.parse::<usize>().ok()?;
     let mut pos_parts = pos.split(':');
     let row = pos_parts.next()?.parse::<usize>().ok()?;
     let col = pos_parts.next()?.parse::<usize>().ok()?;
-    Some((parent, row, col))
+    Some((parent, rows, cols, row, col))
 }
 
 fn animation_snapshots_from_manifest_and_mapping(
@@ -1920,8 +1928,8 @@ frames = [
     }
 
     #[test]
-    fn standard_animation_snapshot_falls_back_to_matching_compose_row_col() {
-        let project_dir = make_temp_dir("standard-animation-compose-fallback");
+    fn standard_animation_snapshot_requires_matching_grid_dims() {
+        let project_dir = make_temp_dir("standard-animation-compose-dims");
         let manifest_path = project_dir.join("petiglyph.toml");
         fs::create_dir_all(project_dir.join("build")).expect("build dir is created");
         fs::write(
@@ -1956,11 +1964,12 @@ frames = [
         let snapshots = animation_snapshots_from_manifest_and_mapping(&manifest_path);
 
         assert_eq!(snapshots.len(), 1);
+        // Grid dimensions must match; 1x2 frames do not match 1x4 tiles
         assert_eq!(
             snapshots[0].frame_blocks,
             vec![
-                char::from_u32(0x100000).unwrap().to_string(),
-                char::from_u32(0x100001).unwrap().to_string(),
+                "[missing:strip.png#compose:1x2:0:0]".to_string(),
+                "[missing:strip.png#compose:1x2:0:1]".to_string(),
             ]
         );
 

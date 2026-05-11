@@ -8,7 +8,6 @@ use crossterm::event::{
 use crossterm::terminal::{
     EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode,
 };
-use image::{GenericImage, RgbaImage};
 use ratatui::backend::CrosstermBackend;
 use ratatui::layout::{Alignment, Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
@@ -319,7 +318,7 @@ struct AnimationPreview {
 enum GlyphToolMode {
     None,
     ChooseAnimationType { focus: AnimationTypeChoiceFocus },
-    ImportAnimationFrames(AnimationType),
+    ImportAnimationFrames,
     SelectAnimationFrames(AnimationType),
     ConfigureAnimation(AnimationConfig),
 }
@@ -904,34 +903,49 @@ fn glyph_matches_animation_frame_source(glyph: &InteractiveGlyph, frame_source_k
     {
         return true;
     }
-    let Some((frame_parent, frame_row, frame_col)) = parse_compose_tile_key(frame_source_key)
+    let Some((frame_parent, frame_rows, frame_cols, frame_row, frame_col)) =
+        parse_compose_tile_key(frame_source_key)
     else {
         return false;
     };
-    let Some((glyph_parent, glyph_row, glyph_col)) = parse_compose_tile_key(&glyph.glyph.source_key)
+    let Some((glyph_parent, glyph_rows, glyph_cols, glyph_row, glyph_col)) =
+        parse_compose_tile_key(&glyph.glyph.source_key)
     else {
         return false;
     };
-    glyph_parent == frame_parent && glyph_row == frame_row && glyph_col == frame_col
+    glyph_parent == frame_parent
+        && glyph_rows == frame_rows
+        && glyph_cols == frame_cols
+        && glyph_row == frame_row
+        && glyph_col == frame_col
 }
 
-fn parse_compose_tile_key(source_key: &str) -> Option<(&str, usize, usize)> {
+fn parse_compose_tile_key(source_key: &str) -> Option<(&str, usize, usize, usize, usize)> {
     let (parent, compose) = source_key.split_once("#compose:")?;
-    let (_, pos) = compose.split_once(':')?;
+    let (dims, pos) = compose.split_once(':')?;
+    let mut dim_parts = dims.split('x');
+    let rows = dim_parts.next()?.parse::<usize>().ok()?;
+    let cols = dim_parts.next()?.parse::<usize>().ok()?;
     let mut pos_parts = pos.split(':');
     let row = pos_parts.next()?.parse::<usize>().ok()?;
     let col = pos_parts.next()?.parse::<usize>().ok()?;
-    Some((parent, row, col))
+    Some((parent, rows, cols, row, col))
 }
 
 fn remap_compose_source_key_unambiguous<'a>(
     existing_keys: impl Iterator<Item = &'a String>,
     source_key: &str,
 ) -> Option<String> {
-    let (parent, row, col) = parse_compose_tile_key(source_key)?;
+    let (parent, rows, cols, row, col) = parse_compose_tile_key(source_key)?;
     let mut matched = existing_keys.filter_map(|candidate| {
-        let (candidate_parent, candidate_row, candidate_col) = parse_compose_tile_key(candidate)?;
-        if candidate_parent == parent && candidate_row == row && candidate_col == col {
+        let (candidate_parent, candidate_rows, candidate_cols, candidate_row, candidate_col) =
+            parse_compose_tile_key(candidate)?;
+        if candidate_parent == parent
+            && candidate_rows == rows
+            && candidate_cols == cols
+            && candidate_row == row
+            && candidate_col == col
+        {
             Some(candidate.clone())
         } else {
             None
@@ -1383,10 +1397,10 @@ fn handle_glyphs_key(app: &mut App, key: KeyEvent) -> Result<()> {
                     AnimationTypeChoiceFocus::Standard => AnimationType::Standard,
                     AnimationTypeChoiceFocus::Grid => AnimationType::Grid,
                 };
-                app.glyph_tool_mode = GlyphToolMode::ImportAnimationFrames(animation_type);
+                app.glyph_tool_mode = GlyphToolMode::SelectAnimationFrames(animation_type);
                 app.selecting_for_animation_frames = true;
                 app.status = Some(
-                    "Import animation frame images now, then press Enter to continue".to_string(),
+                    "Select imported frame glyphs with Space, then Enter to configure".to_string(),
                 );
             }
             _ => {}
@@ -1394,7 +1408,7 @@ fn handle_glyphs_key(app: &mut App, key: KeyEvent) -> Result<()> {
         return Ok(());
     }
 
-    if let GlyphToolMode::ImportAnimationFrames(animation_type) = app.glyph_tool_mode.clone() {
+    if let GlyphToolMode::ImportAnimationFrames = app.glyph_tool_mode.clone() {
         match code {
             KeyCode::Esc => {
                 if app.animation_import_task.is_some() {
@@ -1410,11 +1424,10 @@ fn handle_glyphs_key(app: &mut App, key: KeyEvent) -> Result<()> {
                     app.status = Some("animation frames are still loading".to_string());
                     return Ok(());
                 }
-                app.glyph_tool_mode = GlyphToolMode::SelectAnimationFrames(animation_type);
-                app.selecting_for_animation_frames = true;
-                app.status = Some(
-                    "Select imported frame glyphs with Space, then Enter to configure".to_string(),
-                );
+                app.glyph_tool_mode = GlyphToolMode::ChooseAnimationType {
+                    focus: AnimationTypeChoiceFocus::Standard,
+                };
+                app.status = Some("Choose animation type".to_string());
             }
             _ => {}
         }
@@ -1665,10 +1678,11 @@ fn handle_glyphs_key(app: &mut App, key: KeyEvent) -> Result<()> {
             }
             GlyphsFocus::AnimateButton => {
                 app.clear_animation_draft();
-                app.glyph_tool_mode = GlyphToolMode::ChooseAnimationType {
-                    focus: AnimationTypeChoiceFocus::Standard,
-                };
-                app.status = Some("Choose animation type".to_string());
+                app.glyph_tool_mode = GlyphToolMode::ImportAnimationFrames;
+                app.selecting_for_animation_frames = true;
+                app.status = Some(
+                    "Import animation frame images now, then press Enter to continue".to_string(),
+                );
             }
         },
         KeyCode::Char('c') => {
@@ -3170,46 +3184,7 @@ impl App {
             self.reload_config()?;
         }
 
-        let imported_selected_frames = config
-            .selected_frames
-            .iter()
-            .filter(|source| self.animation_imported_set.contains(*source))
-            .cloned()
-            .collect::<Vec<_>>();
-
-        let frames = if config.animation_type == AnimationType::Standard {
-            match create_standard_animation_parent_and_children(
-                &self.config.input_dir,
-                &self.glyphs,
-                &selected_frames,
-            ) {
-                Ok((parent_key, frames)) => {
-                    let composition = CompositionDef {
-                        rows: 1,
-                        cols: frames.len(),
-                        horizontal_bleed: BleedLevel::Weak,
-                        vertical_bleed: BleedLevel::Off,
-                    };
-                    persist_composition_definition(
-                        &self.manifest_path,
-                        &parent_key,
-                        Some(composition),
-                    )?;
-                    remove_imported_animation_sources(
-                        &self.config.input_dir,
-                        &imported_selected_frames,
-                    )?;
-                    self.reload_config()?;
-                    frames
-                }
-                Err(err) => {
-                    self.status = Some(err.to_string());
-                    return Ok(());
-                }
-            }
-        } else {
-            selected_frames
-        };
+        let frames = selected_frames;
 
         let def = AnimationDef {
             name: name.clone(),
@@ -4068,7 +4043,7 @@ impl App {
         self.reload_config()?;
         if matches!(
             self.glyph_tool_mode,
-            GlyphToolMode::ImportAnimationFrames(_)
+            GlyphToolMode::ImportAnimationFrames
         ) {
             self.start_animation_frame_import(payload.to_string())?;
             return Ok(());
@@ -4839,22 +4814,6 @@ fn default_animation_name(config: &RuntimeConfig) -> String {
     "animation".to_string()
 }
 
-fn remove_imported_animation_sources(input_dir: &Path, source_keys: &[String]) -> Result<usize> {
-    let mut removed = 0usize;
-    for source_key in source_keys {
-        let path = input_dir.join(source_key);
-        if !path.exists() {
-            continue;
-        }
-        if path.is_file() {
-            fs::remove_file(&path)
-                .with_context(|| format!("failed to remove imported frame {}", path.display()))?;
-            removed += 1;
-        }
-    }
-    Ok(removed)
-}
-
 fn selected_source_parent_key(app: &App) -> Option<String> {
     let row = app.selected_visible_row()?;
     match row {
@@ -4901,91 +4860,6 @@ fn duplicate_selected_parent_source_for_grid(app: &mut App, source_key: &str) ->
         &app.config.input_dir,
         &duplicate_path,
     ))
-}
-
-fn create_standard_animation_parent_and_children(
-    input_dir: &Path,
-    glyphs: &[InteractiveGlyph],
-    selected_frames: &[String],
-) -> Result<(String, Vec<String>)> {
-    if selected_frames.is_empty() {
-        bail!("animation requires at least one frame");
-    }
-
-    let frame_paths = selected_frames
-        .iter()
-        .map(|frame_key| {
-            glyphs
-                .iter()
-                .find(|g| &g.glyph.source_parent_key == frame_key)
-                .map(|g| g.glyph.source_path.clone())
-                .ok_or_else(|| {
-                    anyhow::anyhow!("unable to locate frame source file for {frame_key}")
-                })
-        })
-        .collect::<Result<Vec<_>>>()?;
-
-    let first_stem = Path::new(&selected_frames[0])
-        .file_stem()
-        .and_then(|v| v.to_str())
-        .filter(|v| !v.is_empty())
-        .unwrap_or("animation");
-    let anchor_file_name = format!("{first_stem}-animation.png");
-    let (anchor_path, _) =
-        next_available_import_destination(input_dir, std::ffi::OsStr::new(&anchor_file_name));
-
-    let rendered_frames = frame_paths
-        .iter()
-        .map(|path| {
-            image::open(path)
-                .with_context(|| format!("failed to open animation frame {}", path.display()))
-                .map(|img| img.to_rgba8())
-        })
-        .collect::<Result<Vec<_>>>()?;
-
-    let width = rendered_frames[0].width();
-    let height = rendered_frames[0].height();
-    if width == 0 || height == 0 {
-        bail!("animation frame has invalid dimensions 0x0");
-    }
-    for (idx, frame) in rendered_frames.iter().enumerate().skip(1) {
-        if frame.width() != width || frame.height() != height {
-            bail!(
-                "all standard animation frames must have same dimensions; frame {} is {}x{} instead of {}x{}",
-                idx + 1,
-                frame.width(),
-                frame.height(),
-                width,
-                height
-            );
-        }
-    }
-
-    let total_width = width
-        .checked_mul(rendered_frames.len() as u32)
-        .ok_or_else(|| anyhow::anyhow!("animation strip is too wide"))?;
-    let mut strip = RgbaImage::new(total_width, height);
-    for (index, frame) in rendered_frames.iter().enumerate() {
-        let x = width
-            .checked_mul(index as u32)
-            .ok_or_else(|| anyhow::anyhow!("animation strip overflow"))?;
-        strip.copy_from(frame, x, 0).map_err(|err| {
-            anyhow::anyhow!(
-                "failed to assemble animation strip at frame {}: {err}",
-                index + 1
-            )
-        })?;
-    }
-    strip
-        .save(&anchor_path)
-        .with_context(|| format!("failed to save animation strip {}", anchor_path.display()))?;
-
-    let parent_key = source_key_from_input_path(input_dir, &anchor_path);
-    let frame_count = rendered_frames.len();
-    let frame_keys = (0..frame_count)
-        .map(|col| format!("{parent_key}#compose:1x{frame_count}:0:{col}"))
-        .collect::<Vec<_>>();
-    Ok((parent_key, frame_keys))
 }
 
 fn next_incremental_duplicate_destination(
@@ -6042,15 +5916,35 @@ fn draw_animation_popup(frame: &mut Frame, app: &App, area: Rect, accent: Color,
                 Line::from("Left/Right to choose, Enter to continue, Esc to cancel."),
             ]
         }
-        GlyphToolMode::ImportAnimationFrames(animation_type) => {
+        GlyphToolMode::ImportAnimationFrames => {
             let mut lines = vec![
-                Line::from(format!("Importing {:?} animation frames", animation_type)),
+                Line::from("Importing animation frames"),
                 Line::from(""),
             ];
             if let Some(spinner) = app.animation_import_spinner_frame() {
                 lines.push(Line::from(format!("{spinner} Loading animation frames...")));
             } else {
-                lines.push(Line::from("Drag/paste frame images now."));
+                let box_width = 26usize;
+                let inner = box_width.saturating_sub(2);
+                let top = format!("╭{}╮", dashed_pattern(inner));
+                let bottom = format!("╰{}╯", dashed_pattern(inner));
+                let label = center_label("DRAG/PASTE IMAGES", inner);
+                let border_style = Style::default().fg(accent);
+                let label_style = Style::default().fg(accent).add_modifier(Modifier::BOLD);
+                lines.push(Line::from(vec![
+                    Span::raw("  "),
+                    Span::styled(top, border_style),
+                ]));
+                lines.push(Line::from(vec![
+                    Span::raw("  "),
+                    Span::styled("│", border_style),
+                    Span::styled(label, label_style),
+                    Span::styled("│", border_style),
+                ]));
+                lines.push(Line::from(vec![
+                    Span::raw("  "),
+                    Span::styled(bottom, border_style),
+                ]));
                 lines.push(Line::from("Press Enter when done, Esc to cancel."));
             }
             lines.push(Line::from(format!(
@@ -7931,7 +7825,6 @@ mod tests {
         InteractiveGlyph, KeyCode, RuntimeConfig, drag_images_here_lines,
         glyph_matches_animation_frame_source, handle_key, installed_animation_frame_index,
         installed_animation_source_block, preview_lines,
-        remove_imported_animation_sources,
         scrollbar_thumb_geometry, visible_window_bounds,
     };
     use crate::build::PreprocessedGlyph;
@@ -8071,15 +7964,15 @@ mod tests {
                 "U+100001".to_string(),
             ),
         ]);
-        let block0 = installed_animation_source_block(&by_source, "strip.png#compose:1x2:0:0");
-        let block1 = installed_animation_source_block(&by_source, "strip.png#compose:1x2:0:1");
+        let block0 = installed_animation_source_block(&by_source, "strip.png#compose:1x4:0:0");
+        let block1 = installed_animation_source_block(&by_source, "strip.png#compose:1x4:0:1");
 
         assert_eq!(block0, Some(char::from_u32(0x100000).unwrap().to_string()));
         assert_eq!(block1, Some(char::from_u32(0x100001).unwrap().to_string()));
     }
 
     #[test]
-    fn glyph_matches_animation_frame_source_remaps_unambiguous_compose_row_col() {
+    fn glyph_matches_animation_frame_source_requires_matching_grid_dims() {
         let glyph = InteractiveGlyph {
             glyph: PreprocessedGlyph {
                 source_path: PathBuf::from("icons/strip.png"),
@@ -8096,9 +7989,13 @@ mod tests {
             saved_threshold: None,
         };
 
-        assert!(glyph_matches_animation_frame_source(
+        assert!(!glyph_matches_animation_frame_source(
             &glyph,
             "strip.png#compose:1x2:0:1"
+        ));
+        assert!(glyph_matches_animation_frame_source(
+            &glyph,
+            "strip.png#compose:1x4:0:1"
         ));
     }
 
@@ -8116,31 +8013,6 @@ mod tests {
         ]);
         let block = installed_animation_source_block(&by_source, "strip.png#compose:1x2:0:1");
         assert_eq!(block, None);
-    }
-
-    #[test]
-    fn remove_imported_animation_sources_removes_only_existing_files() {
-        let project_dir = make_temp_dir("remove-imported-animation-sources");
-        let input_dir = project_dir.join("icons");
-        fs::create_dir_all(&input_dir).expect("icons dir is created");
-        fs::write(input_dir.join("f1.png"), b"x").expect("frame1 is written");
-        fs::write(input_dir.join("f2.png"), b"x").expect("frame2 is written");
-
-        let removed = remove_imported_animation_sources(
-            &input_dir,
-            &[
-                "f1.png".to_string(),
-                "f2.png".to_string(),
-                "missing.png".to_string(),
-            ],
-        )
-        .expect("remove imported sources should work");
-
-        assert_eq!(removed, 2);
-        assert!(!input_dir.join("f1.png").exists());
-        assert!(!input_dir.join("f2.png").exists());
-
-        fs::remove_dir_all(project_dir).expect("temp dir is removed");
     }
 
     #[test]
