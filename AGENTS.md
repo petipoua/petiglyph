@@ -8,6 +8,11 @@
 - The product model is intentionally **project-local and self-contained**: user projects keep `icons/`, `build/`, and `petiglyph.toml` together in one directory.
 - The TUI is the primary interface; CLI subcommands remain available for automation/scripting.
 
+### Terminology
+
+- **sample area**: Refers to the glyph preview samples generated inside the "Installed petiglyph fonts" card of the Home panel.
+- **previews**: Refers to the Glyphs ASCII previews in the Glyphs panel.
+
 ### Current CLI/TUI Contract (No Backward Compatibility Layer)
 
 - Primary commands:
