@@ -386,6 +386,15 @@ pub(crate) struct InteractiveGlyph {
 
 #[derive(Debug, Clone)]
 enum VisibleGlyphRow {
+    AnimationParent {
+        animation_idx: usize,
+    },
+    AnimationFrame {
+        animation_idx: usize,
+        frame_idx: usize,
+        source_key: String,
+        glyph_idx: Option<usize>,
+    },
     Single {
         glyph_idx: usize,
     },
@@ -445,6 +454,12 @@ struct DropImportResult {
     skipped_unsupported: usize,
     skipped_missing: usize,
     imported_source_keys: Vec<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ExistingImportPolicy {
+    Rename,
+    ReuseIdentical,
 }
 
 #[derive(Debug, Clone)]
@@ -1738,6 +1753,24 @@ fn handle_glyphs_key(app: &mut App, key: KeyEvent) -> Result<()> {
             clear_selected_composition(app)?;
         }
         KeyCode::Char('D') => {
+            if let Some(
+                VisibleGlyphRow::AnimationParent { animation_idx }
+                | VisibleGlyphRow::AnimationFrame { animation_idx, .. },
+            ) = app.selected_visible_row()
+            {
+                if let Some(target) = app
+                    .config
+                    .animations
+                    .get(animation_idx)
+                    .map(|animation| animation.name.clone())
+                    && remove_animation_definition(&app.manifest_path, &target)?
+                {
+                    app.reload_glyphs()?;
+                    app.refresh_workspace_discovery()?;
+                    app.status = Some(format!("deleted animation `{target}`"));
+                }
+                return Ok(());
+            }
             let Some(source_key) = selected_source_parent_key(app) else {
                 app.status = Some("no glyph selected".to_string());
                 return Ok(());
@@ -3170,10 +3203,10 @@ impl App {
                 .iter()
                 .cloned()
                 .collect::<Vec<_>>();
-            sort_source_keys_alphabetically(&mut fallback);
+            sort_source_keys_for_animation_frames(&mut fallback);
             frames = fallback;
         }
-        sort_source_keys_alphabetically(&mut frames);
+        sort_source_keys_for_animation_frames(&mut frames);
         let name = default_animation_name(&self.config);
         self.glyph_tool_mode = GlyphToolMode::ConfigureAnimation(AnimationConfig {
             selected_frames: frames,
@@ -3203,7 +3236,7 @@ impl App {
             return Ok(());
         }
         let mut selected_frames = config.selected_frames.clone();
-        sort_source_keys_alphabetically(&mut selected_frames);
+        sort_source_keys_for_animation_frames(&mut selected_frames);
 
         if config.animation_type == AnimationType::Grid {
             for frame in &selected_frames {
@@ -3258,16 +3291,7 @@ impl App {
             self.animation_preview = None;
             return;
         }
-        let Some(source_key) = selected_source_parent_key(self) else {
-            self.animation_preview = None;
-            return;
-        };
-        let Some(animation) = self.config.animations.iter().find(|a| {
-            a.frames.iter().any(|frame| frame == &source_key)
-                || a.frames
-                    .iter()
-                    .any(|frame| frame.starts_with(&format!("{source_key}#compose:")))
-        }) else {
+        let Some(animation) = self.selected_animation_for_preview() else {
             self.animation_preview = None;
             return;
         };
@@ -3580,12 +3604,40 @@ impl App {
 
     fn visible_glyph_rows(&self) -> Vec<VisibleGlyphRow> {
         let mut rows = Vec::new();
+
+        let animation_frame_sources = animation_frame_parent_sources(&self.config);
+        for (animation_idx, animation) in self.config.animations.iter().enumerate() {
+            rows.push(VisibleGlyphRow::AnimationParent { animation_idx });
+            for (frame_idx, source_key) in animation.frames.iter().enumerate() {
+                let glyph_idx = self
+                    .glyphs
+                    .iter()
+                    .position(|glyph| glyph_matches_animation_frame_source(glyph, source_key));
+                rows.push(VisibleGlyphRow::AnimationFrame {
+                    animation_idx,
+                    frame_idx,
+                    source_key: source_key.clone(),
+                    glyph_idx,
+                });
+            }
+        }
+
         let mut idx = 0usize;
         while idx < self.glyphs.len() {
             let glyph = &self.glyphs[idx];
+            if animation_frame_sources.contains(&glyph.glyph.source_parent_key)
+                || animation_frame_sources.contains(&glyph.glyph.source_key)
+            {
+                idx += 1;
+                continue;
+            }
             if let Some(tile) = &glyph.glyph.composition_tile {
                 if tile.row == 0 && tile.col == 0 {
                     let source_key = glyph.glyph.source_parent_key.clone();
+                    if animation_frame_sources.contains(&source_key) {
+                        idx = idx.saturating_add(tile.rows.saturating_mul(tile.cols).max(1));
+                        continue;
+                    }
                     rows.push(VisibleGlyphRow::CompositionParent {
                         source_key: source_key.clone(),
                         rows: tile.rows,
@@ -3620,6 +3672,25 @@ impl App {
         rows
     }
 
+    fn selected_animation_for_preview(&self) -> Option<&AnimationDef> {
+        let row = self.selected_visible_row()?;
+        match row {
+            VisibleGlyphRow::AnimationParent { animation_idx }
+            | VisibleGlyphRow::AnimationFrame { animation_idx, .. } => {
+                self.config.animations.get(animation_idx)
+            }
+            _ => {
+                let source_key = selected_source_parent_key(self)?;
+                self.config.animations.iter().find(|a| {
+                    a.frames.iter().any(|frame| frame == &source_key)
+                        || a.frames
+                            .iter()
+                            .any(|frame| frame.starts_with(&format!("{source_key}#compose:")))
+                })
+            }
+        }
+    }
+
     fn clamp_glyph_selection(&mut self) {
         let rows = self.visible_glyph_rows();
         if rows.is_empty() {
@@ -3630,6 +3701,19 @@ impl App {
 
         self.selected_visible = self.selected_visible.min(rows.len() - 1);
         self.selected = match &rows[self.selected_visible] {
+            VisibleGlyphRow::AnimationParent { animation_idx } => self
+                .config
+                .animations
+                .get(*animation_idx)
+                .and_then(|animation| {
+                    animation.frames.first().and_then(|frame| {
+                        self.glyphs
+                            .iter()
+                            .position(|glyph| glyph_matches_animation_frame_source(glyph, frame))
+                    })
+                })
+                .unwrap_or(0),
+            VisibleGlyphRow::AnimationFrame { glyph_idx, .. } => glyph_idx.unwrap_or(0),
             VisibleGlyphRow::Single { glyph_idx }
             | VisibleGlyphRow::CompositionChild { glyph_idx, .. } => *glyph_idx,
             VisibleGlyphRow::CompositionParent {
@@ -3662,6 +3746,9 @@ impl App {
         let source_key = match row {
             VisibleGlyphRow::CompositionParent { source_key, .. }
             | VisibleGlyphRow::CompositionChild { source_key, .. } => source_key,
+            VisibleGlyphRow::AnimationParent { .. } | VisibleGlyphRow::AnimationFrame { .. } => {
+                return;
+            }
             VisibleGlyphRow::Single { .. } => return,
         };
 
@@ -4092,7 +4179,11 @@ impl App {
             return Ok(());
         }
 
-        let import = import_image_files_to_input(&self.config.input_dir, payload)?;
+        let import = import_image_files_to_input(
+            &self.config.input_dir,
+            payload,
+            ExistingImportPolicy::Rename,
+        )?;
 
         if import.imported > 0 {
             self.reload_glyphs()?;
@@ -4122,8 +4213,12 @@ impl App {
         let (sender, receiver) = mpsc::channel();
         thread::spawn(move || {
             let result = (|| -> Result<AnimationImportTaskOutput> {
-                let import = import_image_files_to_input(&config.input_dir, &payload)?;
-                let loaded = if import.imported > 0 {
+                let import = import_image_files_to_input(
+                    &config.input_dir,
+                    &payload,
+                    ExistingImportPolicy::ReuseIdentical,
+                )?;
+                let loaded = if !import.imported_source_keys.is_empty() {
                     Some(load_interactive_glyphs_from_config(&config)?)
                 } else {
                     None
@@ -4468,6 +4563,7 @@ impl App {
             }
         }
 
+        let has_selected_sources = !output.import.imported_source_keys.is_empty();
         for source_key in output.import.imported_source_keys {
             self.animation_imported_set.insert(source_key.clone());
             if self.animation_selection_set.insert(source_key.clone()) {
@@ -4475,7 +4571,7 @@ impl App {
             }
         }
 
-        if output.import.imported > 0 {
+        if has_selected_sources {
             self.status = Some(format!(
                 "animation draft import: {} frame{} selected",
                 self.animation_selection_order.len(),
@@ -4597,8 +4693,112 @@ impl App {
     }
 }
 
-fn sort_source_keys_alphabetically(keys: &mut [String]) {
-    keys.sort_by_cached_key(|key| source_display_name(key).to_ascii_lowercase());
+fn sort_source_keys_for_animation_frames(keys: &mut [String]) {
+    keys.sort_by(|left, right| {
+        natural_source_key_cmp(left, right).then_with(|| {
+            source_display_name(left)
+                .to_ascii_lowercase()
+                .cmp(&source_display_name(right).to_ascii_lowercase())
+        })
+    });
+}
+
+fn natural_source_key_cmp(left: &str, right: &str) -> std::cmp::Ordering {
+    natural_ascii_cmp(
+        &source_display_name(left).to_ascii_lowercase(),
+        &source_display_name(right).to_ascii_lowercase(),
+    )
+}
+
+fn natural_ascii_cmp(left: &str, right: &str) -> std::cmp::Ordering {
+    let left = left.as_bytes();
+    let right = right.as_bytes();
+    let mut left_idx = 0usize;
+    let mut right_idx = 0usize;
+
+    while left_idx < left.len() && right_idx < right.len() {
+        if left[left_idx].is_ascii_digit() && right[right_idx].is_ascii_digit() {
+            let left_start = left_idx;
+            let right_start = right_idx;
+            while left_idx < left.len() && left[left_idx].is_ascii_digit() {
+                left_idx += 1;
+            }
+            while right_idx < right.len() && right[right_idx].is_ascii_digit() {
+                right_idx += 1;
+            }
+
+            let left_digits = trim_leading_ascii_zeroes(&left[left_start..left_idx]);
+            let right_digits = trim_leading_ascii_zeroes(&right[right_start..right_idx]);
+            let numeric_cmp = left_digits
+                .len()
+                .cmp(&right_digits.len())
+                .then_with(|| left_digits.cmp(right_digits));
+            if numeric_cmp != std::cmp::Ordering::Equal {
+                return numeric_cmp;
+            }
+
+            let width_cmp = (left_idx - left_start).cmp(&(right_idx - right_start));
+            if width_cmp != std::cmp::Ordering::Equal {
+                return width_cmp;
+            }
+            continue;
+        }
+
+        let cmp = left[left_idx].cmp(&right[right_idx]);
+        if cmp != std::cmp::Ordering::Equal {
+            return cmp;
+        }
+        left_idx += 1;
+        right_idx += 1;
+    }
+
+    left.len().cmp(&right.len())
+}
+
+fn trim_leading_ascii_zeroes(digits: &[u8]) -> &[u8] {
+    let mut idx = 0usize;
+    while idx + 1 < digits.len() && digits[idx] == b'0' {
+        idx += 1;
+    }
+    &digits[idx..]
+}
+
+fn animation_frame_parent_source(source_key: &str) -> String {
+    parse_compose_tile_key(source_key)
+        .map(|(parent, _, _, _, _)| parent.to_string())
+        .unwrap_or_else(|| source_key.to_string())
+}
+
+fn animation_frame_parent_sources(config: &RuntimeConfig) -> BTreeSet<String> {
+    config
+        .animations
+        .iter()
+        .flat_map(|animation| animation.frames.iter())
+        .map(|frame| animation_frame_parent_source(frame))
+        .collect()
+}
+
+fn animation_frame_source_for_preview(
+    selected_row: Option<&VisibleGlyphRow>,
+    animation: &AnimationDef,
+    preview: Option<&AnimationPreview>,
+) -> Option<String> {
+    if let Some(VisibleGlyphRow::AnimationFrame { source_key, .. }) = selected_row {
+        return Some(source_key.clone());
+    }
+
+    let preview = preview?;
+    if preview.animation_name != animation.name {
+        return None;
+    }
+    animation
+        .frames
+        .get(
+            preview
+                .frame_index
+                .min(animation.frames.len().saturating_sub(1)),
+        )
+        .cloned()
 }
 
 impl BuildSummary {
@@ -4860,6 +5060,8 @@ fn default_animation_name(config: &RuntimeConfig) -> String {
 fn selected_source_parent_key(app: &App) -> Option<String> {
     let row = app.selected_visible_row()?;
     match row {
+        VisibleGlyphRow::AnimationFrame { source_key, .. } => Some(source_key),
+        VisibleGlyphRow::AnimationParent { .. } => None,
         VisibleGlyphRow::Single { glyph_idx } => app
             .glyphs
             .get(glyph_idx)
@@ -5036,6 +5238,8 @@ fn clear_selected_composition(app: &mut App) -> Result<()> {
 
 fn selected_visible_glyph_index(app: &App) -> Option<usize> {
     match app.selected_visible_row()? {
+        VisibleGlyphRow::AnimationFrame { glyph_idx, .. } => glyph_idx,
+        VisibleGlyphRow::AnimationParent { .. } => None,
         VisibleGlyphRow::Single { glyph_idx }
         | VisibleGlyphRow::CompositionChild { glyph_idx, .. } => Some(glyph_idx),
         VisibleGlyphRow::CompositionParent { .. } => None,
@@ -6428,6 +6632,51 @@ fn draw_glyphs_view(
         visible_rows
             .iter()
             .map(|row| match row {
+                VisibleGlyphRow::AnimationParent { animation_idx } => {
+                    let animation = &app.config.animations[*animation_idx];
+                    ListItem::new(Line::from(vec![
+                        Span::styled(" @", Style::default().fg(Color::Magenta)),
+                        Span::raw(" "),
+                        Span::styled(
+                            animation.name.clone(),
+                            Style::default()
+                                .fg(Color::White)
+                                .add_modifier(Modifier::BOLD),
+                        ),
+                        Span::raw(" "),
+                        Span::styled(
+                            format!(
+                                "({:?}, {} fps, {} frames)",
+                                animation.animation_type,
+                                animation.fps,
+                                animation.frames.len()
+                            ),
+                            Style::default().fg(muted),
+                        ),
+                    ]))
+                }
+                VisibleGlyphRow::AnimationFrame {
+                    frame_idx,
+                    source_key,
+                    glyph_idx,
+                    ..
+                } => {
+                    let marker = if app.animation_selection_set.contains(source_key) {
+                        " +"
+                    } else {
+                        "  "
+                    };
+                    let codepoint = glyph_idx
+                        .map(|idx| glyph_codepoint_label(app, &idx))
+                        .unwrap_or_else(|| "missing".to_string());
+                    ListItem::new(Line::from(vec![
+                        Span::styled(marker, Style::default().fg(Color::Yellow)),
+                        Span::raw("    "),
+                        Span::styled(format!("f{} ", frame_idx + 1), Style::default().fg(muted)),
+                        Span::styled(format!("{} ", codepoint), Style::default().fg(muted)),
+                        Span::raw(source_display_name(source_key)),
+                    ]))
+                }
                 VisibleGlyphRow::Single { glyph_idx } => {
                     let glyph = &app.glyphs[*glyph_idx];
                     let is_selected_for_animation = app
@@ -6526,30 +6775,13 @@ fn draw_glyphs_view(
 
     let preview_area = preview_block.inner(chunks[1]);
 
-    let selected_source_for_animation = selected_source_parent_key(app);
-    let active_animation = selected_source_for_animation
-        .as_ref()
-        .and_then(|source_key| {
-            app.config.animations.iter().find(|a| {
-                a.frames.iter().any(|f| f == source_key)
-                    || a.frames
-                        .iter()
-                        .any(|f| f.starts_with(&format!("{source_key}#compose:")))
-            })
-        });
+    let active_animation = app.selected_animation_for_preview();
+    let selected_row = visible_rows.get(
+        app.selected_visible
+            .min(visible_rows.len().saturating_sub(1)),
+    );
     let active_animation_frame = active_animation.and_then(|animation| {
-        let preview = app.animation_preview.as_ref()?;
-        if preview.animation_name != animation.name {
-            return None;
-        }
-        animation
-            .frames
-            .get(
-                preview
-                    .frame_index
-                    .min(animation.frames.len().saturating_sub(1)),
-            )
-            .cloned()
+        animation_frame_source_for_preview(selected_row, animation, app.animation_preview.as_ref())
     });
 
     let mut preview_content = if visible_rows.is_empty() {
@@ -6559,6 +6791,71 @@ fn draw_glyphs_view(
         ]
     } else {
         match &visible_rows[app.selected_visible.min(visible_rows.len() - 1)] {
+            VisibleGlyphRow::AnimationParent { animation_idx } => {
+                let animation = &app.config.animations[*animation_idx];
+                vec![
+                    Line::from(""),
+                    Line::from(vec![
+                        Span::raw("  Animation: "),
+                        Span::styled(
+                            animation.name.clone(),
+                            Style::default()
+                                .fg(Color::White)
+                                .add_modifier(Modifier::BOLD),
+                        ),
+                    ]),
+                    Line::from(vec![
+                        Span::raw("  Type: "),
+                        Span::styled(
+                            format!("{:?}", animation.animation_type),
+                            Style::default().fg(muted),
+                        ),
+                        Span::raw("  FPS: "),
+                        Span::styled(animation.fps.to_string(), Style::default().fg(accent)),
+                        Span::raw("  Frames: "),
+                        Span::styled(
+                            animation.frames.len().to_string(),
+                            Style::default().fg(accent),
+                        ),
+                    ]),
+                    Line::from(""),
+                ]
+            }
+            VisibleGlyphRow::AnimationFrame {
+                source_key,
+                glyph_idx,
+                ..
+            } => {
+                let file_label = glyph_idx
+                    .and_then(|idx| app.glyphs.get(idx))
+                    .map(|active| {
+                        if app.verbose_paths {
+                            active.glyph.source_path.to_string_lossy().to_string()
+                        } else {
+                            source_display_name(source_key)
+                        }
+                    })
+                    .unwrap_or_else(|| source_display_name(source_key));
+                vec![
+                    Line::from(""),
+                    Line::from(vec![
+                        Span::raw("  Frame: "),
+                        Span::styled(file_label, Style::default().fg(Color::White)),
+                    ]),
+                    Line::from(vec![
+                        Span::raw("  Animation: "),
+                        Span::styled(
+                            active_animation
+                                .map(|a| {
+                                    format!("{} ({:?}, {} fps)", a.name, a.animation_type, a.fps)
+                                })
+                                .unwrap_or_else(|| "none".to_string()),
+                            Style::default().fg(muted),
+                        ),
+                    ]),
+                    Line::from(""),
+                ]
+            }
             VisibleGlyphRow::Single { glyph_idx }
             | VisibleGlyphRow::CompositionChild { glyph_idx, .. } => {
                 let active = &app.glyphs[*glyph_idx];
@@ -6769,6 +7066,19 @@ fn draw_glyphs_view(
                     preview_content.append(&mut ascii);
                 } else {
                     match &visible_rows[app.selected_visible.min(visible_rows.len() - 1)] {
+                        VisibleGlyphRow::AnimationParent { .. } => {}
+                        VisibleGlyphRow::AnimationFrame { glyph_idx, .. } => {
+                            if let Some(glyph_idx) = glyph_idx {
+                                let active = &app.glyphs[*glyph_idx];
+                                let mut ascii = preview_lines(
+                                    &active.glyph,
+                                    active.working_threshold,
+                                    preview_area.width.saturating_sub(4) / 2,
+                                    preview_area.height.saturating_sub(6),
+                                );
+                                preview_content.append(&mut ascii);
+                            }
+                        }
                         VisibleGlyphRow::Single { glyph_idx }
                         | VisibleGlyphRow::CompositionChild { glyph_idx, .. } => {
                             let active = &app.glyphs[*glyph_idx];
@@ -7430,6 +7740,23 @@ fn next_available_import_destination(
     (candidate, false)
 }
 
+fn files_have_same_contents(left: &Path, right: &Path) -> bool {
+    let Ok(left_meta) = fs::metadata(left) else {
+        return false;
+    };
+    let Ok(right_meta) = fs::metadata(right) else {
+        return false;
+    };
+    if left_meta.len() != right_meta.len() {
+        return false;
+    }
+
+    fs::read(left)
+        .ok()
+        .zip(fs::read(right).ok())
+        .is_some_and(|(left, right)| left == right)
+}
+
 fn format_drop_import_status(
     imported: usize,
     renamed: usize,
@@ -7442,7 +7769,11 @@ fn format_drop_import_status(
     )
 }
 
-fn import_image_files_to_input(input_dir: &Path, payload: &str) -> Result<DropImportResult> {
+fn import_image_files_to_input(
+    input_dir: &Path,
+    payload: &str,
+    existing_policy: ExistingImportPolicy,
+) -> Result<DropImportResult> {
     fs::create_dir_all(input_dir)
         .with_context(|| format!("failed to create {}", input_dir.display()))?;
 
@@ -7476,6 +7807,22 @@ fn import_image_files_to_input(input_dir: &Path, payload: &str) -> Result<DropIm
 
         let canonical_destination = input_dir.join(file_name);
         if paths_resolve_to_same_file(&source, &canonical_destination) {
+            imported_source_keys.push(source_key_from_input_path(
+                input_dir,
+                &canonical_destination,
+            ));
+            skipped_existing += 1;
+            continue;
+        }
+
+        if existing_policy == ExistingImportPolicy::ReuseIdentical
+            && canonical_destination.exists()
+            && files_have_same_contents(&source, &canonical_destination)
+        {
+            imported_source_keys.push(source_key_from_input_path(
+                input_dir,
+                &canonical_destination,
+            ));
             skipped_existing += 1;
             continue;
         }
@@ -7861,10 +8208,12 @@ fn installed_animation_preview_lines(
 #[cfg(test)]
 mod tests {
     use super::{
-        AnimationConfig, AnimationConfigFocus, AnimationType, App, AppView, BleedLevel, Input,
-        InteractiveGlyph, KeyCode, RuntimeConfig, composition_preview_lines_stable_frame,
-        drag_images_here_lines, emitted_composition_cols, glyph_matches_animation_frame_source,
-        handle_key, installed_animation_blocks_for_definition, installed_animation_frame_index,
+        AnimationConfig, AnimationConfigFocus, AnimationPreview, AnimationType, App, AppView,
+        BleedLevel, ExistingImportPolicy, Input, InteractiveGlyph, KeyCode, RuntimeConfig,
+        VisibleGlyphRow, animation_frame_source_for_preview,
+        composition_preview_lines_stable_frame, drag_images_here_lines, emitted_composition_cols,
+        glyph_matches_animation_frame_source, handle_key, import_image_files_to_input,
+        installed_animation_blocks_for_definition, installed_animation_frame_index,
         installed_animation_source_block, preview_lines, scrollbar_thumb_geometry,
         visible_window_bounds,
     };
@@ -8320,8 +8669,153 @@ mod tests {
     }
 
     #[test]
-    fn create_grid_animation_sorts_frames_alphabetically_before_persisting() {
-        let project_dir = make_temp_dir("animation-frame-sort");
+    fn visible_glyph_rows_groups_animation_frames_under_animation_parent() {
+        let project_dir = make_temp_dir("animation-row-grouping");
+        let manifest_path = project_dir.join("petiglyph.toml");
+        let config = RuntimeConfig {
+            project_dir: project_dir.clone(),
+            project_id: "test-animation-row-grouping".to_string(),
+            input_dir: project_dir.join("icons"),
+            out_dir: project_dir.join("build"),
+            font_name: "Petiglyph".to_string(),
+            glyph_size: 8,
+            base_threshold: 64,
+            threshold_overrides: BTreeMap::new(),
+            compositions: BTreeMap::new(),
+            animations: vec![AnimationDef {
+                name: "walk".to_string(),
+                animation_type: AnimationType::Standard,
+                fps: 8,
+                frames: vec!["f_01.png".to_string(), "f_02.png".to_string()],
+                rows: None,
+                cols: None,
+                horizontal_bleed: None,
+                vertical_bleed: None,
+            }],
+            codepoint_start: 0x10_0000,
+        };
+        let mut app = App::new(manifest_path, config);
+        app.glyphs = ["f_01.png", "f_02.png", "loose.png"]
+            .into_iter()
+            .map(|source| InteractiveGlyph {
+                glyph: PreprocessedGlyph {
+                    source_path: project_dir.join("icons").join(source),
+                    source_key: source.to_string(),
+                    source_parent_key: source.to_string(),
+                    glyph_name: source.replace(".png", ""),
+                    width: 1,
+                    height: 1,
+                    coverage: vec![255],
+                    image_fingerprint: "fnv1a64:test".to_string(),
+                    composition_tile: None,
+                },
+                working_threshold: 64,
+                saved_threshold: None,
+            })
+            .collect();
+
+        let rows = app.visible_glyph_rows();
+
+        assert!(matches!(
+            rows.first(),
+            Some(VisibleGlyphRow::AnimationParent { animation_idx: 0 })
+        ));
+        assert!(matches!(
+            rows.get(1),
+            Some(VisibleGlyphRow::AnimationFrame {
+                source_key,
+                frame_idx: 0,
+                ..
+            }) if source_key == "f_01.png"
+        ));
+        assert!(matches!(
+            rows.get(2),
+            Some(VisibleGlyphRow::AnimationFrame {
+                source_key,
+                frame_idx: 1,
+                ..
+            }) if source_key == "f_02.png"
+        ));
+        assert_eq!(
+            rows.iter()
+                .filter(|row| matches!(row, VisibleGlyphRow::Single { .. }))
+                .count(),
+            1,
+            "animation frames should not also appear as loose glyph rows"
+        );
+    }
+
+    #[test]
+    fn animation_frame_row_preview_is_pinned_to_selected_frame() {
+        let animation = AnimationDef {
+            name: "walk".to_string(),
+            animation_type: AnimationType::Standard,
+            fps: 8,
+            frames: vec![
+                "f_01.png".to_string(),
+                "f_02.png".to_string(),
+                "f_03.png".to_string(),
+            ],
+            rows: None,
+            cols: None,
+            horizontal_bleed: None,
+            vertical_bleed: None,
+        };
+        let preview = AnimationPreview {
+            animation_name: "walk".to_string(),
+            frame_index: 2,
+            last_frame_at: Instant::now(),
+        };
+        let parent_row = VisibleGlyphRow::AnimationParent { animation_idx: 0 };
+        let frame_row = VisibleGlyphRow::AnimationFrame {
+            animation_idx: 0,
+            frame_idx: 1,
+            source_key: "f_02.png".to_string(),
+            glyph_idx: Some(1),
+        };
+
+        assert_eq!(
+            animation_frame_source_for_preview(Some(&parent_row), &animation, Some(&preview)),
+            Some("f_03.png".to_string()),
+            "animation parent rows should use the animated frame index"
+        );
+        assert_eq!(
+            animation_frame_source_for_preview(Some(&frame_row), &animation, Some(&preview)),
+            Some("f_02.png".to_string()),
+            "animation frame rows should preview the selected frame only"
+        );
+    }
+
+    #[test]
+    fn animation_import_reuses_identical_existing_input_file() {
+        let project_dir = make_temp_dir("animation-import-reuse-existing");
+        let input_dir = project_dir.join("icons");
+        let external_dir = project_dir.join("external");
+        fs::create_dir_all(&input_dir).expect("input dir is created");
+        fs::create_dir_all(&external_dir).expect("external dir is created");
+        fs::write(input_dir.join("frame.png"), b"same bytes").expect("input frame is written");
+        fs::write(external_dir.join("frame.png"), b"same bytes")
+            .expect("external frame is written");
+
+        let result = import_image_files_to_input(
+            &input_dir,
+            &external_dir.join("frame.png").display().to_string(),
+            ExistingImportPolicy::ReuseIdentical,
+        )
+        .expect("import should succeed");
+
+        assert_eq!(result.imported, 0);
+        assert_eq!(result.skipped_existing, 1);
+        assert_eq!(result.imported_source_keys, vec!["frame.png".to_string()]);
+        assert!(
+            !input_dir.join("frame-1.png").exists(),
+            "identical animation frames should reuse the existing input file"
+        );
+    }
+
+    #[test]
+    fn create_grid_animation_sorts_frames_naturally_before_persisting() {
+        let project_dir = make_temp_dir("animation-frame-natural-sort");
         let manifest_path = project_dir.join("petiglyph.toml");
         write_manifest(&manifest_path, &Manifest::default()).expect("manifest is written");
 
@@ -8330,7 +8824,7 @@ mod tests {
 
         let config = RuntimeConfig {
             project_dir: project_dir.clone(),
-            project_id: "test-animation-frame-sort".to_string(),
+            project_id: "test-animation-frame-natural-sort".to_string(),
             input_dir: icons_dir,
             out_dir: project_dir.join("build"),
             font_name: "Petiglyph".to_string(),
@@ -8345,9 +8839,9 @@ mod tests {
         let mut app = App::new(manifest_path.clone(), config);
         let animation_config = AnimationConfig {
             selected_frames: vec![
-                "f_03.png".to_string(),
-                "f_01.png".to_string(),
-                "f_02.png".to_string(),
+                "runner_10.png".to_string(),
+                "runner_2.png".to_string(),
+                "runner_1.png".to_string(),
             ],
             name_input: Input::new("walk".to_string()),
             animation_type: AnimationType::Grid,
@@ -8367,9 +8861,9 @@ mod tests {
         assert_eq!(
             manifest.animations[0].frames,
             vec![
-                "f_01.png".to_string(),
-                "f_02.png".to_string(),
-                "f_03.png".to_string()
+                "runner_1.png".to_string(),
+                "runner_2.png".to_string(),
+                "runner_10.png".to_string()
             ]
         );
 
