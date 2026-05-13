@@ -1271,6 +1271,10 @@ fn compose_tile_source_key(
     format!("{parent_source_key}#compose:{rows}x{cols}:{row}:{col}")
 }
 
+fn emitted_composition_cols(logical_cols: usize) -> usize {
+    logical_cols.checked_mul(2).unwrap_or(logical_cols)
+}
+
 fn mapped_source_block(by_source: &BTreeMap<String, String>, source_key: &str) -> Option<String> {
     by_source
         .get(source_key)
@@ -1278,8 +1282,13 @@ fn mapped_source_block(by_source: &BTreeMap<String, String>, source_key: &str) -
         .or_else(|| {
             let (parent, rows, cols, row, col) = parse_compose_tile_key(source_key)?;
             by_source.iter().find_map(|(candidate_key, codepoint)| {
-                let (candidate_parent, candidate_rows, candidate_cols, candidate_row, candidate_col) =
-                    parse_compose_tile_key(candidate_key)?;
+                let (
+                    candidate_parent,
+                    candidate_rows,
+                    candidate_cols,
+                    candidate_row,
+                    candidate_col,
+                ) = parse_compose_tile_key(candidate_key)?;
                 if candidate_parent == parent
                     && candidate_rows == rows
                     && candidate_cols == cols
@@ -1344,7 +1353,7 @@ fn animation_snapshots_from_manifest_and_mapping(
                     .unwrap_or_else(|| format!("[missing:{frame}]")),
                 AnimationType::Grid => {
                     let rows = animation.rows.unwrap_or(1);
-                    let cols = animation.cols.unwrap_or(1);
+                    let cols = emitted_composition_cols(animation.cols.unwrap_or(1));
                     let mut lines = Vec::new();
                     for row in 0..rows {
                         let mut line = String::new();
@@ -1971,6 +1980,68 @@ frames = [
                 "[missing:strip.png#compose:1x2:0:0]".to_string(),
                 "[missing:strip.png#compose:1x2:0:1]".to_string(),
             ]
+        );
+
+        fs::remove_dir_all(project_dir).expect("temp dir is removed");
+    }
+
+    #[test]
+    fn grid_animation_snapshot_uses_emitted_composition_columns() {
+        let project_dir = make_temp_dir("grid-animation-emitted-cols");
+        let manifest_path = project_dir.join("petiglyph.toml");
+        fs::create_dir_all(project_dir.join("build")).expect("build dir is created");
+        fs::write(
+            &manifest_path,
+            r#"input_dir = "icons"
+out_dir = "build"
+font_name = "Demo"
+glyph_size = 32
+threshold = 128
+codepoint_start = "U+100000"
+
+[[animations]]
+name = "walk"
+type = "grid"
+fps = 6
+frames = ["strip.png"]
+rows = 2
+cols = 2
+horizontal_bleed = "weak"
+vertical_bleed = "off"
+"#,
+        )
+        .expect("manifest is written");
+        fs::write(
+            project_dir.join("build").join("glyph-map.json"),
+            r#"[
+  { "glyph_name": "strip_r1_c1", "source_file": "strip.png#compose:2x4:0:0", "codepoint": "U+100000" },
+  { "glyph_name": "strip_r1_c2", "source_file": "strip.png#compose:2x4:0:1", "codepoint": "U+100001" },
+  { "glyph_name": "strip_r1_c3", "source_file": "strip.png#compose:2x4:0:2", "codepoint": "U+100002" },
+  { "glyph_name": "strip_r1_c4", "source_file": "strip.png#compose:2x4:0:3", "codepoint": "U+100003" },
+  { "glyph_name": "strip_r2_c1", "source_file": "strip.png#compose:2x4:1:0", "codepoint": "U+100004" },
+  { "glyph_name": "strip_r2_c2", "source_file": "strip.png#compose:2x4:1:1", "codepoint": "U+100005" },
+  { "glyph_name": "strip_r2_c3", "source_file": "strip.png#compose:2x4:1:2", "codepoint": "U+100006" },
+  { "glyph_name": "strip_r2_c4", "source_file": "strip.png#compose:2x4:1:3", "codepoint": "U+100007" }
+]"#,
+        )
+        .expect("glyph map is written");
+
+        let snapshots = animation_snapshots_from_manifest_and_mapping(&manifest_path);
+
+        assert_eq!(snapshots.len(), 1);
+        assert_eq!(
+            snapshots[0].frame_blocks,
+            vec![format!(
+                "{}{}{}{}\n{}{}{}{}",
+                char::from_u32(0x100000).unwrap(),
+                char::from_u32(0x100001).unwrap(),
+                char::from_u32(0x100002).unwrap(),
+                char::from_u32(0x100003).unwrap(),
+                char::from_u32(0x100004).unwrap(),
+                char::from_u32(0x100005).unwrap(),
+                char::from_u32(0x100006).unwrap(),
+                char::from_u32(0x100007).unwrap()
+            )]
         );
 
         fs::remove_dir_all(project_dir).expect("temp dir is removed");

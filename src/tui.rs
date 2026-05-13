@@ -16,7 +16,7 @@ use ratatui::widgets::{
     Block, BorderType, Borders, Clear, List, ListItem, ListState, Paragraph, Tabs, Wrap,
 };
 use ratatui::{Frame, Terminal};
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::env;
 use std::fs::{self, OpenOptions};
 use std::hash::{Hash, Hasher};
@@ -749,12 +749,14 @@ fn sample_from_installed_font_metadata(
         if !ttf_matches {
             continue;
         }
-        if let Some(sample) = sample_from_manifest_path(Path::new(&metadata.manifest_path)) {
+        if let Some(mut sample) = sample_from_manifest_path(Path::new(&metadata.manifest_path)) {
             let mut animation_rows = Vec::new();
             let mut animation_previews = Vec::new();
             let mut animation_exports = Vec::new();
             let manifest_path = Path::new(&metadata.manifest_path);
             let resolved_animation_blocks = installed_animation_blocks_from_manifest(manifest_path);
+
+            let mut all_animation_frames = HashSet::new();
             for snapshot in metadata.animation_snapshots {
                 let type_label = match snapshot.animation_type {
                     AnimationType::Standard => "standard",
@@ -765,6 +767,11 @@ fn sample_from_installed_font_metadata(
                     .filter(|blocks| !blocks.is_empty())
                     .cloned()
                     .unwrap_or(snapshot.frame_blocks);
+
+                for frame in &frame_blocks {
+                    all_animation_frames.insert(frame.trim().to_string());
+                }
+
                 animation_rows.push(format!(
                     "Animation: {} ({}, {} fps, {} frames)",
                     snapshot.name,
@@ -786,6 +793,9 @@ fn sample_from_installed_font_metadata(
                 }
                 animation_exports.push(export);
             }
+
+            sample.retain(|block| !all_animation_frames.contains(block.trim()));
+
             return Ok(Some((
                 sample,
                 animation_rows,
@@ -807,12 +817,12 @@ fn sample_from_manifest_path(manifest_path: &Path) -> Option<Vec<String>> {
     if sample.is_empty() {
         None
     } else {
-        Some(regroup_installed_sample_blocks(
+        Some(
             sample
                 .split("\n\n")
                 .map(|s| s.to_string())
                 .collect::<Vec<_>>(),
-        ))
+        )
     }
 }
 
@@ -858,7 +868,7 @@ fn installed_animation_blocks_for_definition(
                 .unwrap_or_else(|| format!("[missing:{frame}]")),
             AnimationType::Grid => {
                 let rows = animation.rows.unwrap_or(1);
-                let cols = animation.cols.unwrap_or(1);
+                let cols = emitted_composition_cols(animation.cols.unwrap_or(1));
                 (0..rows)
                     .map(|row| {
                         (0..cols)
@@ -877,6 +887,32 @@ fn installed_animation_blocks_for_definition(
         .collect()
 }
 
+fn emitted_composition_cols(logical_cols: usize) -> usize {
+    logical_cols.checked_mul(2).unwrap_or(logical_cols)
+}
+
+fn remap_standard_source_key_unambiguous<'a>(
+    existing_keys: impl Iterator<Item = &'a String>,
+    source_key: &str,
+) -> Option<String> {
+    if source_key.contains("#compose:") {
+        return None;
+    }
+    let mut matched = existing_keys.filter(|candidate| {
+        if candidate.contains("#compose:") {
+            return false;
+        }
+        candidate.as_str() == source_key
+            || candidate.ends_with(&format!("/{source_key}"))
+            || source_key.ends_with(&format!("/{candidate}"))
+    });
+    let first = matched.next()?;
+    if matched.next().is_some() {
+        return None; // Ambiguous
+    }
+    Some(first.clone())
+}
+
 fn installed_animation_source_block(
     by_source: &BTreeMap<String, String>,
     source_key: &str,
@@ -884,8 +920,14 @@ fn installed_animation_source_block(
     let codepoint = by_source
         .get(source_key)
         .cloned()
-        .or_else(|| remap_compose_source_key_unambiguous(by_source.keys(), source_key)
-            .and_then(|resolved| by_source.get(&resolved).cloned()));
+        .or_else(|| {
+            remap_compose_source_key_unambiguous(by_source.keys(), source_key)
+                .and_then(|resolved| by_source.get(&resolved).cloned())
+        })
+        .or_else(|| {
+            remap_standard_source_key_unambiguous(by_source.keys(), source_key)
+                .and_then(|resolved| by_source.get(&resolved).cloned())
+        });
     codepoint
         .as_deref()
         .and_then(|cp| format_codepoint_char(cp))
@@ -940,7 +982,11 @@ fn remap_compose_source_key_unambiguous<'a>(
     let mut matched = existing_keys.filter_map(|candidate| {
         let (candidate_parent, candidate_rows, candidate_cols, candidate_row, candidate_col) =
             parse_compose_tile_key(candidate)?;
-        if candidate_parent == parent
+        let parent_matches = candidate_parent == parent
+            || candidate_parent.ends_with(&format!("/{parent}"))
+            || parent.ends_with(&format!("/{candidate_parent}"));
+
+        if parent_matches
             && candidate_rows == rows
             && candidate_cols == cols
             && candidate_row == row
@@ -953,7 +999,7 @@ fn remap_compose_source_key_unambiguous<'a>(
     });
     let first = matched.next()?;
     if matched.next().is_some() {
-        return None;
+        return None; // Ambiguous
     }
     Some(first)
 }
@@ -4041,10 +4087,7 @@ impl App {
         }
 
         self.reload_config()?;
-        if matches!(
-            self.glyph_tool_mode,
-            GlyphToolMode::ImportAnimationFrames
-        ) {
+        if matches!(self.glyph_tool_mode, GlyphToolMode::ImportAnimationFrames) {
             self.start_animation_frame_import(payload.to_string())?;
             return Ok(());
         }
@@ -5917,10 +5960,7 @@ fn draw_animation_popup(frame: &mut Frame, app: &App, area: Rect, accent: Color,
             ]
         }
         GlyphToolMode::ImportAnimationFrames => {
-            let mut lines = vec![
-                Line::from("Importing animation frames"),
-                Line::from(""),
-            ];
+            let mut lines = vec![Line::from("Importing animation frames"), Line::from("")];
             if let Some(spinner) = app.animation_import_spinner_frame() {
                 lines.push(Line::from(format!("{spinner} Loading animation frames...")));
             } else {
@@ -7823,12 +7863,13 @@ mod tests {
     use super::{
         AnimationConfig, AnimationConfigFocus, AnimationType, App, AppView, BleedLevel, Input,
         InteractiveGlyph, KeyCode, RuntimeConfig, drag_images_here_lines,
-        glyph_matches_animation_frame_source, handle_key, installed_animation_frame_index,
-        installed_animation_source_block, preview_lines,
-        scrollbar_thumb_geometry, visible_window_bounds,
+        glyph_matches_animation_frame_source, handle_key,
+        installed_animation_blocks_for_definition, installed_animation_frame_index,
+        installed_animation_source_block, preview_lines, scrollbar_thumb_geometry,
+        visible_window_bounds,
     };
     use crate::build::PreprocessedGlyph;
-    use crate::project::{Manifest, read_manifest, write_manifest};
+    use crate::project::{AnimationDef, Manifest, read_manifest, write_manifest};
     use std::collections::BTreeMap;
     use std::fs;
     use std::path::PathBuf;
@@ -7969,6 +8010,72 @@ mod tests {
 
         assert_eq!(block0, Some(char::from_u32(0x100000).unwrap().to_string()));
         assert_eq!(block1, Some(char::from_u32(0x100001).unwrap().to_string()));
+    }
+
+    #[test]
+    fn installed_grid_animation_blocks_use_emitted_composition_columns() {
+        let by_source = BTreeMap::from([
+            (
+                "strip.png#compose:2x4:0:0".to_string(),
+                "U+100000".to_string(),
+            ),
+            (
+                "strip.png#compose:2x4:0:1".to_string(),
+                "U+100001".to_string(),
+            ),
+            (
+                "strip.png#compose:2x4:0:2".to_string(),
+                "U+100002".to_string(),
+            ),
+            (
+                "strip.png#compose:2x4:0:3".to_string(),
+                "U+100003".to_string(),
+            ),
+            (
+                "strip.png#compose:2x4:1:0".to_string(),
+                "U+100004".to_string(),
+            ),
+            (
+                "strip.png#compose:2x4:1:1".to_string(),
+                "U+100005".to_string(),
+            ),
+            (
+                "strip.png#compose:2x4:1:2".to_string(),
+                "U+100006".to_string(),
+            ),
+            (
+                "strip.png#compose:2x4:1:3".to_string(),
+                "U+100007".to_string(),
+            ),
+        ]);
+        let animation = AnimationDef {
+            name: "walk".to_string(),
+            animation_type: AnimationType::Grid,
+            fps: 8,
+            frames: vec!["strip.png".to_string()],
+            rows: Some(2),
+            cols: Some(2),
+            horizontal_bleed: Some(BleedLevel::Weak),
+            vertical_bleed: Some(BleedLevel::Off),
+        };
+
+        let blocks = installed_animation_blocks_for_definition(&animation, &by_source);
+
+        assert_eq!(blocks.len(), 1);
+        assert_eq!(
+            blocks[0],
+            format!(
+                "{}{}{}{}\n{}{}{}{}",
+                char::from_u32(0x100000).unwrap(),
+                char::from_u32(0x100001).unwrap(),
+                char::from_u32(0x100002).unwrap(),
+                char::from_u32(0x100003).unwrap(),
+                char::from_u32(0x100004).unwrap(),
+                char::from_u32(0x100005).unwrap(),
+                char::from_u32(0x100006).unwrap(),
+                char::from_u32(0x100007).unwrap()
+            )
+        );
     }
 
     #[test]
