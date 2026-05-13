@@ -6730,7 +6730,7 @@ fn draw_glyphs_view(
                         .unwrap_or(app.config.base_threshold);
                     let mut ascii = if animation.animation_type == AnimationType::Grid {
                         let rows = animation.rows.unwrap_or(2);
-                        let cols = animation.cols.unwrap_or(2);
+                        let cols = emitted_composition_cols(animation.cols.unwrap_or(2));
                         let tiles = app
                             .glyphs
                             .iter()
@@ -7862,13 +7862,13 @@ fn installed_animation_preview_lines(
 mod tests {
     use super::{
         AnimationConfig, AnimationConfigFocus, AnimationType, App, AppView, BleedLevel, Input,
-        InteractiveGlyph, KeyCode, RuntimeConfig, drag_images_here_lines,
-        glyph_matches_animation_frame_source, handle_key,
-        installed_animation_blocks_for_definition, installed_animation_frame_index,
+        InteractiveGlyph, KeyCode, RuntimeConfig, composition_preview_lines_stable_frame,
+        drag_images_here_lines, emitted_composition_cols, glyph_matches_animation_frame_source,
+        handle_key, installed_animation_blocks_for_definition, installed_animation_frame_index,
         installed_animation_source_block, preview_lines, scrollbar_thumb_geometry,
         visible_window_bounds,
     };
-    use crate::build::PreprocessedGlyph;
+    use crate::build::{CompositionTileInfo, PreprocessedGlyph};
     use crate::project::{AnimationDef, Manifest, read_manifest, write_manifest};
     use std::collections::BTreeMap;
     use std::fs;
@@ -8265,6 +8265,57 @@ mod tests {
         assert!(
             rendered.iter().all(|line| line.chars().count() == 70),
             "37-cell preview width with x compensation should render as 4 spaces + 33 block pairs"
+        );
+    }
+
+    #[test]
+    fn stable_grid_animation_preview_uses_emitted_composition_columns() {
+        let glyphs = (0..2)
+            .flat_map(|row| {
+                (0..4).map(move |col| InteractiveGlyph {
+                    glyph: PreprocessedGlyph {
+                        source_path: PathBuf::from("icons/strip.png"),
+                        source_key: format!("strip.png#compose:2x4:{row}:{col}"),
+                        source_parent_key: "strip.png".to_string(),
+                        glyph_name: format!("strip_r{}_c{}", row + 1, col + 1),
+                        width: 1,
+                        height: 1,
+                        coverage: vec![255],
+                        image_fingerprint: "fnv1a64:test".to_string(),
+                        composition_tile: Some(CompositionTileInfo {
+                            rows: 2,
+                            cols: emitted_composition_cols(2),
+                            row,
+                            col,
+                            horizontal_bleed: BleedLevel::Weak,
+                            vertical_bleed: BleedLevel::Off,
+                        }),
+                    },
+                    working_threshold: 64,
+                    saved_threshold: None,
+                })
+            })
+            .collect::<Vec<_>>();
+        let tile_refs = glyphs.iter().collect::<Vec<_>>();
+
+        let lines = composition_preview_lines_stable_frame(
+            &tile_refs,
+            64,
+            2,
+            emitted_composition_cols(2),
+            12,
+            4,
+        );
+        let rendered = lines
+            .iter()
+            .flat_map(|line| line.spans.iter())
+            .map(|span| span.content.as_ref())
+            .collect::<String>();
+
+        assert!(!rendered.contains("unavailable"));
+        assert!(
+            rendered.chars().any(|ch| !ch.is_whitespace()),
+            "grid animation preview should render visible cells"
         );
     }
 
