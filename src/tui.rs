@@ -5711,7 +5711,6 @@ fn draw_ui(frame: &mut Frame, app: &App) {
     }
     draw_delete_project_confirmation_popup(frame, app, area, accent, muted);
     draw_first_install_notice_popup(frame, app, area, accent, muted);
-    draw_animation_popup(frame, app, area, accent, muted);
 
     // Footer
     let mut footer_spans = vec![
@@ -6170,7 +6169,7 @@ fn draw_blocked_project_view(
     frame.render_widget(Paragraph::new(text).block(block), area);
 }
 
-fn draw_animation_popup(frame: &mut Frame, app: &App, area: Rect, accent: Color, muted: Color) {
+fn draw_animation_panel_ui(frame: &mut Frame, app: &App, area: Rect, accent: Color, muted: Color) {
     let text = match &app.glyph_tool_mode {
         GlyphToolMode::None => return,
         GlyphToolMode::ChooseAnimationType { focus } => {
@@ -6292,22 +6291,18 @@ fn draw_animation_popup(frame: &mut Frame, app: &App, area: Rect, accent: Color,
             lines
         }
     };
-    let popup = centered_popup_rect(area, 90, 14);
-    frame.render_widget(Clear, popup);
     let block = Block::default()
-        .title(Span::styled(
-            " Animation ",
-            Style::default().fg(accent).add_modifier(Modifier::BOLD),
-        ))
+        .title(Span::styled(" Animation ", Style::default().fg(accent)))
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
         .border_style(Style::default().fg(muted));
+    frame.render_widget(Clear, area);
     frame.render_widget(
         Paragraph::new(text)
             .block(block)
             .wrap(Wrap { trim: true })
             .style(Style::default().fg(Color::White)),
-        popup,
+        area,
     );
 }
 
@@ -6793,6 +6788,10 @@ fn draw_glyphs_view(
 
     if let Some(config) = &app.grid_config {
         draw_grid_config_ui(frame, app, config, chunks[1], accent, muted);
+        return;
+    }
+    if !matches!(app.glyph_tool_mode, GlyphToolMode::None) {
+        draw_animation_panel_ui(frame, app, chunks[1], accent, muted);
         return;
     }
 
