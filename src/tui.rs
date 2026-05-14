@@ -34,7 +34,8 @@ use walkdir::WalkDir;
 use crate::artifact_warning::incompatible_artifact_warning;
 use crate::build::{
     BuildSummary, MappingEntry, PreprocessedGlyph, build_outputs, expected_bdf_path,
-    expected_ttf_path, is_supported_source, preprocess_sources_with_compositions,
+    expected_ttf_path, is_supported_source,
+    preprocess_sources_with_compositions_and_standard_sources,
 };
 use crate::glyph_debug;
 use crate::install::{
@@ -932,6 +933,9 @@ fn installed_animation_source_block(
     by_source: &BTreeMap<String, String>,
     source_key: &str,
 ) -> Option<String> {
+    if let Some(codepoint) = by_source.get(source_key) {
+        return format_codepoint_char(codepoint).map(|c| c.to_string());
+    }
     let codepoint = by_source
         .get(source_key)
         .cloned()
@@ -3609,10 +3613,9 @@ impl App {
         for (animation_idx, animation) in self.config.animations.iter().enumerate() {
             rows.push(VisibleGlyphRow::AnimationParent { animation_idx });
             for (frame_idx, source_key) in animation.frames.iter().enumerate() {
-                let glyph_idx = self
-                    .glyphs
-                    .iter()
-                    .position(|glyph| glyph_matches_animation_frame_source(glyph, source_key));
+                let glyph_idx = self.glyphs.iter().position(|glyph| {
+                    glyph_matches_animation_row_frame(glyph, animation, source_key)
+                });
                 rows.push(VisibleGlyphRow::AnimationFrame {
                     animation_idx,
                     frame_idx,
@@ -3707,9 +3710,9 @@ impl App {
                 .get(*animation_idx)
                 .and_then(|animation| {
                     animation.frames.first().and_then(|frame| {
-                        self.glyphs
-                            .iter()
-                            .position(|glyph| glyph_matches_animation_frame_source(glyph, frame))
+                        self.glyphs.iter().position(|glyph| {
+                            glyph_matches_animation_row_frame(glyph, animation, frame)
+                        })
                     })
                 })
                 .unwrap_or(0),
@@ -4060,11 +4063,12 @@ impl App {
             return Ok(());
         }
 
-        let glyphs = preprocess_sources_with_compositions(
+        let glyphs = preprocess_sources_with_compositions_and_standard_sources(
             &sources,
             &self.config.input_dir,
             self.config.glyph_size,
             &self.config.compositions,
+            &standard_animation_frame_sources(&self.config),
         )?
         .into_iter()
         .map(|glyph| {
@@ -4776,6 +4780,31 @@ fn animation_frame_parent_sources(config: &RuntimeConfig) -> BTreeSet<String> {
         .flat_map(|animation| animation.frames.iter())
         .map(|frame| animation_frame_parent_source(frame))
         .collect()
+}
+
+fn standard_animation_frame_sources(config: &RuntimeConfig) -> BTreeSet<String> {
+    config
+        .animations
+        .iter()
+        .filter(|animation| animation.animation_type == AnimationType::Standard)
+        .flat_map(|animation| animation.frames.iter())
+        .filter(|frame| !frame.contains("#compose:"))
+        .cloned()
+        .collect()
+}
+
+fn glyph_matches_animation_row_frame(
+    glyph: &InteractiveGlyph,
+    animation: &AnimationDef,
+    frame_source_key: &str,
+) -> bool {
+    if animation.animation_type == AnimationType::Standard
+        && !frame_source_key.contains("#compose:")
+    {
+        return glyph.glyph.source_key == frame_source_key
+            && glyph.glyph.composition_tile.is_none();
+    }
+    glyph_matches_animation_frame_source(glyph, frame_source_key)
 }
 
 fn animation_frame_source_for_preview(
@@ -7022,7 +7051,7 @@ fn draw_glyphs_view(
                     let threshold = app
                         .glyphs
                         .iter()
-                        .find(|g| glyph_matches_animation_frame_source(g, frame_source_key))
+                        .find(|g| glyph_matches_animation_row_frame(g, animation, frame_source_key))
                         .map(|g| g.working_threshold)
                         .unwrap_or(app.config.base_threshold);
                     let mut ascii = if animation.animation_type == AnimationType::Grid {
@@ -7031,7 +7060,10 @@ fn draw_glyphs_view(
                         let tiles = app
                             .glyphs
                             .iter()
-                            .filter(|g| g.glyph.source_parent_key == *frame_source_key)
+                            .filter(|g| {
+                                g.glyph.source_parent_key == *frame_source_key
+                                    && g.glyph.composition_tile.is_some()
+                            })
                             .collect::<Vec<_>>();
                         composition_preview_lines_stable_frame(
                             &tiles,
@@ -7044,7 +7076,9 @@ fn draw_glyphs_view(
                     } else {
                         app.glyphs
                             .iter()
-                            .find(|g| glyph_matches_animation_frame_source(g, frame_source_key))
+                            .find(|g| {
+                                glyph_matches_animation_row_frame(g, animation, frame_source_key)
+                            })
                             .map(|g| {
                                 preview_lines_stable_frame(
                                     &g.glyph,
@@ -7864,11 +7898,12 @@ fn load_interactive_glyphs_from_config(config: &RuntimeConfig) -> Result<LoadedG
     }
     sources.sort();
 
-    let glyphs = preprocess_sources_with_compositions(
+    let glyphs = preprocess_sources_with_compositions_and_standard_sources(
         &sources,
         &config.input_dir,
         config.glyph_size,
         &config.compositions,
+        &standard_animation_frame_sources(config),
     )?
     .into_iter()
     .map(|glyph| {
@@ -8743,6 +8778,99 @@ mod tests {
             1,
             "animation frames should not also appear as loose glyph rows"
         );
+    }
+
+    #[test]
+    fn standard_animation_row_uses_whole_glyph_when_source_is_also_grid() {
+        let project_dir = make_temp_dir("standard-animation-reused-grid-source");
+        let manifest_path = project_dir.join("petiglyph.toml");
+        let config = RuntimeConfig {
+            project_dir: project_dir.clone(),
+            project_id: "test-standard-animation-reused-grid-source".to_string(),
+            input_dir: project_dir.join("icons"),
+            out_dir: project_dir.join("build"),
+            font_name: "Petiglyph".to_string(),
+            glyph_size: 8,
+            base_threshold: 64,
+            threshold_overrides: BTreeMap::new(),
+            compositions: BTreeMap::new(),
+            animations: vec![
+                AnimationDef {
+                    name: "run-grid".to_string(),
+                    animation_type: AnimationType::Grid,
+                    fps: 8,
+                    frames: vec!["runner_01.png".to_string()],
+                    rows: Some(1),
+                    cols: Some(1),
+                    horizontal_bleed: Some(BleedLevel::Weak),
+                    vertical_bleed: Some(BleedLevel::Off),
+                },
+                AnimationDef {
+                    name: "run-standard".to_string(),
+                    animation_type: AnimationType::Standard,
+                    fps: 8,
+                    frames: vec!["runner_01.png".to_string()],
+                    rows: None,
+                    cols: None,
+                    horizontal_bleed: None,
+                    vertical_bleed: None,
+                },
+            ],
+            codepoint_start: 0x10_0000,
+        };
+        let mut app = App::new(manifest_path, config);
+        app.glyphs = vec![
+            InteractiveGlyph {
+                glyph: PreprocessedGlyph {
+                    source_path: project_dir.join("icons/runner_01.png"),
+                    source_key: "runner_01.png#compose:1x2:0:0".to_string(),
+                    source_parent_key: "runner_01.png".to_string(),
+                    glyph_name: "runner_01_r1_c1".to_string(),
+                    width: 1,
+                    height: 1,
+                    coverage: vec![255],
+                    image_fingerprint: "fnv1a64:tile".to_string(),
+                    composition_tile: Some(CompositionTileInfo {
+                        rows: 1,
+                        cols: 2,
+                        row: 0,
+                        col: 0,
+                        horizontal_bleed: BleedLevel::Weak,
+                        vertical_bleed: BleedLevel::Off,
+                    }),
+                },
+                working_threshold: 64,
+                saved_threshold: None,
+            },
+            InteractiveGlyph {
+                glyph: PreprocessedGlyph {
+                    source_path: project_dir.join("icons/runner_01.png"),
+                    source_key: "runner_01.png".to_string(),
+                    source_parent_key: "runner_01.png".to_string(),
+                    glyph_name: "runner_01_standard".to_string(),
+                    width: 2,
+                    height: 1,
+                    coverage: vec![255, 255],
+                    image_fingerprint: "fnv1a64:standard".to_string(),
+                    composition_tile: None,
+                },
+                working_threshold: 64,
+                saved_threshold: None,
+            },
+        ];
+
+        let rows = app.visible_glyph_rows();
+
+        assert!(matches!(
+            rows.get(3),
+            Some(VisibleGlyphRow::AnimationFrame {
+                animation_idx: 1,
+                glyph_idx: Some(1),
+                ..
+            })
+        ));
+
+        fs::remove_dir_all(project_dir).expect("temp dir is removed");
     }
 
     #[test]

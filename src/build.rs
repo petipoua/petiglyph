@@ -17,7 +17,7 @@ use crate::image_pipeline::{
 };
 use crate::install::reserve_project_unicode_range;
 use crate::project::{
-    BleedLevel, CompositionDef, RuntimeConfig, format_codepoint, parse_codepoint,
+    AnimationType, BleedLevel, CompositionDef, RuntimeConfig, format_codepoint, parse_codepoint,
 };
 
 #[derive(Debug, Clone)]
@@ -194,11 +194,13 @@ pub(crate) fn build_outputs_with_options(
         ),
     );
     let sources = collect_source_files(&config.input_dir)?;
-    let glyphs = preprocess_sources_with_compositions(
+    let standard_animation_sources = standard_animation_frame_sources(config);
+    let glyphs = preprocess_sources_with_compositions_and_standard_sources(
         &sources,
         &config.input_dir,
         config.glyph_size,
         &config.compositions,
+        &standard_animation_sources,
     )?;
     validate_codepoint_range(config.codepoint_start, glyphs.len())?;
     let assigned_codepoints = assign_codepoints_for_build(config, &glyphs, options)?;
@@ -642,9 +644,9 @@ fn assign_codepoints_for_build(
         }
     }
 
-    let (group_plans, new_allocations) = detect_glyph_groups(glyphs, &entries_by_source)?;
+    let (mut group_plans, new_allocations) = detect_glyph_groups(glyphs, &entries_by_source)?;
 
-    let required_codepoints = used_codepoints
+    let mut required_codepoints = used_codepoints
         .len()
         .checked_add(new_allocations)
         .ok_or_else(|| anyhow::anyhow!("glyph count is too large to allocate codepoints"))?;
@@ -653,22 +655,39 @@ fn assign_codepoints_for_build(
     #[cfg(not(test))]
     let registry_root_override = None;
 
-    let range = reserve_project_unicode_range(
+    let range = match reserve_project_unicode_range(
         registry_root_override,
         &config.project_id,
         config.codepoint_start,
         required_codepoints,
         &used_codepoints,
-    )
-    .map_err(|err| {
-        if options.force_remap {
-            err
-        } else {
-            err.context(
-                "if this conflict is intentional, rerun with `--force-remap` to rebuild glyph mappings in a fresh owned range",
+    ) {
+        Ok(range) => range,
+        Err(err) if !options.force_remap && is_range_expansion_conflict(&err) => {
+            // If a project outgrows a tightly boxed registry range, preserving every old
+            // codepoint may be impossible. Remap the project into a fresh range instead
+            // of blocking normal build/install flows.
+            entries_by_source.clear();
+            used_codepoints.clear();
+            let recomputed = detect_glyph_groups(glyphs, &entries_by_source)?;
+            group_plans = recomputed.0;
+            required_codepoints = recomputed.1;
+            reserve_project_unicode_range(
+                registry_root_override,
+                &config.project_id,
+                config.codepoint_start,
+                required_codepoints,
+                &used_codepoints,
             )
+            .context("failed to remap project into a fresh Unicode range")?
         }
-    })?;
+        Err(err) if options.force_remap => return Err(err),
+        Err(err) => {
+            return Err(err.context(
+                "if this conflict is intentional, rerun with `--force-remap` to rebuild glyph mappings in a fresh owned range",
+            ));
+        }
+    };
     let allocation_start = range.range_start;
     let allocation_end = range.range_end;
     lock.codepoint_start = format_codepoint(allocation_start);
@@ -765,6 +784,11 @@ fn assign_codepoints_for_build(
     save_glyph_lock(config, &lock)?;
 
     Ok(assigned)
+}
+
+fn is_range_expansion_conflict(err: &anyhow::Error) -> bool {
+    err.chain()
+        .any(|cause| cause.to_string().contains("cannot reserve"))
 }
 
 fn is_valid_unicode_scalar(codepoint: u32) -> bool {
@@ -903,6 +927,22 @@ pub(crate) fn preprocess_sources_with_compositions(
     glyph_size: u32,
     compositions: &BTreeMap<String, CompositionDef>,
 ) -> Result<Vec<PreprocessedGlyph>> {
+    preprocess_sources_with_compositions_and_standard_sources(
+        sources,
+        input_dir,
+        glyph_size,
+        compositions,
+        &BTreeSet::new(),
+    )
+}
+
+pub(crate) fn preprocess_sources_with_compositions_and_standard_sources(
+    sources: &[PathBuf],
+    input_dir: &Path,
+    glyph_size: u32,
+    compositions: &BTreeMap<String, CompositionDef>,
+    standard_source_keys: &BTreeSet<String>,
+) -> Result<Vec<PreprocessedGlyph>> {
     let mut used_names = HashSet::new();
     let mut out = Vec::new();
 
@@ -945,27 +985,30 @@ pub(crate) fn preprocess_sources_with_compositions(
                     }),
                 });
             }
+            if standard_source_keys.contains(&source_key) {
+                glyph_debug::log_step("source.standard-extra", format!("source={source_key}"));
+                push_standard_preprocessed_glyph(
+                    &mut out,
+                    source,
+                    &source_key,
+                    glyph_size,
+                    &mut used_names,
+                    Some(&format!("{base_name}_standard")),
+                )?;
+            }
             glyph_debug::log_step("source.done", format!("source={} mode=compose", source_key));
             continue;
         }
 
         glyph_debug::log_step("source.standard", format!("source={source_key}"));
-        let glyph_width = glyph_size;
-        let glyph_height = glyph_size;
-        let coverage = preprocess_standard_source(source, glyph_width, glyph_height, &source_key)?;
-        let glyph_name = unique_glyph_name(source, &mut used_names);
-        let image_fingerprint = fingerprint_source(source)?;
-        out.push(PreprocessedGlyph {
-            source_path: source.clone(),
-            source_key: source_key.clone(),
-            source_parent_key: source_key.clone(),
-            glyph_name,
-            width: glyph_width,
-            height: glyph_height,
-            coverage,
-            image_fingerprint,
-            composition_tile: None,
-        });
+        push_standard_preprocessed_glyph(
+            &mut out,
+            source,
+            &source_key,
+            glyph_size,
+            &mut used_names,
+            None,
+        )?;
         glyph_debug::log_step(
             "source.done",
             format!("source={} mode=standard", source_key),
@@ -973,6 +1016,47 @@ pub(crate) fn preprocess_sources_with_compositions(
     }
 
     Ok(out)
+}
+
+fn standard_animation_frame_sources(config: &RuntimeConfig) -> BTreeSet<String> {
+    config
+        .animations
+        .iter()
+        .filter(|animation| animation.animation_type == AnimationType::Standard)
+        .flat_map(|animation| animation.frames.iter())
+        .filter(|frame| !frame.contains("#compose:"))
+        .cloned()
+        .collect()
+}
+
+fn push_standard_preprocessed_glyph(
+    out: &mut Vec<PreprocessedGlyph>,
+    source: &Path,
+    source_key: &str,
+    glyph_size: u32,
+    used_names: &mut HashSet<String>,
+    glyph_name_seed: Option<&str>,
+) -> Result<()> {
+    let glyph_width = glyph_size;
+    let glyph_height = glyph_size;
+    let coverage = preprocess_standard_source(source, glyph_width, glyph_height, source_key)?;
+    let glyph_name = match glyph_name_seed {
+        Some(seed) => unique_glyph_name_for_seed(seed, used_names),
+        None => unique_glyph_name(source, used_names),
+    };
+    let image_fingerprint = fingerprint_source(source)?;
+    out.push(PreprocessedGlyph {
+        source_path: source.to_path_buf(),
+        source_key: source_key.to_string(),
+        source_parent_key: source_key.to_string(),
+        glyph_name,
+        width: glyph_width,
+        height: glyph_height,
+        coverage,
+        image_fingerprint,
+        composition_tile: None,
+    });
+    Ok(())
 }
 
 fn compose_tile_source_key(

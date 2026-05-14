@@ -13,6 +13,7 @@ use crate::build::{
     BuildOptions, GlyphBitmap, MappingEntry, PreprocessedGlyph, bitmap_to_bdf_rows, build_outputs,
     build_outputs_with_options, collect_source_files, coverage_map, glyph_sample_string,
     is_supported_source, preprocess_sources_with_compositions,
+    preprocess_sources_with_compositions_and_standard_sources,
 };
 use crate::cli::{
     DefaultTuiTarget, is_private_use_codepoint, resolve_default_tui_target_for,
@@ -1608,6 +1609,59 @@ fn preprocess_composition_tiles_keep_corner_alignment_without_recentering() {
 }
 
 #[test]
+fn composed_source_can_also_emit_standard_animation_glyph() {
+    let project_dir = make_temp_dir("composition-standard-animation-glyph");
+    let input_dir = project_dir.join("icons");
+    fs::create_dir_all(&input_dir).expect("icons dir is created");
+
+    let mut img = RgbaImage::from_pixel(32, 16, Rgba([255, 255, 255, 0]));
+    for y in 4..12 {
+        for x in 4..28 {
+            img.put_pixel(x, y, Rgba([0, 0, 0, 255]));
+        }
+    }
+    img.save(input_dir.join("runner_01.png"))
+        .expect("runner image is written");
+
+    let mut compositions = BTreeMap::new();
+    compositions.insert(
+        "runner_01.png".to_string(),
+        CompositionDef {
+            rows: 1,
+            cols: 2,
+            horizontal_bleed: BleedLevel::Weak,
+            vertical_bleed: BleedLevel::Off,
+        },
+    );
+    let standard_sources = BTreeSet::from(["runner_01.png".to_string()]);
+    let glyphs = preprocess_sources_with_compositions_and_standard_sources(
+        &[input_dir.join("runner_01.png")],
+        &input_dir,
+        16,
+        &compositions,
+        &standard_sources,
+    )
+    .expect("composition plus standard glyph preprocess succeeds");
+
+    assert!(
+        glyphs
+            .iter()
+            .any(|glyph| glyph.source_key == "runner_01.png"
+                && glyph.source_parent_key == "runner_01.png"
+                && glyph.composition_tile.is_none()),
+        "standard animations need an exact whole-image source glyph"
+    );
+    assert!(
+        glyphs
+            .iter()
+            .any(|glyph| glyph.source_key.starts_with("runner_01.png#compose:")),
+        "grid animations still need composed tile glyphs"
+    );
+
+    fs::remove_dir_all(project_dir).expect("temp project dir is removed");
+}
+
+#[test]
 fn preprocess_composition_tiles_use_global_grid_scaling() {
     let project_dir = make_temp_dir("composition-global-grid-scaling");
     let input_dir = project_dir.join("icons");
@@ -2885,6 +2939,80 @@ fn build_force_remap_recovers_from_foreign_codepoint_conflict() {
 
     build_outputs_with_options(&config, BuildOptions { force_remap: true })
         .expect("force remap build should recover and succeed");
+
+    fs::remove_dir_all(project_dir).expect("temp project dir is removed");
+}
+
+#[test]
+fn build_auto_remaps_when_existing_range_cannot_expand() {
+    let project_dir = make_temp_dir("auto-remap-range-expansion");
+    let input_dir = project_dir.join("icons");
+    let out_dir = project_dir.join("build");
+    fs::create_dir_all(&input_dir).expect("icons dir is created");
+    fs::create_dir_all(&out_dir).expect("build dir is created");
+    write_test_png(&input_dir.join("a.png"));
+    write_test_png(&input_dir.join("b.png"));
+
+    let locked = BTreeSet::new();
+    reserve_project_unicode_range(Some(&project_dir), "project-c", 0x0F_FFFF, 1, &locked)
+        .expect("project-c reservation should block relocation before project-a");
+    reserve_project_unicode_range(Some(&project_dir), "project-a", 0x10_0000, 1, &locked)
+        .expect("project-a reservation should succeed");
+    reserve_project_unicode_range(Some(&project_dir), "project-b", 0x10_0001, 1, &locked)
+        .expect("project-b reservation should box project-a in");
+
+    let lock_json = serde_json::json!({
+        "version": 1,
+        "project_id": "project-a",
+        "codepoint_start": "U+100000",
+        "entries": [
+            {
+                "source_file": "a.png",
+                "codepoint": "U+100000",
+                "image_fingerprint": "fnv1a64:0000000000000000",
+                "active": true
+            }
+        ]
+    });
+    fs::write(
+        project_dir.join("petiglyph.lock"),
+        serde_json::to_string_pretty(&lock_json).expect("lock serializes"),
+    )
+    .expect("lock is written");
+
+    let config = RuntimeConfig {
+        project_dir: project_dir.clone(),
+        project_id: "project-a".to_string(),
+        input_dir,
+        out_dir,
+        font_name: "AutoRemap".to_string(),
+        glyph_size: 16,
+        base_threshold: 64,
+        threshold_overrides: BTreeMap::new(),
+        compositions: BTreeMap::new(),
+        animations: Vec::new(),
+        codepoint_start: 0x10_0000,
+    };
+
+    build_outputs(&config).expect("build should remap project into a fresh range");
+
+    let lock_raw =
+        fs::read_to_string(project_dir.join("petiglyph.lock")).expect("lock should be written");
+    let lock_json: serde_json::Value = serde_json::from_str(&lock_raw).expect("lock parses");
+    let entries = lock_json
+        .get("entries")
+        .and_then(|value| value.as_array())
+        .expect("lock entries should be an array");
+    let codepoints = entries
+        .iter()
+        .filter_map(|entry| entry.get("codepoint").and_then(|value| value.as_str()))
+        .collect::<Vec<_>>();
+
+    assert_eq!(codepoints.len(), 2);
+    assert!(
+        !codepoints.contains(&"U+100000"),
+        "boxed-in old codepoint should be remapped"
+    );
 
     fs::remove_dir_all(project_dir).expect("temp project dir is removed");
 }
