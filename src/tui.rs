@@ -1798,22 +1798,15 @@ fn handle_glyphs_key(app: &mut App, key: KeyEvent) -> Result<()> {
                     adjust_selected_threshold_by(app, -1);
                 }
             } else {
-                app.glyph_preview_control = match app.glyph_preview_control {
-                    GlyphPreviewControl::Threshold => {
-                        if selected_row_supports_fps(app) {
-                            GlyphPreviewControl::Fps
-                        } else {
-                            GlyphPreviewControl::Threshold
-                        }
-                    }
-                    GlyphPreviewControl::Fps => {
-                        if selected_row_supports_threshold(app) {
-                            GlyphPreviewControl::Threshold
-                        } else {
-                            GlyphPreviewControl::Fps
-                        }
-                    }
-                };
+                let leftmost = preview_leftmost_control(
+                    selected_row_supports_threshold(app),
+                    selected_row_supports_fps(app),
+                );
+                if leftmost.is_none() || Some(app.glyph_preview_control) == leftmost {
+                    app.glyphs_focus = GlyphsFocus::List;
+                } else if let Some(leftmost) = leftmost {
+                    app.glyph_preview_control = leftmost;
+                }
             }
         }
         KeyCode::Right | KeyCode::Char('l') | KeyCode::Char('+') | KeyCode::Char('=') => {
@@ -6006,6 +5999,19 @@ fn selected_row_supports_fps(app: &App) -> bool {
     selected_animation_index(app).is_some()
 }
 
+fn preview_leftmost_control(
+    supports_threshold: bool,
+    supports_fps: bool,
+) -> Option<GlyphPreviewControl> {
+    if supports_threshold {
+        Some(GlyphPreviewControl::Threshold)
+    } else if supports_fps {
+        Some(GlyphPreviewControl::Fps)
+    } else {
+        None
+    }
+}
+
 fn selected_row_threshold_value(app: &App) -> Option<u8> {
     let sources = selected_threshold_sources(app)?;
     let first = sources.first()?;
@@ -8222,27 +8228,18 @@ fn draw_glyphs_view(
     let supports_threshold = selected_row_supports_threshold(app);
     let supports_fps = selected_row_supports_fps(app);
     if supports_threshold || supports_fps {
-        let threshold_style = if app.glyphs_focus == GlyphsFocus::Preview
-            && app.glyph_preview_control == GlyphPreviewControl::Threshold
-            && supports_threshold
-        {
-            Style::default()
-                .fg(Color::Black)
-                .bg(accent)
-                .add_modifier(Modifier::BOLD)
-        } else {
-            Style::default().fg(if supports_threshold { Color::White } else { muted })
-        };
-        let fps_style = if app.glyphs_focus == GlyphsFocus::Preview
-            && app.glyph_preview_control == GlyphPreviewControl::Fps
-            && supports_fps
-        {
-            Style::default()
-                .fg(Color::Black)
-                .bg(accent)
-                .add_modifier(Modifier::BOLD)
-        } else {
-            Style::default().fg(if supports_fps { Color::White } else { muted })
+        let button_style = |selected: bool| {
+            if selected {
+                Style::default()
+                    .fg(Color::Black)
+                    .bg(accent)
+                    .add_modifier(Modifier::BOLD)
+            } else {
+                Style::default()
+                    .fg(Color::White)
+                    .bg(Color::DarkGray)
+                    .add_modifier(Modifier::BOLD)
+            }
         };
 
         let threshold_value = selected_row_threshold_value(app)
@@ -8252,14 +8249,31 @@ fn draw_glyphs_view(
             .map(|value| value.to_string())
             .unwrap_or_else(|| "-".to_string());
 
+        let threshold_selected = supports_threshold
+            && app.glyphs_focus == GlyphsFocus::Preview
+            && app.glyph_preview_control == GlyphPreviewControl::Threshold;
+        let fps_selected = supports_fps
+            && app.glyphs_focus == GlyphsFocus::Preview
+            && app.glyph_preview_control == GlyphPreviewControl::Fps;
+
+        let mut edit_spans = vec![
+            Span::raw("  Edit "),
+            Span::styled(
+                format!(" Threshold: {threshold_value} "),
+                button_style(threshold_selected),
+            ),
+        ];
+        if supports_fps {
+            edit_spans.push(Span::raw(" "));
+            edit_spans.push(Span::styled(
+                format!(" FPS: {fps_value} "),
+                button_style(fps_selected),
+            ));
+        }
+
         preview_content.insert(
             0,
-            Line::from(vec![
-                Span::raw("  Edit "),
-                Span::styled(format!("[Threshold: {threshold_value}]"), threshold_style),
-                Span::raw(" "),
-                Span::styled(format!("[FPS: {fps_value}]"), fps_style),
-            ]),
+            Line::from(edit_spans),
         );
     }
 
@@ -9387,6 +9401,7 @@ mod tests {
     use super::{
         AnimationConfig, AnimationConfigFocus, AnimationImportTaskOutput, AnimationPreview,
         AnimationType, App, AppView, BleedLevel, DropImportResult, ExistingImportPolicy,
+        GlyphPreviewControl,
         HomeCreationKind, HomeWorkflow, InteractiveGlyph, KeyCode, RuntimeConfig,
         VisibleGlyphRow,
         animation_frame_source_for_preview, default_animation_name_from_frames,
@@ -9394,7 +9409,7 @@ mod tests {
         glyph_matches_animation_frame_source, handle_key, handle_paste_event_for_test,
         import_image_files_to_input, installed_animation_blocks_for_definition,
         installed_animation_frame_index, installed_animation_source_block, preview_lines,
-        prune_static_sample_blocks, step_animation_preview,
+        preview_leftmost_control, prune_static_sample_blocks, step_animation_preview,
         scrollbar_thumb_geometry, visible_window_bounds, persist_composition_definition,
     };
     use crate::build::{CompositionTileInfo, PreprocessedGlyph};
@@ -10515,6 +10530,19 @@ mod tests {
 
         let name = default_animation_name_from_frames(&config, &["runner_010.png".to_string()]);
         assert_eq!(name, "runner_anim_2");
+    }
+
+    #[test]
+    fn preview_leftmost_control_prefers_threshold_then_fps() {
+        assert_eq!(
+            preview_leftmost_control(true, true),
+            Some(GlyphPreviewControl::Threshold)
+        );
+        assert_eq!(
+            preview_leftmost_control(false, true),
+            Some(GlyphPreviewControl::Fps)
+        );
+        assert_eq!(preview_leftmost_control(false, false), None);
     }
 
     #[test]
