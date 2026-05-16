@@ -5835,23 +5835,42 @@ fn selected_visible_glyph_index(app: &App) -> Option<usize> {
 
 fn selected_threshold_sources(app: &App) -> Option<Vec<String>> {
     match app.selected_visible_row()? {
-        VisibleGlyphRow::AnimationParent { animation_idx }
-        | VisibleGlyphRow::AnimationFrame { animation_idx, .. } => app
+        VisibleGlyphRow::AnimationParent { animation_idx } => app
             .config
             .animations
             .get(animation_idx)
-            .map(|animation| {
-                animation
-                    .frames
-                    .iter()
-                    .map(|frame| animation_frame_parent_source(frame))
-                    .collect::<BTreeSet<_>>()
-                    .into_iter()
-                    .collect::<Vec<_>>()
-            }),
+            .map(animation_threshold_parent_sources),
+        VisibleGlyphRow::AnimationFrame { source_key, .. } => {
+            Some(vec![animation_frame_parent_source(&source_key)])
+        }
         VisibleGlyphRow::CompositionChild { .. } => None,
         _ => selected_source_parent_key(app).map(|source| vec![source]),
     }
+}
+
+fn animation_threshold_parent_sources(animation: &AnimationDef) -> Vec<String> {
+    animation
+        .frames
+        .iter()
+        .map(|frame| animation_frame_parent_source(frame))
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect::<Vec<_>>()
+}
+
+fn animation_has_non_uniform_frame_thresholds(app: &App, animation: &AnimationDef) -> bool {
+    let mut values = animation_threshold_parent_sources(animation)
+        .into_iter()
+        .filter_map(|source_key| {
+            app.glyphs
+                .iter()
+                .find(|g| g.glyph.source_parent_key == source_key)
+                .map(|g| g.working_threshold)
+        });
+    let Some(first) = values.next() else {
+        return false;
+    };
+    values.any(|value| value != first)
 }
 
 fn selected_glyph(app: &App) -> Option<&InteractiveGlyph> {
@@ -7892,6 +7911,8 @@ fn draw_glyphs_view(
         match &visible_rows[app.selected_visible.min(visible_rows.len() - 1)] {
             VisibleGlyphRow::AnimationParent { animation_idx } => {
                 let animation = &app.config.animations[*animation_idx];
+                let has_non_uniform_thresholds =
+                    animation_has_non_uniform_frame_thresholds(app, animation);
                 vec![
                     Line::from(""),
                     Line::from(vec![
@@ -7917,6 +7938,20 @@ fn draw_glyphs_view(
                             Style::default().fg(accent),
                         ),
                     ]),
+                    if has_non_uniform_thresholds {
+                        Line::from(vec![
+                            Span::raw("  Thresholds: "),
+                            Span::styled(
+                                "frame-specific overrides active",
+                                Style::default().fg(Color::Yellow),
+                            ),
+                        ])
+                    } else {
+                        Line::from(vec![
+                            Span::raw("  Thresholds: "),
+                            Span::styled("uniform across frames", Style::default().fg(muted)),
+                        ])
+                    },
                     Line::from(""),
                 ]
             }
@@ -9411,6 +9446,7 @@ mod tests {
         installed_animation_frame_index, installed_animation_source_block, preview_lines,
         preview_leftmost_control, prune_static_sample_blocks, step_animation_preview,
         scrollbar_thumb_geometry, visible_window_bounds, persist_composition_definition,
+        selected_threshold_sources, animation_has_non_uniform_frame_thresholds,
     };
     use crate::build::{CompositionTileInfo, PreprocessedGlyph};
     use image::{Rgba, RgbaImage};
@@ -10543,6 +10579,156 @@ mod tests {
             Some(GlyphPreviewControl::Fps)
         );
         assert_eq!(preview_leftmost_control(false, false), None);
+    }
+
+    #[test]
+    fn animation_parent_threshold_sources_include_all_frames_but_frame_row_is_specific() {
+        let project_dir = make_temp_dir("animation-threshold-sources");
+        let manifest_path = project_dir.join("petiglyph.toml");
+        let config = RuntimeConfig {
+            project_dir: project_dir.clone(),
+            project_id: "test-animation-threshold-sources".to_string(),
+            input_dir: project_dir.join("icons"),
+            out_dir: project_dir.join("build"),
+            font_name: "Petiglyph".to_string(),
+            glyph_size: 8,
+            base_threshold: 64,
+            threshold_overrides: BTreeMap::new(),
+            compositions: BTreeMap::new(),
+            animations: vec![AnimationDef {
+                name: "run_anim".to_string(),
+                animation_type: AnimationType::Standard,
+                fps: 8,
+                frames: vec!["f1.png".to_string(), "f2.png".to_string()],
+                rows: None,
+                cols: None,
+                horizontal_bleed: None,
+                vertical_bleed: None,
+            }],
+            codepoint_start: 0x10_0000,
+        };
+        let mut app = App::new(manifest_path, config);
+        app.glyphs = vec![
+            InteractiveGlyph {
+                glyph: PreprocessedGlyph {
+                    source_path: PathBuf::from("icons/f1.png"),
+                    source_key: "f1.png".to_string(),
+                    source_parent_key: "f1.png".to_string(),
+                    glyph_name: "f1".to_string(),
+                    width: 1,
+                    height: 1,
+                    coverage: vec![255],
+                    image_fingerprint: "fnv1a64:test-f1".to_string(),
+                    composition_tile: None,
+                },
+                working_threshold: 64,
+                saved_threshold: None,
+            },
+            InteractiveGlyph {
+                glyph: PreprocessedGlyph {
+                    source_path: PathBuf::from("icons/f2.png"),
+                    source_key: "f2.png".to_string(),
+                    source_parent_key: "f2.png".to_string(),
+                    glyph_name: "f2".to_string(),
+                    width: 1,
+                    height: 1,
+                    coverage: vec![255],
+                    image_fingerprint: "fnv1a64:test-f2".to_string(),
+                    composition_tile: None,
+                },
+                working_threshold: 64,
+                saved_threshold: None,
+            },
+        ];
+        app.expanded_animations.insert("run_anim".to_string());
+
+        app.selected_visible = 0;
+        assert_eq!(
+            selected_threshold_sources(&app),
+            Some(vec!["f1.png".to_string(), "f2.png".to_string()])
+        );
+
+        app.selected_visible = 1;
+        assert_eq!(
+            selected_threshold_sources(&app),
+            Some(vec!["f1.png".to_string()])
+        );
+
+        app.selected_visible = 2;
+        assert_eq!(
+            selected_threshold_sources(&app),
+            Some(vec!["f2.png".to_string()])
+        );
+
+        fs::remove_dir_all(project_dir).expect("temp dir is removed");
+    }
+
+    #[test]
+    fn animation_non_uniform_threshold_detection_tracks_frame_specific_overrides() {
+        let project_dir = make_temp_dir("animation-non-uniform-thresholds");
+        let manifest_path = project_dir.join("petiglyph.toml");
+        let animation = AnimationDef {
+            name: "blink_anim".to_string(),
+            animation_type: AnimationType::Standard,
+            fps: 12,
+            frames: vec!["a.png".to_string(), "b.png".to_string()],
+            rows: None,
+            cols: None,
+            horizontal_bleed: None,
+            vertical_bleed: None,
+        };
+        let config = RuntimeConfig {
+            project_dir: project_dir.clone(),
+            project_id: "test-animation-non-uniform-thresholds".to_string(),
+            input_dir: project_dir.join("icons"),
+            out_dir: project_dir.join("build"),
+            font_name: "Petiglyph".to_string(),
+            glyph_size: 8,
+            base_threshold: 64,
+            threshold_overrides: BTreeMap::new(),
+            compositions: BTreeMap::new(),
+            animations: vec![animation.clone()],
+            codepoint_start: 0x10_0000,
+        };
+        let mut app = App::new(manifest_path, config);
+        app.glyphs = vec![
+            InteractiveGlyph {
+                glyph: PreprocessedGlyph {
+                    source_path: PathBuf::from("icons/a.png"),
+                    source_key: "a.png".to_string(),
+                    source_parent_key: "a.png".to_string(),
+                    glyph_name: "a".to_string(),
+                    width: 1,
+                    height: 1,
+                    coverage: vec![255],
+                    image_fingerprint: "fnv1a64:test-a".to_string(),
+                    composition_tile: None,
+                },
+                working_threshold: 60,
+                saved_threshold: Some(60),
+            },
+            InteractiveGlyph {
+                glyph: PreprocessedGlyph {
+                    source_path: PathBuf::from("icons/b.png"),
+                    source_key: "b.png".to_string(),
+                    source_parent_key: "b.png".to_string(),
+                    glyph_name: "b".to_string(),
+                    width: 1,
+                    height: 1,
+                    coverage: vec![255],
+                    image_fingerprint: "fnv1a64:test-b".to_string(),
+                    composition_tile: None,
+                },
+                working_threshold: 72,
+                saved_threshold: Some(72),
+            },
+        ];
+
+        assert!(animation_has_non_uniform_frame_thresholds(&app, &animation));
+        app.glyphs[1].working_threshold = 60;
+        assert!(!animation_has_non_uniform_frame_thresholds(&app, &animation));
+
+        fs::remove_dir_all(project_dir).expect("temp dir is removed");
     }
 
     #[test]
