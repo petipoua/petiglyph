@@ -384,6 +384,7 @@ pub(crate) struct App {
     selecting_for_animation_frames: bool,
     home_launcher_focus: HomeLauncherFocus,
     home_workflow: HomeWorkflow,
+    home_workflow_import_count: usize,
     pub(crate) last_build: Option<BuildSummary>,
     pub(crate) last_sample: Option<String>,
     pub(crate) installed_font_path: Option<PathBuf>,
@@ -3349,6 +3350,7 @@ fn draw_welcome_view(
 impl App {
     fn start_home_workflow(&mut self, kind: HomeCreationKind) {
         self.home_workflow = HomeWorkflow::Import(kind);
+        self.home_workflow_import_count = 0;
         if matches!(
             kind,
             HomeCreationKind::AnimatedGlyph | HomeCreationKind::AnimatedGridGlyph
@@ -3361,6 +3363,7 @@ impl App {
 
     fn reset_home_workflow(&mut self) {
         self.home_workflow = HomeWorkflow::Launcher;
+        self.home_workflow_import_count = 0;
         self.grid_config = None;
         self.selecting_for_grid = false;
         self.clear_animation_draft();
@@ -3590,6 +3593,7 @@ impl App {
             selecting_for_animation_frames: false,
             home_launcher_focus: HomeLauncherFocus::CreateGlyph,
             home_workflow: HomeWorkflow::Launcher,
+            home_workflow_import_count: 0,
             last_build: None,
             last_sample: None,
             installed_font_path: None,
@@ -3664,6 +3668,7 @@ impl App {
             selecting_for_animation_frames: false,
             home_launcher_focus: HomeLauncherFocus::CreateGlyph,
             home_workflow: HomeWorkflow::Launcher,
+            home_workflow_import_count: 0,
             last_build,
             last_sample,
             installed_font_path,
@@ -4397,6 +4402,9 @@ impl App {
         )?;
 
         if import.imported > 0 {
+            self.home_workflow_import_count = self
+                .home_workflow_import_count
+                .saturating_add(import.imported);
             self.reload_glyphs()?;
             if self.view == AppView::Welcome && matches!(self.home_workflow, HomeWorkflow::Launcher)
             {
@@ -4777,6 +4785,11 @@ impl App {
         }
 
         let has_selected_sources = !output.import.imported_source_keys.is_empty();
+        if output.import.imported > 0 {
+            self.home_workflow_import_count = self
+                .home_workflow_import_count
+                .saturating_add(output.import.imported);
+        }
         for source_key in output.import.imported_source_keys {
             self.animation_imported_set.insert(source_key.clone());
             if self.animation_selection_set.insert(source_key.clone()) {
@@ -6639,7 +6652,12 @@ fn draw_home_creation_popup(frame: &mut Frame, app: &App, area: Rect, accent: Co
         ),
         layout[1],
     );
-    let drag_lines = drag_images_here_lines(layout[2].width, layout[2].height, accent);
+    let drag_lines = drag_images_here_lines(
+        layout[2].width,
+        layout[2].height,
+        accent,
+        app.home_workflow_import_count,
+    );
     frame.render_widget(
         Paragraph::new(drag_lines).wrap(Wrap { trim: false }),
         layout[2],
@@ -8370,6 +8388,7 @@ fn drag_images_here_lines(
     available_width: u16,
     available_height: u16,
     accent: Color,
+    imported_count: usize,
 ) -> Vec<Line<'static>> {
     let horizontal_padding = 4usize;
     let horizontal_pad = " ".repeat(horizontal_padding);
@@ -8388,11 +8407,13 @@ fn drag_images_here_lines(
     let bottom_border = format!("╰{}╯", dashed_pattern(inner_width));
     let side_for_row = |row: usize| if row % 2 == 0 { " " } else { "│" };
     let centered_label = center_label("DRAG/PASTE IMAGES HERE", inner_width);
+    let counter_label = center_label(&format!("Images added: {imported_count}"), inner_width);
     let border_style = Style::default().fg(accent);
     let label_style = Style::default().fg(accent).add_modifier(Modifier::BOLD);
 
     let inner_rows = available_height.saturating_sub(2);
     let label_row = usize::from(inner_rows / 2);
+    let counter_row = (label_row + 1).min(usize::from(inner_rows.saturating_sub(1)));
 
     let mut lines = Vec::with_capacity(usize::from(available_height));
     lines.push(Line::from(vec![
@@ -8408,6 +8429,13 @@ fn drag_images_here_lines(
                 Span::raw(horizontal_pad.clone()),
                 Span::styled(left_side, border_style),
                 Span::styled(centered_label.clone(), label_style),
+                Span::styled(right_side, border_style),
+            ]));
+        } else if row == counter_row {
+            lines.push(Line::from(vec![
+                Span::raw(horizontal_pad.clone()),
+                Span::styled(left_side, border_style),
+                Span::styled(counter_label.clone(), Style::default().fg(Color::Gray)),
                 Span::styled(right_side, border_style),
             ]));
         } else {
@@ -9351,11 +9379,11 @@ mod tests {
     #[test]
     fn drag_images_placeholder_handles_small_and_regular_regions() {
         assert!(
-            drag_images_here_lines(6, 2, ratatui::style::Color::Cyan).is_empty(),
+            drag_images_here_lines(6, 2, ratatui::style::Color::Cyan, 0).is_empty(),
             "very small regions should skip drag placeholder rendering"
         );
 
-        let lines = drag_images_here_lines(40, 7, ratatui::style::Color::Cyan);
+        let lines = drag_images_here_lines(40, 7, ratatui::style::Color::Cyan, 3);
         assert_eq!(lines.len(), 7, "placeholder should fill requested height");
         let rendered = lines
             .iter()
@@ -9371,6 +9399,10 @@ mod tests {
                 .iter()
                 .any(|line| line.contains("DRAG/PASTE IMAGES HERE")),
             "placeholder body should include drag/paste label"
+        );
+        assert!(
+            rendered.iter().any(|line| line.contains("Images added: 3")),
+            "placeholder body should include import counter"
         );
     }
 }
