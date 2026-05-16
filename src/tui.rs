@@ -2225,7 +2225,7 @@ fn handle_welcome_key(app: &mut App, key: KeyEvent) -> Result<()> {
             }
             WelcomeFocus::BuildButton => {
                 app.welcome_input_editing = false;
-                trigger_build_action(app)?;
+                trigger_install_action(app)?;
             }
             WelcomeFocus::InstallButton => {
                 app.welcome_input_editing = false;
@@ -2886,22 +2886,6 @@ fn draw_welcome_view(
         .bg(Color::Black)
         .add_modifier(Modifier::DIM);
 
-    let build_label = match (app.build_task_kind(), app.build_task_spinner_frame()) {
-        (Some(kind), Some(spinner)) => format!(" {spinner} {} ", kind.button_label()),
-        _ => format!(" {} ", build_action_name(app.current_project_is_built())),
-    };
-    let build_button_style = if app.active_project.is_none() {
-        disabled_button_style
-    } else if app.build_in_progress() {
-        selected_button_style
-    } else if app.install_in_progress() {
-        disabled_button_style
-    } else if app.welcome_focus == WelcomeFocus::BuildButton {
-        selected_button_style
-    } else {
-        idle_button_style
-    };
-
     let install_button_style =
         if app.active_project.is_none() && !app.install_in_progress() && !app.build_in_progress() {
             disabled_button_style
@@ -3015,8 +2999,6 @@ fn draw_welcome_view(
         Paragraph::new(Line::from(vec![
             Span::raw("  "),
             Span::styled("Actions: ", Style::default().fg(muted)),
-            Span::styled(build_label, build_button_style),
-            Span::raw(" "),
             Span::styled(install_label, install_button_style),
         ])),
         actions_layout[0],
@@ -6046,14 +6028,14 @@ fn draw_ui(frame: &mut Frame, app: &App) {
         Span::styled(" v ", Style::default().fg(accent)),
         Span::raw("verbose paths  "),
         Span::styled(" b ", Style::default().fg(accent)),
-        Span::raw(if app.current_project_is_built() {
-            "rebuild  "
+        Span::raw(if app.current_project_is_installed() {
+            "reinstall  "
         } else {
-            "build  "
+            "install  "
         }),
         Span::styled(" i ", Style::default().fg(accent)),
         Span::raw(if app.current_project_is_installed() {
-            "uninstall  "
+            "reinstall  "
         } else {
             "install  "
         }),
@@ -6073,14 +6055,14 @@ fn draw_ui(frame: &mut Frame, app: &App) {
                 "open project  "
             }
         } else if app.welcome_focus == WelcomeFocus::BuildButton {
-            if app.current_project_is_built() {
-                "rebuild  "
+            if app.current_project_is_installed() {
+                "reinstall  "
             } else {
-                "build  "
+                "install  "
             }
         } else if app.welcome_focus == WelcomeFocus::InstallButton {
             if app.current_project_is_installed() {
-                "uninstall  "
+                "reinstall  "
             } else {
                 "install  "
             }
