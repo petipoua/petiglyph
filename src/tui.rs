@@ -843,7 +843,7 @@ fn sample_from_installed_font_metadata(
                 animation_exports.push(export);
             }
 
-            sample.retain(|block| !all_animation_frames.contains(block.trim()));
+            sample = prune_static_sample_blocks(sample, &all_animation_frames);
 
             return Ok(Some((
                 sample,
@@ -873,6 +873,36 @@ fn sample_from_manifest_path(manifest_path: &Path) -> Option<Vec<String>> {
                 .collect::<Vec<_>>(),
         )
     }
+}
+
+fn prune_static_sample_blocks(
+    sample_blocks: Vec<String>,
+    animation_frame_blocks: &HashSet<String>,
+) -> Vec<String> {
+    let mut animation_chars = HashSet::new();
+    for block in animation_frame_blocks {
+        for ch in block.chars().filter(|ch| !ch.is_whitespace()) {
+            animation_chars.insert(ch);
+        }
+    }
+
+    sample_blocks
+        .into_iter()
+        .filter_map(|block| {
+            if animation_frame_blocks.contains(block.trim()) {
+                return None;
+            }
+            let filtered = block
+                .chars()
+                .filter(|ch| ch.is_whitespace() || !animation_chars.contains(ch))
+                .collect::<String>();
+            if filtered.trim().is_empty() {
+                None
+            } else {
+                Some(filtered)
+            }
+        })
+        .collect()
 }
 
 fn installed_animation_blocks_from_manifest(manifest_path: &Path) -> BTreeMap<String, Vec<String>> {
@@ -9096,6 +9126,7 @@ mod tests {
         glyph_matches_animation_frame_source, handle_key, handle_paste_event_for_test,
         import_image_files_to_input, installed_animation_blocks_for_definition,
         installed_animation_frame_index, installed_animation_source_block, preview_lines,
+        prune_static_sample_blocks,
         scrollbar_thumb_geometry, visible_window_bounds, persist_composition_definition,
     };
     use crate::build::{CompositionTileInfo, PreprocessedGlyph};
@@ -9361,6 +9392,31 @@ mod tests {
         ]);
         let block = installed_animation_source_block(&by_source, "strip.png#compose:1x2:0:1");
         assert_eq!(block, None);
+    }
+
+    #[test]
+    fn prune_static_sample_blocks_removes_animation_chars_from_dense_blocks() {
+        let a = char::from_u32(0x100000).expect("valid char");
+        let b = char::from_u32(0x100001).expect("valid char");
+        let c = char::from_u32(0x100002).expect("valid char");
+        let sample_blocks = vec![format!("{a}{b}{c}")];
+        let animation_frames = std::iter::once(format!("{b}")).collect::<std::collections::HashSet<_>>();
+
+        let filtered = prune_static_sample_blocks(sample_blocks, &animation_frames);
+
+        assert_eq!(filtered, vec![format!("{a}{c}")]);
+    }
+
+    #[test]
+    fn prune_static_sample_blocks_drops_exact_animation_frame_blocks() {
+        let a = char::from_u32(0x100000).expect("valid char");
+        let b = char::from_u32(0x100001).expect("valid char");
+        let sample_blocks = vec![format!("{a}"), format!("{b}")];
+        let animation_frames = std::iter::once(format!("{b}")).collect::<std::collections::HashSet<_>>();
+
+        let filtered = prune_static_sample_blocks(sample_blocks, &animation_frames);
+
+        assert_eq!(filtered, vec![format!("{a}")]);
     }
 
     #[test]
