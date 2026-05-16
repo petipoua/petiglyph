@@ -279,7 +279,7 @@ enum HomeWorkflow {
     Launcher,
     Import(HomeCreationKind),
     ConfigureGrid,
-    SelectAnimationFrames(AnimationType),
+    ConfigureAnimation(AnimationType),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1450,6 +1450,105 @@ fn copy_to_clipboard(text: String) {
     }
 }
 
+fn handle_animation_config_key(
+    app: &mut App,
+    key: KeyEvent,
+    mut animation_config: AnimationConfig,
+) -> Result<bool> {
+    match key.code {
+        KeyCode::Esc => {
+            app.glyph_tool_mode = GlyphToolMode::None;
+            app.clear_animation_draft();
+            app.status = Some("animation configuration canceled".to_string());
+            return Ok(true);
+        }
+        KeyCode::Left | KeyCode::Char('h') => {
+            animation_config.focus = match animation_config.focus {
+                AnimationConfigFocus::Name => AnimationConfigFocus::Name,
+                AnimationConfigFocus::Fps => AnimationConfigFocus::Name,
+                AnimationConfigFocus::Rows => AnimationConfigFocus::Fps,
+                AnimationConfigFocus::Cols => AnimationConfigFocus::Rows,
+                AnimationConfigFocus::HorizontalBleed => AnimationConfigFocus::Cols,
+                AnimationConfigFocus::VerticalBleed => AnimationConfigFocus::HorizontalBleed,
+                AnimationConfigFocus::Create => {
+                    if animation_config.animation_type == AnimationType::Grid {
+                        AnimationConfigFocus::VerticalBleed
+                    } else {
+                        AnimationConfigFocus::Fps
+                    }
+                }
+            };
+        }
+        KeyCode::Right | KeyCode::Char('l') => {
+            animation_config.focus = match animation_config.focus {
+                AnimationConfigFocus::Name => AnimationConfigFocus::Fps,
+                AnimationConfigFocus::Fps => {
+                    if animation_config.animation_type == AnimationType::Grid {
+                        AnimationConfigFocus::Rows
+                    } else {
+                        AnimationConfigFocus::Create
+                    }
+                }
+                AnimationConfigFocus::Rows => AnimationConfigFocus::Cols,
+                AnimationConfigFocus::Cols => AnimationConfigFocus::HorizontalBleed,
+                AnimationConfigFocus::HorizontalBleed => AnimationConfigFocus::VerticalBleed,
+                AnimationConfigFocus::VerticalBleed => AnimationConfigFocus::Create,
+                AnimationConfigFocus::Create => AnimationConfigFocus::Create,
+            };
+        }
+        KeyCode::Up | KeyCode::Char('k') => match animation_config.focus {
+            AnimationConfigFocus::Fps => {
+                animation_config.fps = animation_config.fps.saturating_add(1).clamp(1, 30)
+            }
+            AnimationConfigFocus::Rows => {
+                animation_config.rows = animation_config.rows.saturating_add(1).max(1)
+            }
+            AnimationConfigFocus::Cols => {
+                animation_config.cols = animation_config.cols.saturating_add(1).max(1)
+            }
+            AnimationConfigFocus::HorizontalBleed => {
+                animation_config.horizontal_bleed =
+                    next_bleed_level(animation_config.horizontal_bleed)
+            }
+            AnimationConfigFocus::VerticalBleed => {
+                animation_config.vertical_bleed = next_bleed_level(animation_config.vertical_bleed)
+            }
+            _ => {}
+        },
+        KeyCode::Down | KeyCode::Char('j') => match animation_config.focus {
+            AnimationConfigFocus::Fps => {
+                animation_config.fps = animation_config.fps.saturating_sub(1).clamp(1, 30)
+            }
+            AnimationConfigFocus::Rows => {
+                animation_config.rows = animation_config.rows.saturating_sub(1).max(1)
+            }
+            AnimationConfigFocus::Cols => {
+                animation_config.cols = animation_config.cols.saturating_sub(1).max(1)
+            }
+            AnimationConfigFocus::HorizontalBleed => {
+                animation_config.horizontal_bleed =
+                    previous_bleed_level(animation_config.horizontal_bleed)
+            }
+            AnimationConfigFocus::VerticalBleed => {
+                animation_config.vertical_bleed =
+                    previous_bleed_level(animation_config.vertical_bleed)
+            }
+            _ => {}
+        },
+        KeyCode::Enter => {
+            app.create_animation_from_config(&animation_config)?;
+            return Ok(true);
+        }
+        _ => {
+            if animation_config.focus == AnimationConfigFocus::Name {
+                animation_config.name_input.handle_event(&Event::Key(key));
+            }
+        }
+    }
+    app.glyph_tool_mode = GlyphToolMode::ConfigureAnimation(animation_config);
+    Ok(true)
+}
+
 fn handle_glyphs_key(app: &mut App, key: KeyEvent) -> Result<()> {
     let code = key.code;
     app.normalize_glyphs_focus();
@@ -1570,99 +1669,8 @@ fn handle_glyphs_key(app: &mut App, key: KeyEvent) -> Result<()> {
         return Ok(());
     }
 
-    if let GlyphToolMode::ConfigureAnimation(mut animation_config) = app.glyph_tool_mode.clone() {
-        match code {
-            KeyCode::Esc => {
-                app.glyph_tool_mode = GlyphToolMode::None;
-                app.clear_animation_draft();
-                app.status = Some("animation configuration canceled".to_string());
-                return Ok(());
-            }
-            KeyCode::Left | KeyCode::Char('h') => {
-                animation_config.focus = match animation_config.focus {
-                    AnimationConfigFocus::Name => AnimationConfigFocus::Name,
-                    AnimationConfigFocus::Fps => AnimationConfigFocus::Name,
-                    AnimationConfigFocus::Rows => AnimationConfigFocus::Fps,
-                    AnimationConfigFocus::Cols => AnimationConfigFocus::Rows,
-                    AnimationConfigFocus::HorizontalBleed => AnimationConfigFocus::Cols,
-                    AnimationConfigFocus::VerticalBleed => AnimationConfigFocus::HorizontalBleed,
-                    AnimationConfigFocus::Create => {
-                        if animation_config.animation_type == AnimationType::Grid {
-                            AnimationConfigFocus::VerticalBleed
-                        } else {
-                            AnimationConfigFocus::Fps
-                        }
-                    }
-                };
-            }
-            KeyCode::Right | KeyCode::Char('l') => {
-                animation_config.focus = match animation_config.focus {
-                    AnimationConfigFocus::Name => AnimationConfigFocus::Fps,
-                    AnimationConfigFocus::Fps => {
-                        if animation_config.animation_type == AnimationType::Grid {
-                            AnimationConfigFocus::Rows
-                        } else {
-                            AnimationConfigFocus::Create
-                        }
-                    }
-                    AnimationConfigFocus::Rows => AnimationConfigFocus::Cols,
-                    AnimationConfigFocus::Cols => AnimationConfigFocus::HorizontalBleed,
-                    AnimationConfigFocus::HorizontalBleed => AnimationConfigFocus::VerticalBleed,
-                    AnimationConfigFocus::VerticalBleed => AnimationConfigFocus::Create,
-                    AnimationConfigFocus::Create => AnimationConfigFocus::Create,
-                };
-            }
-            KeyCode::Up | KeyCode::Char('k') => match animation_config.focus {
-                AnimationConfigFocus::Fps => {
-                    animation_config.fps = animation_config.fps.saturating_add(1).clamp(1, 30)
-                }
-                AnimationConfigFocus::Rows => {
-                    animation_config.rows = animation_config.rows.saturating_add(1).max(1)
-                }
-                AnimationConfigFocus::Cols => {
-                    animation_config.cols = animation_config.cols.saturating_add(1).max(1)
-                }
-                AnimationConfigFocus::HorizontalBleed => {
-                    animation_config.horizontal_bleed =
-                        next_bleed_level(animation_config.horizontal_bleed)
-                }
-                AnimationConfigFocus::VerticalBleed => {
-                    animation_config.vertical_bleed =
-                        next_bleed_level(animation_config.vertical_bleed)
-                }
-                _ => {}
-            },
-            KeyCode::Down | KeyCode::Char('j') => match animation_config.focus {
-                AnimationConfigFocus::Fps => {
-                    animation_config.fps = animation_config.fps.saturating_sub(1).clamp(1, 30)
-                }
-                AnimationConfigFocus::Rows => {
-                    animation_config.rows = animation_config.rows.saturating_sub(1).max(1)
-                }
-                AnimationConfigFocus::Cols => {
-                    animation_config.cols = animation_config.cols.saturating_sub(1).max(1)
-                }
-                AnimationConfigFocus::HorizontalBleed => {
-                    animation_config.horizontal_bleed =
-                        previous_bleed_level(animation_config.horizontal_bleed)
-                }
-                AnimationConfigFocus::VerticalBleed => {
-                    animation_config.vertical_bleed =
-                        previous_bleed_level(animation_config.vertical_bleed)
-                }
-                _ => {}
-            },
-            KeyCode::Enter => {
-                app.create_animation_from_config(&animation_config)?;
-                return Ok(());
-            }
-            _ => {
-                if animation_config.focus == AnimationConfigFocus::Name {
-                    animation_config.name_input.handle_event(&Event::Key(key));
-                }
-            }
-        }
-        app.glyph_tool_mode = GlyphToolMode::ConfigureAnimation(animation_config);
+    if let GlyphToolMode::ConfigureAnimation(animation_config) = app.glyph_tool_mode.clone() {
+        handle_animation_config_key(app, key, animation_config)?;
         return Ok(());
     }
 
@@ -1885,13 +1893,16 @@ fn handle_welcome_key(app: &mut App, key: KeyEvent) -> Result<()> {
         }
         KeyCode::Char('3') if !app.welcome_input_editing && app.active_project.is_some() => {
             app.start_home_workflow(HomeCreationKind::AnimatedGlyph);
-            app.status =
-                Some("create animated glyph: import frames, then Enter to continue".to_string());
+            app.status = Some(
+                "create animated glyph: import frame images, then Enter to configure in popup"
+                    .to_string(),
+            );
         }
         KeyCode::Char('4') if !app.welcome_input_editing && app.active_project.is_some() => {
             app.start_home_workflow(HomeCreationKind::AnimatedGridGlyph);
             app.status = Some(
-                "create animated grid glyph: import frames, then Enter to continue".to_string(),
+                "create animated grid glyph: import frame images, then Enter to configure in popup"
+                    .to_string(),
             );
         }
         KeyCode::Char('R') if !app.welcome_input_editing => {
@@ -2364,18 +2375,33 @@ fn handle_home_creation_key(app: &mut App, key: KeyEvent) -> Result<()> {
                     );
                 }
                 HomeCreationKind::AnimatedGlyph => {
-                    app.home_workflow =
-                        HomeWorkflow::SelectAnimationFrames(AnimationType::Standard);
-                    app.view = AppView::Glyphs;
-                    app.glyph_tool_mode =
-                        GlyphToolMode::SelectAnimationFrames(AnimationType::Standard);
-                    app.status = Some("select frame rows, Enter to configure".to_string());
+                    if app.animation_import_task.is_some() {
+                        app.status = Some("animation frames are still loading".to_string());
+                        return Ok(());
+                    }
+                    if app.animation_selection_order.is_empty() {
+                        app.status =
+                            Some("drop at least one frame image in the popup, then press Enter".to_string());
+                        return Ok(());
+                    }
+                    app.start_animation_config(AnimationType::Standard);
+                    app.home_workflow = HomeWorkflow::ConfigureAnimation(AnimationType::Standard);
+                    app.status = Some("configure animated glyph in popup, then Create".to_string());
                 }
                 HomeCreationKind::AnimatedGridGlyph => {
-                    app.home_workflow = HomeWorkflow::SelectAnimationFrames(AnimationType::Grid);
-                    app.view = AppView::Glyphs;
-                    app.glyph_tool_mode = GlyphToolMode::SelectAnimationFrames(AnimationType::Grid);
-                    app.status = Some("select frame rows, Enter to configure".to_string());
+                    if app.animation_import_task.is_some() {
+                        app.status = Some("animation frames are still loading".to_string());
+                        return Ok(());
+                    }
+                    if app.animation_selection_order.is_empty() {
+                        app.status =
+                            Some("drop at least one frame image in the popup, then press Enter".to_string());
+                        return Ok(());
+                    }
+                    app.start_animation_config(AnimationType::Grid);
+                    app.home_workflow = HomeWorkflow::ConfigureAnimation(AnimationType::Grid);
+                    app.status =
+                        Some("configure animated grid glyph in popup, then Create".to_string());
                 }
             },
             _ => {}
@@ -2392,15 +2418,28 @@ fn handle_home_creation_key(app: &mut App, key: KeyEvent) -> Result<()> {
             }
             app.home_workflow = HomeWorkflow::Import(HomeCreationKind::Grid);
         }
+        HomeWorkflow::ConfigureAnimation(animation_type) => {
+            if let GlyphToolMode::ConfigureAnimation(config) = app.glyph_tool_mode.clone() {
+                handle_animation_config_key(app, key, config)?;
+                if matches!(app.home_workflow, HomeWorkflow::ConfigureAnimation(_))
+                    && matches!(app.glyph_tool_mode, GlyphToolMode::None)
+                {
+                    app.home_workflow = HomeWorkflow::Import(match animation_type {
+                        AnimationType::Standard => HomeCreationKind::AnimatedGlyph,
+                        AnimationType::Grid => HomeCreationKind::AnimatedGridGlyph,
+                    });
+                }
+                return Ok(());
+            }
+            app.home_workflow = HomeWorkflow::Import(match animation_type {
+                AnimationType::Standard => HomeCreationKind::AnimatedGlyph,
+                AnimationType::Grid => HomeCreationKind::AnimatedGridGlyph,
+            });
+        }
         _ => {
             handle_glyphs_key(app, key)?;
             if app.grid_config.is_none() && app.selecting_for_grid {
                 app.selecting_for_grid = false;
-            }
-            if matches!(app.home_workflow, HomeWorkflow::SelectAnimationFrames(_))
-                && matches!(app.glyph_tool_mode, GlyphToolMode::ConfigureAnimation(_))
-            {
-                app.home_workflow = HomeWorkflow::Launcher;
             }
             if matches!(app.glyph_tool_mode, GlyphToolMode::None)
                 && matches!(app.home_workflow, HomeWorkflow::Launcher)
@@ -4426,7 +4465,12 @@ impl App {
         }
 
         self.reload_config()?;
-        if matches!(self.glyph_tool_mode, GlyphToolMode::ImportAnimationFrames) {
+        if matches!(
+            self.home_workflow,
+            HomeWorkflow::Import(HomeCreationKind::AnimatedGlyph)
+                | HomeWorkflow::Import(HomeCreationKind::AnimatedGridGlyph)
+        ) || matches!(self.glyph_tool_mode, GlyphToolMode::ImportAnimationFrames)
+        {
             self.start_animation_frame_import(payload.to_string())?;
             return Ok(());
         }
@@ -4833,7 +4877,11 @@ impl App {
         }
 
         let has_selected_sources = !output.import.imported_source_keys.is_empty();
-        if output.import.imported > 0 {
+        if has_selected_sources {
+            self.home_workflow_import_count = self
+                .home_workflow_import_count
+                .saturating_add(output.import.imported_source_keys.len());
+        } else if output.import.imported > 0 {
             self.home_workflow_import_count = self
                 .home_workflow_import_count
                 .saturating_add(output.import.imported);
@@ -6629,9 +6677,17 @@ fn draw_home_creation_area(frame: &mut Frame, app: &App, area: Rect, accent: Col
 }
 
 fn draw_home_creation_popup(frame: &mut Frame, app: &App, area: Rect, accent: Color, muted: Color) {
-    let (kind, configuring_grid) = match app.home_workflow {
-        HomeWorkflow::Import(kind) => (kind, false),
-        HomeWorkflow::ConfigureGrid => (HomeCreationKind::Grid, true),
+    let (kind, configuring_grid, configuring_animation) = match app.home_workflow {
+        HomeWorkflow::Import(kind) => (kind, false, false),
+        HomeWorkflow::ConfigureGrid => (HomeCreationKind::Grid, true, false),
+        HomeWorkflow::ConfigureAnimation(animation_type) => (
+            match animation_type {
+                AnimationType::Standard => HomeCreationKind::AnimatedGlyph,
+                AnimationType::Grid => HomeCreationKind::AnimatedGridGlyph,
+            },
+            false,
+            true,
+        ),
         _ => return,
     };
     let popup = centered_popup_rect(area, 122, 27);
@@ -6652,7 +6708,48 @@ fn draw_home_creation_popup(frame: &mut Frame, app: &App, area: Rect, accent: Co
         HomeCreationKind::AnimatedGlyph => "Create animated glyph",
         HomeCreationKind::AnimatedGridGlyph => "Create animated grid glyph",
     };
-    let steps = vec![
+    let steps = if matches!(
+        kind,
+        HomeCreationKind::AnimatedGlyph | HomeCreationKind::AnimatedGridGlyph
+    ) {
+        vec![
+            Line::from(vec![
+                Span::styled(" 1 ", Style::default().fg(Color::Black).bg(accent)),
+                Span::styled(" Import frame images ", Style::default().fg(Color::White)),
+                Span::styled(
+                    if configuring_animation {
+                        "< done"
+                    } else {
+                        "< current"
+                    },
+                    Style::default().fg(Color::Yellow),
+                ),
+            ]),
+            Line::from(vec![
+                Span::styled(" 2 ", Style::default().fg(Color::Black).bg(Color::DarkGray)),
+                Span::styled(
+                    " Configure name/FPS/grid options in popup ",
+                    if configuring_animation {
+                        Style::default().fg(Color::White)
+                    } else {
+                        Style::default().fg(muted)
+                    },
+                ),
+                Span::styled(
+                    if configuring_animation { "< current" } else { "" },
+                    Style::default().fg(Color::Yellow),
+                ),
+            ]),
+            Line::from(vec![
+                Span::styled(" 3 ", Style::default().fg(Color::Black).bg(Color::DarkGray)),
+                Span::styled(
+                    " Create animation and switch to Glyphs ",
+                    Style::default().fg(muted),
+                ),
+            ]),
+        ]
+    } else {
+        vec![
         Line::from(vec![
             Span::styled(" 1 ", Style::default().fg(Color::Black).bg(accent)),
             Span::styled(
@@ -6683,7 +6780,8 @@ fn draw_home_creation_popup(frame: &mut Frame, app: &App, area: Rect, accent: Co
             Span::styled(" 3 ", Style::default().fg(Color::Black).bg(Color::DarkGray)),
             Span::styled(" Create grid and switch to Glyphs ", Style::default().fg(muted)),
         ]),
-    ];
+        ]
+    };
     let layout = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
@@ -6701,6 +6799,8 @@ fn draw_home_creation_popup(frame: &mut Frame, app: &App, area: Rect, accent: Co
                 if configuring_grid {
                     "Create grid: adjust rows/columns/bleed here, then activate Create Grid."
                         .to_string()
+                } else if configuring_animation {
+                    format!("{workflow_name}: configure in this popup, then create.")
                 } else {
                     format!("{workflow_name}: drop, paste, or drag files in this popup.")
                 },
@@ -6740,6 +6840,8 @@ fn draw_home_creation_popup(frame: &mut Frame, app: &App, area: Rect, accent: Co
         if let Some(config) = &app.grid_config {
             draw_grid_config_ui(frame, app, config, layout[3], accent, muted);
         }
+    } else if configuring_animation {
+        draw_animation_panel_ui(frame, app, layout[3], accent, muted);
     } else {
         let drag_lines = drag_images_here_lines(
             layout[3].width,
@@ -6762,6 +6864,8 @@ fn draw_home_creation_popup(frame: &mut Frame, app: &App, area: Rect, accent: Co
             Span::styled(
                 if configuring_grid {
                     " continue / create grid    "
+                } else if configuring_animation {
+                    " continue / create animation    "
                 } else {
                     " continue to next step    "
                 },
@@ -8704,14 +8808,16 @@ fn installed_animation_preview_lines(
 #[cfg(test)]
 mod tests {
     use super::{
-        AnimationConfig, AnimationConfigFocus, AnimationPreview, AnimationType, App, AppView,
-        BleedLevel, ExistingImportPolicy, Input, InteractiveGlyph, KeyCode, RuntimeConfig,
-        VisibleGlyphRow, animation_frame_source_for_preview,
+        AnimationConfig, AnimationConfigFocus, AnimationImportTaskOutput, AnimationPreview,
+        AnimationType, App, AppView, BleedLevel, DropImportResult, ExistingImportPolicy,
+        HomeCreationKind, HomeWorkflow, Input, InteractiveGlyph, KeyCode, RuntimeConfig,
+        VisibleGlyphRow,
+        animation_frame_source_for_preview,
         composition_preview_lines_stable_frame, drag_images_here_lines, emitted_composition_cols,
-        glyph_matches_animation_frame_source, handle_key, import_image_files_to_input,
-        installed_animation_blocks_for_definition, installed_animation_frame_index,
-        installed_animation_source_block, preview_lines, scrollbar_thumb_geometry,
-        visible_window_bounds,
+        glyph_matches_animation_frame_source, handle_key, handle_paste_event_for_test,
+        import_image_files_to_input, installed_animation_blocks_for_definition,
+        installed_animation_frame_index, installed_animation_source_block, preview_lines,
+        scrollbar_thumb_geometry, visible_window_bounds,
     };
     use crate::build::{CompositionTileInfo, PreprocessedGlyph};
     use crate::project::{AnimationDef, Manifest, read_manifest, write_manifest};
@@ -9414,6 +9520,102 @@ mod tests {
         assert!(
             !input_dir.join("frame-1.png").exists(),
             "identical animation frames should reuse the existing input file"
+        );
+    }
+
+    #[test]
+    fn animated_home_workflow_drop_starts_animation_frame_import_task() {
+        let project_dir = make_temp_dir("animated-home-drop-import");
+        let manifest_path = project_dir.join("petiglyph.toml");
+        write_manifest(&manifest_path, &Manifest::default()).expect("manifest is written");
+
+        let icons_dir = project_dir.join("icons");
+        fs::create_dir_all(&icons_dir).expect("icons dir is created");
+
+        let external_dir = project_dir.join("external");
+        fs::create_dir_all(&external_dir).expect("external dir is created");
+        let frame_path = external_dir.join("frame_01.png");
+        fs::write(&frame_path, b"frame bytes").expect("frame file is written");
+
+        let config = RuntimeConfig {
+            project_dir: project_dir.clone(),
+            project_id: "test-animated-home-drop-import".to_string(),
+            input_dir: icons_dir,
+            out_dir: project_dir.join("build"),
+            font_name: "Petiglyph".to_string(),
+            glyph_size: 8,
+            base_threshold: 64,
+            threshold_overrides: BTreeMap::new(),
+            compositions: BTreeMap::new(),
+            animations: Vec::new(),
+            codepoint_start: 0x10_0000,
+        };
+        let mut app = App::new(manifest_path, config);
+        app.start_home_workflow(HomeCreationKind::AnimatedGlyph);
+        assert!(matches!(app.home_workflow, HomeWorkflow::Import(HomeCreationKind::AnimatedGlyph)));
+
+        handle_paste_event_for_test(&mut app, &frame_path.display().to_string())
+            .expect("drop/paste import should succeed");
+
+        assert!(
+            app.animation_import_task.is_some(),
+            "animated home workflow drop should start animation frame import task"
+        );
+    }
+
+    #[test]
+    fn animated_home_workflow_reimport_identical_frames_keeps_progress_and_selection() {
+        let project_dir = make_temp_dir("animated-home-reimport-identical");
+        let manifest_path = project_dir.join("petiglyph.toml");
+        write_manifest(&manifest_path, &Manifest::default()).expect("manifest is written");
+
+        let input_dir = project_dir.join("icons");
+        let external_dir = project_dir.join("external");
+        fs::create_dir_all(&input_dir).expect("input dir is created");
+        fs::create_dir_all(&external_dir).expect("external dir is created");
+        fs::write(input_dir.join("frame.png"), b"same bytes").expect("input frame is written");
+        fs::write(external_dir.join("frame.png"), b"same bytes")
+            .expect("external frame is written");
+
+        let config = RuntimeConfig {
+            project_dir: project_dir.clone(),
+            project_id: "test-animated-home-reimport-identical".to_string(),
+            input_dir,
+            out_dir: project_dir.join("build"),
+            font_name: "Petiglyph".to_string(),
+            glyph_size: 8,
+            base_threshold: 64,
+            threshold_overrides: BTreeMap::new(),
+            compositions: BTreeMap::new(),
+            animations: Vec::new(),
+            codepoint_start: 0x10_0000,
+        };
+        let mut app = App::new(manifest_path, config);
+        app.start_home_workflow(HomeCreationKind::AnimatedGlyph);
+        let output = AnimationImportTaskOutput {
+            import: DropImportResult {
+                imported: 0,
+                renamed: 0,
+                skipped_existing: 1,
+                skipped_unsupported: 0,
+                skipped_missing: 0,
+                imported_source_keys: vec!["frame.png".to_string()],
+            },
+            loaded: None,
+        };
+
+        app.finish_animation_import(output);
+
+        assert_eq!(
+            app.home_workflow_import_count, 1,
+            "reimporting identical existing frames should still count as selected in workflow progress"
+        );
+        assert_eq!(app.animation_selection_order, vec!["frame.png".to_string()]);
+        assert!(
+            app.status
+                .as_ref()
+                .is_some_and(|msg| msg.contains("1 frame selected")),
+            "status should confirm selected frames, even for reused existing files"
         );
     }
 
