@@ -36,6 +36,27 @@ petiglyph
 
 After `create`, place your images in `icons/` and use the TUI to tune thresholds, build, and install.
 
+## Home Panel Creation Workflows
+
+From the Home panel you can launch four guided creation workflows:
+
+- `Create glyph`
+- `Create grid`
+- `Create animated glyph`
+- `Create animated grid glyph`
+
+When a workflow is started, petiglyph shows a centered **Creation Workflow In Progress** popup with step guidance:
+
+1. Import source images (drop/paste/drag into the popup)
+2. Pick source rows in the Glyphs panel
+3. Configure workflow details
+4. Finalize and return
+
+Keyboard controls during the import popup:
+
+- `Enter` continues to the next workflow step
+- `Esc` cancels the workflow
+
 ## CLI Commands
 
 ```bash

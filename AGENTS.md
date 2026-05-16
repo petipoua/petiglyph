@@ -12,6 +12,7 @@
 
 - **sample area**: Refers to the glyph preview samples generated inside the "Installed petiglyph fonts" card of the Home panel.
 - **previews**: Refers to the Glyphs ASCII previews in the Glyphs panel.
+- **creation workflow popup**: Refers to the centered "Creation Workflow In Progress" overlay shown from the Home panel while importing files for glyph/grid/animation creation.
 
 ### Current CLI/TUI Contract (No Backward Compatibility Layer)
 
@@ -85,6 +86,7 @@
 - Arch local packaging flow was added for AUR-style testing.
 - Managed install now uses immutable artifacts plus metadata, Unicode range registry ownership, and `doctor --repair` recovery paths.
 - `hty` was adopted as the primary TUI E2E runner (replacing legacy `expectrl`-driven tests).
+- Home creation UX now renders an explicit "Creation Workflow In Progress" popup with step-by-step guidance for glyph/grid/animated creation imports.
 
 ### HTY E2E Guidance (Important)
 
