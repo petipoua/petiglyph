@@ -10,7 +10,8 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use crate::artifact_warning::{INCOMPATIBLE_ARTIFACT_PREFIX, incompatible_artifact_warning};
 use crate::build::{
-    BuildOptions, GlyphBitmap, MappingEntry, PreprocessedGlyph, bitmap_to_bdf_rows, build_outputs,
+    BuildOptions, CompositionTileInfo, GlyphBitmap, MappingEntry, PreprocessedGlyph,
+    bitmap_to_bdf_rows, build_outputs,
     build_outputs_with_options, collect_source_files, coverage_map, glyph_sample_string,
     is_supported_source, preprocess_sources_with_compositions,
     preprocess_sources_with_compositions_and_standard_sources,
@@ -25,7 +26,8 @@ use crate::install::{
     expected_install_ttf_path_for_mode, reserve_project_unicode_range,
 };
 use crate::project::{
-    BleedLevel, CompositionDef, Manifest, RuntimeConfig, auto_detect_manifest_path,
+    AnimationDef, AnimationType, BleedLevel, CompositionDef, Manifest, RuntimeConfig,
+    auto_detect_manifest_path,
     discover_project_manifests, format_codepoint, load_runtime_config, parse_codepoint,
     read_manifest, write_manifest,
 };
@@ -3182,6 +3184,180 @@ fn handle_key_updates_and_clears_selected_threshold_override() {
 }
 
 #[test]
+fn glyphs_preview_focus_edits_threshold_with_up_down() {
+    let project_dir = make_temp_dir("glyphs-preview-threshold-edit");
+    let manifest_path = project_dir.join("petiglyph.toml");
+    write_manifest(&manifest_path, &Manifest::default()).expect("manifest is written");
+
+    let config = RuntimeConfig {
+        project_dir: project_dir.clone(),
+        project_id: "test-preview-threshold".to_string(),
+        input_dir: project_dir.join("icons"),
+        out_dir: project_dir.join("build"),
+        font_name: "Petiglyph".to_string(),
+        glyph_size: 8,
+        base_threshold: 64,
+        threshold_overrides: BTreeMap::new(),
+        compositions: BTreeMap::new(),
+        animations: Vec::new(),
+        codepoint_start: 0x10_0000,
+    };
+
+    let mut app = App::new(manifest_path.clone(), config);
+    app.glyphs.push(InteractiveGlyph {
+        glyph: PreprocessedGlyph {
+            source_path: project_dir.join("icons/icon.png"),
+            source_key: "icon.png".to_string(),
+            source_parent_key: "icon.png".to_string(),
+            glyph_name: "icon".to_string(),
+            width: 4,
+            height: 8,
+            coverage: vec![0; 32],
+            image_fingerprint: "fnv1a64:test".to_string(),
+            composition_tile: None,
+        },
+        saved_threshold: None,
+        working_threshold: 64,
+    });
+    app.view = AppView::Glyphs;
+
+    handle_key(&mut app, KeyCode::Right).expect("right enters preview edit");
+    handle_key(&mut app, KeyCode::Up).expect("up increases threshold in preview mode");
+    assert_eq!(app.glyphs[0].working_threshold, 65);
+
+    handle_key(&mut app, KeyCode::Down).expect("down decreases threshold in preview mode");
+    assert_eq!(app.glyphs[0].working_threshold, 64);
+
+    fs::remove_dir_all(project_dir).expect("temp project dir is removed");
+}
+
+#[test]
+fn grid_tile_threshold_editing_is_disabled_from_child_row() {
+    let project_dir = make_temp_dir("glyphs-grid-child-threshold-disabled");
+    let manifest_path = project_dir.join("petiglyph.toml");
+    write_manifest(&manifest_path, &Manifest::default()).expect("manifest is written");
+
+    let config = RuntimeConfig {
+        project_dir: project_dir.clone(),
+        project_id: "test-grid-child-threshold".to_string(),
+        input_dir: project_dir.join("icons"),
+        out_dir: project_dir.join("build"),
+        font_name: "Petiglyph".to_string(),
+        glyph_size: 8,
+        base_threshold: 64,
+        threshold_overrides: BTreeMap::new(),
+        compositions: BTreeMap::new(),
+        animations: Vec::new(),
+        codepoint_start: 0x10_0000,
+    };
+
+    let mut app = App::new(manifest_path, config);
+    for (col, source_key) in ["grid.png#compose:1x2:0:0", "grid.png#compose:1x2:0:1"]
+        .into_iter()
+        .enumerate()
+    {
+        app.glyphs.push(InteractiveGlyph {
+            glyph: PreprocessedGlyph {
+                source_path: project_dir.join("icons/grid.png"),
+                source_key: source_key.to_string(),
+                source_parent_key: "grid.png".to_string(),
+                glyph_name: format!("grid_0_{col}"),
+                width: 4,
+                height: 8,
+                coverage: vec![0; 32],
+                image_fingerprint: "fnv1a64:test".to_string(),
+                composition_tile: Some(CompositionTileInfo {
+                    rows: 1,
+                    cols: 2,
+                    row: 0,
+                    col,
+                    horizontal_bleed: BleedLevel::Weak,
+                    vertical_bleed: BleedLevel::Off,
+                }),
+            },
+            saved_threshold: None,
+            working_threshold: 64,
+        });
+    }
+    app.view = AppView::Glyphs;
+    handle_key(&mut app, KeyCode::Enter).expect("expand grid parent");
+    app.selected_visible = 1;
+
+    handle_key(&mut app, KeyCode::Right).expect("right attempts to edit child");
+    assert!(app.status.as_deref().is_some_and(|s| s.contains("disabled")));
+
+    handle_key(&mut app, KeyCode::Up).expect("up should still navigate list");
+    assert_eq!(app.selected_visible, 0);
+
+    fs::remove_dir_all(project_dir).expect("temp project dir is removed");
+}
+
+#[test]
+fn animation_preview_controls_update_thresholds_and_fps() {
+    let project_dir = make_temp_dir("glyphs-animation-preview-controls");
+    let manifest_path = project_dir.join("petiglyph.toml");
+    let mut manifest = Manifest::default();
+    manifest.animations.push(AnimationDef {
+        name: "walk".to_string(),
+        animation_type: AnimationType::Standard,
+        fps: 8,
+        frames: vec!["frame1.png".to_string(), "frame2.png".to_string()],
+        rows: None,
+        cols: None,
+        horizontal_bleed: None,
+        vertical_bleed: None,
+    });
+    write_manifest(&manifest_path, &manifest).expect("manifest is written");
+
+    let config = RuntimeConfig {
+        project_dir: project_dir.clone(),
+        project_id: "test-animation-preview-controls".to_string(),
+        input_dir: project_dir.join("icons"),
+        out_dir: project_dir.join("build"),
+        font_name: "Petiglyph".to_string(),
+        glyph_size: 8,
+        base_threshold: 64,
+        threshold_overrides: BTreeMap::new(),
+        compositions: BTreeMap::new(),
+        animations: manifest.animations.clone(),
+        codepoint_start: 0x10_0000,
+    };
+
+    let mut app = App::new(manifest_path.clone(), config);
+    for source in ["frame1.png", "frame2.png"] {
+        app.glyphs.push(InteractiveGlyph {
+            glyph: PreprocessedGlyph {
+                source_path: project_dir.join("icons").join(source),
+                source_key: source.to_string(),
+                source_parent_key: source.to_string(),
+                glyph_name: source.replace(".png", ""),
+                width: 4,
+                height: 8,
+                coverage: vec![0; 32],
+                image_fingerprint: "fnv1a64:test".to_string(),
+                composition_tile: None,
+            },
+            saved_threshold: None,
+            working_threshold: 64,
+        });
+    }
+    app.view = AppView::Glyphs;
+
+    handle_key(&mut app, KeyCode::Right).expect("right enters preview edit");
+    handle_key(&mut app, KeyCode::Up).expect("up increments threshold for all animation frames");
+    assert_eq!(app.glyphs[0].working_threshold, 65);
+    assert_eq!(app.glyphs[1].working_threshold, 65);
+
+    handle_key(&mut app, KeyCode::Right).expect("right switches to fps control");
+    handle_key(&mut app, KeyCode::Up).expect("up increments animation fps");
+    assert_eq!(app.config.animations[0].fps, 9);
+    let persisted = read_manifest(&manifest_path).expect("manifest reads");
+    assert_eq!(persisted.animations[0].fps, 9);
+
+    fs::remove_dir_all(project_dir).expect("temp project dir is removed");
+}
+
+#[test]
 fn grid_config_tui_persists_bleed_toggles() {
     let project_dir = make_temp_dir("grid-config-vertical-bleed");
     let manifest_path = project_dir.join("petiglyph.toml");
@@ -3490,11 +3666,11 @@ fn tab_cycles_panels_and_glyph_controls_stay_in_glyph_view() {
     assert_eq!(app.view, AppView::Welcome);
     assert_eq!(app.welcome_focus, WelcomeFocus::InstalledFontList);
 
-    // Threshold arrows still provide granular (+/-1) changes in Glyphs.
+    // Explicit +/- keys provide granular threshold (+/-1) changes in Glyphs.
     app.view = AppView::Glyphs;
-    handle_key(&mut app, KeyCode::Right).expect("key handling should succeed");
+    handle_key(&mut app, KeyCode::Char('+')).expect("key handling should succeed");
     assert_eq!(app.glyphs[0].working_threshold, 65);
-    handle_key(&mut app, KeyCode::Left).expect("key handling should succeed");
+    handle_key(&mut app, KeyCode::Char('-')).expect("key handling should succeed");
     assert_eq!(app.glyphs[0].working_threshold, 64);
 
     fs::remove_dir_all(project_dir).expect("temp project dir is removed");

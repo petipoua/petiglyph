@@ -260,6 +260,7 @@ pub(crate) enum AppView {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum GlyphsFocus {
     List,
+    Preview,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -341,6 +342,12 @@ struct AnimationPreview {
     last_frame_at: Instant,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum GlyphPreviewControl {
+    Threshold,
+    Fps,
+}
+
 #[derive(Debug, Clone)]
 enum GlyphToolMode {
     None,
@@ -381,6 +388,7 @@ pub(crate) struct App {
     pub(crate) grid_config: Option<GridConfig>,
     pub(crate) selecting_for_grid: bool,
     glyph_tool_mode: GlyphToolMode,
+    glyph_preview_control: GlyphPreviewControl,
     animation_selection_order: Vec<String>,
     animation_selection_set: BTreeSet<String>,
     animation_imported_set: BTreeSet<String>,
@@ -1716,6 +1724,8 @@ fn handle_glyphs_key(app: &mut App, key: KeyEvent) -> Result<()> {
                 app.glyph_tool_mode = GlyphToolMode::None;
                 app.clear_animation_draft();
                 app.status = Some("animation selection canceled".to_string());
+            } else if app.glyphs_focus == GlyphsFocus::Preview {
+                app.glyphs_focus = GlyphsFocus::List;
             } else {
                 app.view = AppView::Welcome;
                 app.welcome_focus = WelcomeFocus::InstallButton;
@@ -1731,22 +1741,120 @@ fn handle_glyphs_key(app: &mut App, key: KeyEvent) -> Result<()> {
                     app.selected_visible = (app.selected_visible + 1).min(row_count - 1);
                     app.clamp_glyph_selection();
                 }
+            } else {
+                match app.glyph_preview_control {
+                    GlyphPreviewControl::Threshold => {
+                        if let Some(value) = selected_row_threshold_value(app) {
+                            set_selected_threshold(app, value.saturating_sub(1));
+                        }
+                    }
+                    GlyphPreviewControl::Fps => {
+                        if let Some(value) = selected_row_fps_value(app) {
+                            set_selected_animation_fps(app, value.saturating_sub(1).clamp(1, 30));
+                        }
+                    }
+                }
             }
         }
         KeyCode::Up | KeyCode::Char('k') => {
             if app.glyphs_focus == GlyphsFocus::List {
                 app.selected_visible = app.selected_visible.saturating_sub(1);
                 app.clamp_glyph_selection();
+            } else {
+                match app.glyph_preview_control {
+                    GlyphPreviewControl::Threshold => {
+                        if let Some(value) = selected_row_threshold_value(app) {
+                            set_selected_threshold(app, value.saturating_add(1));
+                        }
+                    }
+                    GlyphPreviewControl::Fps => {
+                        if let Some(value) = selected_row_fps_value(app) {
+                            set_selected_animation_fps(app, value.saturating_add(1).clamp(1, 30));
+                        }
+                    }
+                }
             }
         }
         KeyCode::Left | KeyCode::Char('h') | KeyCode::Char('-') => {
-            if app.glyphs_focus == GlyphsFocus::List {
+            if matches!(code, KeyCode::Char('-')) {
                 adjust_selected_threshold_by(app, -1);
+            } else if app.glyphs_focus == GlyphsFocus::List {
+                if matches!(
+                    app.selected_visible_row(),
+                    Some(VisibleGlyphRow::CompositionChild { .. })
+                ) {
+                    app.status = Some(
+                        "grid tile thresholds are disabled; edit the grid parent instead"
+                            .to_string(),
+                    );
+                } else if selected_row_supports_threshold(app) || selected_row_supports_fps(app) {
+                    app.glyphs_focus = GlyphsFocus::Preview;
+                    app.glyph_preview_control = if selected_row_supports_threshold(app) {
+                        GlyphPreviewControl::Threshold
+                    } else {
+                        GlyphPreviewControl::Fps
+                    };
+                } else if app.active_project.is_none() {
+                    adjust_selected_threshold_by(app, -1);
+                }
+            } else {
+                app.glyph_preview_control = match app.glyph_preview_control {
+                    GlyphPreviewControl::Threshold => {
+                        if selected_row_supports_fps(app) {
+                            GlyphPreviewControl::Fps
+                        } else {
+                            GlyphPreviewControl::Threshold
+                        }
+                    }
+                    GlyphPreviewControl::Fps => {
+                        if selected_row_supports_threshold(app) {
+                            GlyphPreviewControl::Threshold
+                        } else {
+                            GlyphPreviewControl::Fps
+                        }
+                    }
+                };
             }
         }
         KeyCode::Right | KeyCode::Char('l') | KeyCode::Char('+') | KeyCode::Char('=') => {
-            if app.glyphs_focus == GlyphsFocus::List {
+            if matches!(code, KeyCode::Char('+') | KeyCode::Char('=')) {
                 adjust_selected_threshold_by(app, 1);
+            } else if app.glyphs_focus == GlyphsFocus::List {
+                if matches!(
+                    app.selected_visible_row(),
+                    Some(VisibleGlyphRow::CompositionChild { .. })
+                ) {
+                    app.status = Some(
+                        "grid tile thresholds are disabled; edit the grid parent instead"
+                            .to_string(),
+                    );
+                } else if selected_row_supports_threshold(app) || selected_row_supports_fps(app) {
+                    app.glyphs_focus = GlyphsFocus::Preview;
+                    app.glyph_preview_control = if selected_row_supports_threshold(app) {
+                        GlyphPreviewControl::Threshold
+                    } else {
+                        GlyphPreviewControl::Fps
+                    };
+                } else if app.active_project.is_none() {
+                    adjust_selected_threshold_by(app, 1);
+                }
+            } else {
+                app.glyph_preview_control = match app.glyph_preview_control {
+                    GlyphPreviewControl::Threshold => {
+                        if selected_row_supports_fps(app) {
+                            GlyphPreviewControl::Fps
+                        } else {
+                            GlyphPreviewControl::Threshold
+                        }
+                    }
+                    GlyphPreviewControl::Fps => {
+                        if selected_row_supports_threshold(app) {
+                            GlyphPreviewControl::Threshold
+                        } else {
+                            GlyphPreviewControl::Fps
+                        }
+                    }
+                };
             }
         }
         KeyCode::Enter | KeyCode::Char(' ') => {
@@ -1833,14 +1941,14 @@ fn handle_glyphs_key(app: &mut App, key: KeyEvent) -> Result<()> {
             }
         }
         KeyCode::PageUp => {
-            if let Some(glyph) = selected_glyph(app) {
-                let next = glyph.working_threshold.saturating_add(10);
+            if let Some(threshold) = selected_row_threshold_value(app) {
+                let next = threshold.saturating_add(10);
                 set_selected_threshold(app, next);
             }
         }
         KeyCode::PageDown => {
-            if let Some(glyph) = selected_glyph(app) {
-                let next = glyph.working_threshold.saturating_sub(10);
+            if let Some(threshold) = selected_row_threshold_value(app) {
+                let next = threshold.saturating_sub(10);
                 set_selected_threshold(app, next);
             }
         }
@@ -3640,11 +3748,7 @@ impl App {
                 last_frame_at: now,
             };
         }
-        let interval_ms = (1000u64 / u64::from(animation.fps.max(1))).max(1);
-        if now.duration_since(preview.last_frame_at) >= Duration::from_millis(interval_ms) {
-            preview.frame_index = (preview.frame_index + 1) % animation.frames.len().max(1);
-            preview.last_frame_at = now;
-        }
+        step_animation_preview(&mut preview, animation, now);
         self.animation_preview = Some(preview);
     }
 
@@ -3727,6 +3831,7 @@ impl App {
             grid_config: None,
             selecting_for_grid: false,
             glyph_tool_mode: GlyphToolMode::None,
+            glyph_preview_control: GlyphPreviewControl::Threshold,
             animation_selection_order: Vec::new(),
             animation_selection_set: BTreeSet::new(),
             animation_imported_set: BTreeSet::new(),
@@ -3806,6 +3911,7 @@ impl App {
             grid_config: None,
             selecting_for_grid: false,
             glyph_tool_mode: GlyphToolMode::None,
+            glyph_preview_control: GlyphPreviewControl::Threshold,
             animation_selection_order: Vec::new(),
             animation_selection_set: BTreeSet::new(),
             animation_imported_set: BTreeSet::new(),
@@ -4072,8 +4178,13 @@ impl App {
     }
 
     fn normalize_glyphs_focus(&mut self) {
-        let _ = self.active_project.is_some();
-        self.glyphs_focus = GlyphsFocus::List;
+        if !self.active_project.is_some() {
+            self.glyphs_focus = GlyphsFocus::List;
+            return;
+        }
+        if self.visible_glyph_rows().is_empty() {
+            self.glyphs_focus = GlyphsFocus::List;
+        }
     }
 
     fn selected_visible_row(&self) -> Option<VisibleGlyphRow> {
@@ -5463,6 +5574,20 @@ fn remove_animation_definition(manifest_path: &Path, animation_name: &str) -> Re
     Ok(removed)
 }
 
+fn persist_animation_fps(manifest_path: &Path, animation_name: &str, fps: u8) -> Result<bool> {
+    let mut manifest = read_manifest(manifest_path)?;
+    let Some(animation) = manifest
+        .animations
+        .iter_mut()
+        .find(|animation| animation.name == animation_name)
+    else {
+        return Ok(false);
+    };
+    animation.fps = fps.clamp(1, 30);
+    write_manifest(manifest_path, &manifest)?;
+    Ok(true)
+}
+
 fn default_animation_name_from_frames(config: &RuntimeConfig, frames: &[String]) -> String {
     let base = frames
         .first()
@@ -5514,6 +5639,14 @@ fn selected_source_parent_key(app: &App) -> Option<String> {
             .map(|g| g.glyph.source_parent_key.clone()),
         VisibleGlyphRow::CompositionParent { source_key, .. }
         | VisibleGlyphRow::CompositionChild { source_key, .. } => Some(source_key),
+    }
+}
+
+fn selected_animation_index(app: &App) -> Option<usize> {
+    match app.selected_visible_row()? {
+        VisibleGlyphRow::AnimationParent { animation_idx }
+        | VisibleGlyphRow::AnimationFrame { animation_idx, .. } => Some(animation_idx),
+        _ => None,
     }
 }
 
@@ -5707,9 +5840,25 @@ fn selected_visible_glyph_index(app: &App) -> Option<usize> {
     }
 }
 
-fn selected_glyph_mut(app: &mut App) -> Option<&mut InteractiveGlyph> {
-    let idx = selected_visible_glyph_index(app)?;
-    app.glyphs.get_mut(idx)
+fn selected_threshold_sources(app: &App) -> Option<Vec<String>> {
+    match app.selected_visible_row()? {
+        VisibleGlyphRow::AnimationParent { animation_idx }
+        | VisibleGlyphRow::AnimationFrame { animation_idx, .. } => app
+            .config
+            .animations
+            .get(animation_idx)
+            .map(|animation| {
+                animation
+                    .frames
+                    .iter()
+                    .map(|frame| animation_frame_parent_source(frame))
+                    .collect::<BTreeSet<_>>()
+                    .into_iter()
+                    .collect::<Vec<_>>()
+            }),
+        VisibleGlyphRow::CompositionChild { .. } => None,
+        _ => selected_source_parent_key(app).map(|source| vec![source]),
+    }
 }
 
 fn selected_glyph(app: &App) -> Option<&InteractiveGlyph> {
@@ -5725,37 +5874,46 @@ fn set_selected_threshold(app: &mut App, threshold: u8) {
         return;
     }
 
-    let Some(glyph) = selected_glyph(app) else {
+    let Some(sources) = selected_threshold_sources(app) else {
         app.status = Some("no glyph selected".to_string());
         return;
     };
-
-    let source_key = glyph.glyph.source_parent_key.clone();
-    let glyph_name = glyph.glyph.glyph_name.clone();
     let threshold_override = if threshold == app.config.base_threshold {
         None
     } else {
         Some(threshold)
     };
-
-    match persist_threshold_override(&app.manifest_path, &source_key, threshold_override) {
-        Ok(()) => {
-            if let Some(glyph) = selected_glyph_mut(app) {
-                glyph.working_threshold = threshold;
-                glyph.saved_threshold = threshold_override;
-            }
-            app.status = Some(match threshold_override {
-                Some(value) => format!("saved override for {glyph_name}: {source_key} -> {value}"),
-                None => format!(
-                    "cleared override for {glyph_name}: now using base threshold {}",
-                    app.config.base_threshold
-                ),
-            });
-        }
-        Err(err) => {
-            app.status = Some(format!("failed to save override for {glyph_name}: {err}"));
+    for source_key in &sources {
+        if let Err(err) = persist_threshold_override(&app.manifest_path, source_key, threshold_override)
+        {
+            app.status = Some(format!("failed to save override for {source_key}: {err}"));
+            return;
         }
     }
+    let source_set = sources.iter().cloned().collect::<BTreeSet<_>>();
+    for glyph in &mut app.glyphs {
+        if source_set.contains(&glyph.glyph.source_parent_key) {
+            glyph.working_threshold = threshold;
+            glyph.saved_threshold = threshold_override;
+        }
+    }
+    for source_key in sources {
+        match threshold_override {
+            Some(value) => {
+                app.config.threshold_overrides.insert(source_key, value);
+            }
+            None => {
+                app.config.threshold_overrides.remove(&source_key);
+            }
+        }
+    }
+    app.status = Some(match threshold_override {
+        Some(value) => format!("saved threshold override: {value}"),
+        None => format!(
+            "cleared threshold override(s): now using base threshold {}",
+            app.config.base_threshold
+        ),
+    });
 }
 
 fn remove_selected_threshold_override(app: &mut App) {
@@ -5766,30 +5924,31 @@ fn remove_selected_threshold_override(app: &mut App) {
         return;
     }
 
-    let Some(glyph) = selected_glyph(app) else {
+    let Some(sources) = selected_threshold_sources(app) else {
         app.status = Some("no glyph selected".to_string());
         return;
     };
-
-    let source_key = glyph.glyph.source_parent_key.clone();
-    let glyph_name = glyph.glyph.glyph_name.clone();
-
-    match persist_threshold_override(&app.manifest_path, &source_key, None) {
-        Ok(()) => {
-            let base_threshold = app.config.base_threshold;
-            if let Some(glyph) = selected_glyph_mut(app) {
-                glyph.saved_threshold = None;
-                glyph.working_threshold = base_threshold;
-            }
-            app.status = Some(format!(
-                "removed override for {glyph_name}: now using base threshold {}",
-                base_threshold
-            ));
-        }
-        Err(err) => {
-            app.status = Some(format!("failed to remove override for {glyph_name}: {err}"));
+    for source_key in &sources {
+        if let Err(err) = persist_threshold_override(&app.manifest_path, source_key, None) {
+            app.status = Some(format!("failed to remove override for {source_key}: {err}"));
+            return;
         }
     }
+    let base_threshold = app.config.base_threshold;
+    let source_set = sources.iter().cloned().collect::<BTreeSet<_>>();
+    for glyph in &mut app.glyphs {
+        if source_set.contains(&glyph.glyph.source_parent_key) {
+            glyph.saved_threshold = None;
+            glyph.working_threshold = base_threshold;
+        }
+    }
+    for source_key in sources {
+        app.config.threshold_overrides.remove(&source_key);
+    }
+    app.status = Some(format!(
+        "removed threshold override(s): now using base threshold {}",
+        base_threshold
+    ));
 }
 
 #[cfg(test)]
@@ -5836,6 +5995,54 @@ fn adjust_selected_threshold_by(app: &mut App, step: i16) {
         set_selected_threshold(app, next);
     } else if app.active_project.is_none() {
         set_selected_threshold(app, 0);
+    }
+}
+
+fn selected_row_supports_threshold(app: &App) -> bool {
+    selected_threshold_sources(app).is_some()
+}
+
+fn selected_row_supports_fps(app: &App) -> bool {
+    selected_animation_index(app).is_some()
+}
+
+fn selected_row_threshold_value(app: &App) -> Option<u8> {
+    let sources = selected_threshold_sources(app)?;
+    let first = sources.first()?;
+    app.glyphs
+        .iter()
+        .find(|glyph| glyph.glyph.source_parent_key == *first)
+        .map(|glyph| glyph.working_threshold)
+        .or(Some(app.config.base_threshold))
+}
+
+fn selected_row_fps_value(app: &App) -> Option<u8> {
+    let idx = selected_animation_index(app)?;
+    app.config.animations.get(idx).map(|animation| animation.fps)
+}
+
+fn set_selected_animation_fps(app: &mut App, fps: u8) {
+    let Some(idx) = selected_animation_index(app) else {
+        app.status = Some("no animation selected".to_string());
+        return;
+    };
+    let Some(animation_name) = app.config.animations.get(idx).map(|a| a.name.clone()) else {
+        app.status = Some("no animation selected".to_string());
+        return;
+    };
+    match persist_animation_fps(&app.manifest_path, &animation_name, fps) {
+        Ok(true) => {
+            if let Some(animation) = app.config.animations.get_mut(idx) {
+                animation.fps = fps.clamp(1, 30);
+            }
+            app.status = Some(format!("updated animation `{animation_name}` fps -> {fps}"));
+        }
+        Ok(false) => {
+            app.status = Some(format!("animation not found: `{animation_name}`"));
+        }
+        Err(err) => {
+            app.status = Some(format!("failed to update fps for `{animation_name}`: {err}"));
+        }
     }
 }
 
@@ -8012,6 +8219,50 @@ fn draw_glyphs_view(
         }
     }
 
+    let supports_threshold = selected_row_supports_threshold(app);
+    let supports_fps = selected_row_supports_fps(app);
+    if supports_threshold || supports_fps {
+        let threshold_style = if app.glyphs_focus == GlyphsFocus::Preview
+            && app.glyph_preview_control == GlyphPreviewControl::Threshold
+            && supports_threshold
+        {
+            Style::default()
+                .fg(Color::Black)
+                .bg(accent)
+                .add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().fg(if supports_threshold { Color::White } else { muted })
+        };
+        let fps_style = if app.glyphs_focus == GlyphsFocus::Preview
+            && app.glyph_preview_control == GlyphPreviewControl::Fps
+            && supports_fps
+        {
+            Style::default()
+                .fg(Color::Black)
+                .bg(accent)
+                .add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().fg(if supports_fps { Color::White } else { muted })
+        };
+
+        let threshold_value = selected_row_threshold_value(app)
+            .map(|value| value.to_string())
+            .unwrap_or_else(|| "-".to_string());
+        let fps_value = selected_row_fps_value(app)
+            .map(|value| value.to_string())
+            .unwrap_or_else(|| "-".to_string());
+
+        preview_content.insert(
+            0,
+            Line::from(vec![
+                Span::raw("  Edit "),
+                Span::styled(format!("[Threshold: {threshold_value}]"), threshold_style),
+                Span::raw(" "),
+                Span::styled(format!("[FPS: {fps_value}]"), fps_style),
+            ]),
+        );
+    }
+
     let p = Paragraph::new(preview_content)
         .block(preview_block)
         .wrap(Wrap { trim: false });
@@ -9096,6 +9347,23 @@ fn installed_animation_frame_index(
     ((elapsed_ms.saturating_mul(fps) / 1000) as usize) % frame_count
 }
 
+fn animation_frame_interval(fps: u8) -> Duration {
+    Duration::from_nanos(1_000_000_000u64 / u64::from(fps.max(1)))
+}
+
+fn step_animation_preview(preview: &mut AnimationPreview, animation: &AnimationDef, now: Instant) {
+    let frame_count = animation.frames.len().max(1);
+    if frame_count <= 1 {
+        return;
+    }
+
+    let interval = animation_frame_interval(animation.fps);
+    while now.duration_since(preview.last_frame_at) >= interval {
+        preview.frame_index = (preview.frame_index + 1) % frame_count;
+        preview.last_frame_at += interval;
+    }
+}
+
 fn installed_animation_preview_lines(
     preview: &InstalledFontAnimationPreview,
     max_chars: usize,
@@ -9126,7 +9394,7 @@ mod tests {
         glyph_matches_animation_frame_source, handle_key, handle_paste_event_for_test,
         import_image_files_to_input, installed_animation_blocks_for_definition,
         installed_animation_frame_index, installed_animation_source_block, preview_lines,
-        prune_static_sample_blocks,
+        prune_static_sample_blocks, step_animation_preview,
         scrollbar_thumb_geometry, visible_window_bounds, persist_composition_definition,
     };
     use crate::build::{CompositionTileInfo, PreprocessedGlyph};
@@ -9262,6 +9530,56 @@ mod tests {
                 started_at + Duration::from_millis(750),
             ),
             0
+        );
+    }
+
+    #[test]
+    fn animation_preview_step_uses_accumulated_timing_without_threshold_jump() {
+        let animation = AnimationDef {
+            name: "run".to_string(),
+            animation_type: AnimationType::Standard,
+            fps: 20,
+            frames: vec!["a.png".to_string(), "b.png".to_string(), "c.png".to_string()],
+            rows: None,
+            cols: None,
+            horizontal_bleed: None,
+            vertical_bleed: None,
+        };
+        let started_at = Instant::now();
+        let mut preview = AnimationPreview {
+            animation_name: animation.name.clone(),
+            frame_index: 0,
+            last_frame_at: started_at,
+        };
+
+        // Simulate a render cadence (~48ms) where old logic could alias into abrupt speed shifts.
+        for tick in [48u64, 96, 144, 192, 240, 288, 336, 384, 432, 480] {
+            step_animation_preview(&mut preview, &animation, started_at + Duration::from_millis(tick));
+        }
+        assert_eq!(
+            preview.frame_index,
+            0,
+            "20fps over 480ms should advance exactly 9 frames (mod 3 -> 0) with accumulator timing"
+        );
+
+        let mut faster = animation.clone();
+        faster.fps = 21;
+        let mut faster_preview = AnimationPreview {
+            animation_name: faster.name.clone(),
+            frame_index: 0,
+            last_frame_at: started_at,
+        };
+        for tick in [48u64, 96, 144, 192, 240, 288, 336, 384, 432, 480] {
+            step_animation_preview(
+                &mut faster_preview,
+                &faster,
+                started_at + Duration::from_millis(tick),
+            );
+        }
+        assert_eq!(
+            faster_preview.frame_index,
+            1,
+            "21fps over 480ms should only be one frame ahead of 20fps in this window"
         );
     }
 
