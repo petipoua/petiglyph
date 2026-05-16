@@ -6841,7 +6841,11 @@ fn draw_home_creation_popup(frame: &mut Frame, app: &App, area: Rect, accent: Co
             draw_grid_config_ui(frame, app, config, layout[3], accent, muted);
         }
     } else if configuring_animation {
-        draw_animation_panel_ui(frame, app, layout[3], accent, muted);
+        if let GlyphToolMode::ConfigureAnimation(config) = &app.glyph_tool_mode {
+            draw_animation_config_ui(frame, config, layout[3], accent, muted);
+        } else {
+            draw_animation_panel_ui(frame, app, layout[3], accent, muted);
+        }
     } else {
         let drag_lines = drag_images_here_lines(
             layout[3].width,
@@ -7080,6 +7084,168 @@ fn draw_grid_config_ui(
     frame.render_widget(
         Paragraph::new(guidance_text).wrap(Wrap { trim: true }),
         layout[3],
+    );
+}
+
+fn draw_animation_config_ui(
+    frame: &mut Frame,
+    config: &AnimationConfig,
+    area: Rect,
+    accent: Color,
+    muted: Color,
+) {
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(Style::default().fg(muted))
+        .title(Span::styled(
+            " Animation Configuration ",
+            Style::default().fg(accent),
+        ));
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    let focused_style = Style::default()
+        .fg(Color::Black)
+        .bg(Color::Yellow)
+        .add_modifier(Modifier::BOLD);
+    let idle_style = Style::default().fg(Color::White).bg(Color::DarkGray);
+    let style_for = |focus: AnimationConfigFocus| {
+        if config.focus == focus {
+            focused_style
+        } else {
+            idle_style
+        }
+    };
+    let create_style = if config.focus == AnimationConfigFocus::Create {
+        focused_style
+    } else {
+        Style::default()
+            .fg(Color::Black)
+            .bg(Color::Blue)
+            .add_modifier(Modifier::BOLD)
+    };
+
+    let layout = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(1),
+            Constraint::Length(3),
+            Constraint::Length(2),
+            Constraint::Min(0),
+        ])
+        .margin(2)
+        .split(inner);
+
+    let type_label = match config.animation_type {
+        AnimationType::Standard => "standard",
+        AnimationType::Grid => "grid",
+    };
+    frame.render_widget(
+        Paragraph::new(format!(
+            " Configuring {type_label} animation (frames: {}) ",
+            config.selected_frames.len()
+        ))
+        .style(Style::default().fg(Color::White)),
+        layout[0],
+    );
+
+    let row_constraints = if config.animation_type == AnimationType::Grid {
+        vec![
+            Constraint::Length(28), // name
+            Constraint::Length(11), // fps
+            Constraint::Length(11), // rows
+            Constraint::Length(11), // cols
+            Constraint::Length(26), // lr bleed
+            Constraint::Length(26), // tb bleed
+            Constraint::Min(0),
+            Constraint::Length(22), // create
+        ]
+    } else {
+        vec![
+            Constraint::Length(32), // name
+            Constraint::Length(11), // fps
+            Constraint::Min(0),
+            Constraint::Length(22), // create
+        ]
+    };
+    let fields = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints(row_constraints)
+        .split(layout[1]);
+
+    let name_style = style_for(AnimationConfigFocus::Name);
+    frame.render_widget(
+        Paragraph::new(format!(" Name: {} ", config.name_input.value()))
+            .block(Block::default().borders(Borders::ALL).border_style(name_style))
+            .style(name_style),
+        fields[0],
+    );
+    let fps_style = style_for(AnimationConfigFocus::Fps);
+    frame.render_widget(
+        Paragraph::new(format!(" FPS: {} ", config.fps))
+            .block(Block::default().borders(Borders::ALL).border_style(fps_style))
+            .style(fps_style),
+        fields[1],
+    );
+
+    let create_idx = if config.animation_type == AnimationType::Grid {
+        let rows_style = style_for(AnimationConfigFocus::Rows);
+        frame.render_widget(
+            Paragraph::new(format!(" Rows: {} ", config.rows))
+                .block(Block::default().borders(Borders::ALL).border_style(rows_style))
+                .style(rows_style),
+            fields[2],
+        );
+        let cols_style = style_for(AnimationConfigFocus::Cols);
+        frame.render_widget(
+            Paragraph::new(format!(" Cols: {} ", config.cols))
+                .block(Block::default().borders(Borders::ALL).border_style(cols_style))
+                .style(cols_style),
+            fields[3],
+        );
+        frame.render_widget(
+            Paragraph::new(bleed_toggle_line(
+                " Left/right bleed ",
+                config.horizontal_bleed,
+            ))
+            .block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .border_style(style_for(AnimationConfigFocus::HorizontalBleed)),
+            )
+            .style(style_for(AnimationConfigFocus::HorizontalBleed)),
+            fields[4],
+        );
+        frame.render_widget(
+            Paragraph::new(bleed_toggle_line(" Top/bottom bleed ", config.vertical_bleed))
+                .block(
+                    Block::default()
+                        .borders(Borders::ALL)
+                        .border_style(style_for(AnimationConfigFocus::VerticalBleed)),
+                )
+                .style(style_for(AnimationConfigFocus::VerticalBleed)),
+            fields[5],
+        );
+        7
+    } else {
+        3
+    };
+
+    frame.render_widget(
+        Paragraph::new(" Create Animation ")
+            .alignment(Alignment::Center)
+            .style(create_style)
+            .block(Block::default().borders(Borders::ALL).border_style(create_style)),
+        fields[create_idx],
+    );
+
+    frame.render_widget(
+        Paragraph::new(Line::from(vec![
+            Span::styled(" Name/FPS ", Style::default().fg(accent)),
+            Span::styled("and grid options use Left/Right to focus, Up/Down to adjust, Enter on Create to finish.", Style::default().fg(muted)),
+        ])),
+        layout[2],
     );
 }
 
