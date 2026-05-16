@@ -707,7 +707,12 @@ fn scan_installed_petiglyph_fonts(cwd: &Path) -> Result<Vec<InstalledFontSample>
             if let Some((blocks, animation_rows, animation_previews, animation_exports)) =
                 sample_from_manifest
             {
-                (blocks, animation_rows, animation_previews, animation_exports)
+                (
+                    blocks,
+                    animation_rows,
+                    animation_previews,
+                    animation_exports,
+                )
             } else {
                 let (sample, truncated) = fs::read(&path)
                     .ok()
@@ -2021,29 +2026,27 @@ fn handle_welcome_key(app: &mut App, key: KeyEvent) -> Result<()> {
                         WelcomeFocus::InstalledFontList
                     }
                 }
-                WelcomeFocus::HomeCreateButtons => {
-                    match app.home_launcher_focus {
-                        HomeLauncherFocus::CreateGlyph => {
-                            app.home_launcher_focus = HomeLauncherFocus::CreateAnimatedGlyph;
+                WelcomeFocus::HomeCreateButtons => match app.home_launcher_focus {
+                    HomeLauncherFocus::CreateGlyph => {
+                        app.home_launcher_focus = HomeLauncherFocus::CreateAnimatedGlyph;
+                        WelcomeFocus::HomeCreateButtons
+                    }
+                    HomeLauncherFocus::CreateGrid => {
+                        app.home_launcher_focus = HomeLauncherFocus::CreateAnimatedGridGlyph;
+                        WelcomeFocus::HomeCreateButtons
+                    }
+                    HomeLauncherFocus::CreateAnimatedGlyph
+                    | HomeLauncherFocus::CreateAnimatedGridGlyph => {
+                        if app.installed_fonts.is_empty() {
                             WelcomeFocus::HomeCreateButtons
-                        }
-                        HomeLauncherFocus::CreateGrid => {
-                            app.home_launcher_focus = HomeLauncherFocus::CreateAnimatedGridGlyph;
-                            WelcomeFocus::HomeCreateButtons
-                        }
-                        HomeLauncherFocus::CreateAnimatedGlyph
-                        | HomeLauncherFocus::CreateAnimatedGridGlyph => {
-                            if app.installed_fonts.is_empty() {
-                                WelcomeFocus::HomeCreateButtons
-                            } else {
-                                app.selected_installed_font = 0;
-                                app.selected_installed_font_sub_index = 0;
-                                app.installed_font_horizontal_focus_uninstall = false;
-                                WelcomeFocus::InstalledFontList
-                            }
+                        } else {
+                            app.selected_installed_font = 0;
+                            app.selected_installed_font_sub_index = 0;
+                            app.installed_font_horizontal_focus_uninstall = false;
+                            WelcomeFocus::InstalledFontList
                         }
                     }
-                }
+                },
                 WelcomeFocus::InstalledFontList => {
                     if app.installed_font_horizontal_focus_uninstall {
                         // Pressing down on Uninstall button goes to sample line (sub-index 1)
@@ -2083,20 +2086,19 @@ fn handle_welcome_key(app: &mut App, key: KeyEvent) -> Result<()> {
                 WelcomeFocus::BuildButton => WelcomeFocus::CreateInput,
                 WelcomeFocus::InstallButton => WelcomeFocus::BuildButton,
                 WelcomeFocus::DeleteProjectButton => WelcomeFocus::InstallButton,
-                WelcomeFocus::HomeCreateButtons => {
-                    match app.home_launcher_focus {
-                        HomeLauncherFocus::CreateGlyph
-                        | HomeLauncherFocus::CreateAnimatedGlyph => WelcomeFocus::CreateInput,
-                        HomeLauncherFocus::CreateGrid => {
-                            app.home_launcher_focus = HomeLauncherFocus::CreateGlyph;
-                            WelcomeFocus::HomeCreateButtons
-                        }
-                        HomeLauncherFocus::CreateAnimatedGridGlyph => {
-                            app.home_launcher_focus = HomeLauncherFocus::CreateAnimatedGlyph;
-                            WelcomeFocus::HomeCreateButtons
-                        }
+                WelcomeFocus::HomeCreateButtons => match app.home_launcher_focus {
+                    HomeLauncherFocus::CreateGlyph | HomeLauncherFocus::CreateAnimatedGlyph => {
+                        WelcomeFocus::CreateInput
                     }
-                }
+                    HomeLauncherFocus::CreateGrid => {
+                        app.home_launcher_focus = HomeLauncherFocus::CreateGlyph;
+                        WelcomeFocus::HomeCreateButtons
+                    }
+                    HomeLauncherFocus::CreateAnimatedGridGlyph => {
+                        app.home_launcher_focus = HomeLauncherFocus::CreateAnimatedGlyph;
+                        WelcomeFocus::HomeCreateButtons
+                    }
+                },
                 WelcomeFocus::InstalledFontList => {
                     if app.selected_installed_font_sub_index == 0 {
                         app.installed_font_horizontal_focus_uninstall = false;
@@ -2146,8 +2148,12 @@ fn handle_welcome_key(app: &mut App, key: KeyEvent) -> Result<()> {
                     app.home_launcher_focus = match app.home_launcher_focus {
                         HomeLauncherFocus::CreateGlyph => HomeLauncherFocus::CreateGrid,
                         HomeLauncherFocus::CreateGrid => HomeLauncherFocus::CreateGrid,
-                        HomeLauncherFocus::CreateAnimatedGlyph => HomeLauncherFocus::CreateAnimatedGridGlyph,
-                        HomeLauncherFocus::CreateAnimatedGridGlyph => HomeLauncherFocus::CreateAnimatedGridGlyph,
+                        HomeLauncherFocus::CreateAnimatedGlyph => {
+                            HomeLauncherFocus::CreateAnimatedGridGlyph
+                        }
+                        HomeLauncherFocus::CreateAnimatedGridGlyph => {
+                            HomeLauncherFocus::CreateAnimatedGridGlyph
+                        }
                     };
                     WelcomeFocus::HomeCreateButtons
                 }
@@ -2217,7 +2223,9 @@ fn handle_welcome_key(app: &mut App, key: KeyEvent) -> Result<()> {
                     HomeLauncherFocus::CreateGlyph => HomeCreationKind::Glyph,
                     HomeLauncherFocus::CreateGrid => HomeCreationKind::Grid,
                     HomeLauncherFocus::CreateAnimatedGlyph => HomeCreationKind::AnimatedGlyph,
-                    HomeLauncherFocus::CreateAnimatedGridGlyph => HomeCreationKind::AnimatedGridGlyph,
+                    HomeLauncherFocus::CreateAnimatedGridGlyph => {
+                        HomeCreationKind::AnimatedGridGlyph
+                    }
                 };
                 app.start_home_workflow(kind);
             }
@@ -2334,7 +2342,8 @@ fn handle_home_creation_key(app: &mut App, key: KeyEvent) -> Result<()> {
                     app.status = Some("select a source parent and press Enter".to_string());
                 }
                 HomeCreationKind::AnimatedGlyph => {
-                    app.home_workflow = HomeWorkflow::SelectAnimationFrames(AnimationType::Standard);
+                    app.home_workflow =
+                        HomeWorkflow::SelectAnimationFrames(AnimationType::Standard);
                     app.view = AppView::Glyphs;
                     app.glyph_tool_mode =
                         GlyphToolMode::SelectAnimationFrames(AnimationType::Standard);
@@ -2343,8 +2352,7 @@ fn handle_home_creation_key(app: &mut App, key: KeyEvent) -> Result<()> {
                 HomeCreationKind::AnimatedGridGlyph => {
                     app.home_workflow = HomeWorkflow::SelectAnimationFrames(AnimationType::Grid);
                     app.view = AppView::Glyphs;
-                    app.glyph_tool_mode =
-                        GlyphToolMode::SelectAnimationFrames(AnimationType::Grid);
+                    app.glyph_tool_mode = GlyphToolMode::SelectAnimationFrames(AnimationType::Grid);
                     app.status = Some("select frame rows, Enter to configure".to_string());
                 }
             },
@@ -2355,7 +2363,8 @@ fn handle_home_creation_key(app: &mut App, key: KeyEvent) -> Result<()> {
             if app.grid_config.is_none() && app.selecting_for_grid {
                 app.selecting_for_grid = false;
             }
-            if matches!(app.home_workflow, HomeWorkflow::SelectGridSource) && app.grid_config.is_some()
+            if matches!(app.home_workflow, HomeWorkflow::SelectGridSource)
+                && app.grid_config.is_some()
             {
                 app.home_workflow = HomeWorkflow::Launcher;
             }
@@ -2390,7 +2399,6 @@ fn draw_welcome_view(
     accent: Color,
     muted: Color,
 ) {
-    let workflow_active = !matches!(app.home_workflow, HomeWorkflow::Launcher);
     let body = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
@@ -2405,15 +2413,7 @@ fn draw_welcome_view(
         .direction(Direction::Vertical)
         .constraints([Constraint::Length(1), Constraint::Min(0)])
         .split(body[0]);
-    let switch_notice_line = if workflow_active {
-        Line::from(vec![Span::styled(
-            " Creation workflow active: only the workflow panel is interactive (Enter confirms, Esc cancels) ",
-            Style::default()
-                .fg(Color::Black)
-                .bg(Color::Yellow)
-                .add_modifier(Modifier::BOLD),
-        )])
-    } else if let Some(notice) = &app.switch_notice {
+    let switch_notice_line = if let Some(notice) = &app.switch_notice {
         Line::from(vec![Span::styled(
             format!(
                 " Switched project: {} -> {} ",
@@ -2442,12 +2442,7 @@ fn draw_welcome_view(
         .wrap(Wrap { trim: true }),
         tip_layout[1],
     );
-    let verbose_button_style = if workflow_active {
-        Style::default()
-            .fg(Color::DarkGray)
-            .bg(Color::Black)
-            .add_modifier(Modifier::DIM)
-    } else if app.welcome_focus == WelcomeFocus::VerbosePathsToggle {
+    let verbose_button_style = if app.welcome_focus == WelcomeFocus::VerbosePathsToggle {
         Style::default()
             .fg(Color::Black)
             .bg(accent)
@@ -2481,10 +2476,10 @@ fn draw_welcome_view(
     let projects_block = Block::default()
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
-        .border_style(Style::default().fg(if workflow_active { Color::DarkGray } else { muted }))
+        .border_style(Style::default().fg(muted))
         .title(Span::styled(
             " Petiglyph projects ",
-            Style::default().fg(if workflow_active { muted } else { accent }),
+            Style::default().fg(accent),
         ));
 
     let mut project_rows = Vec::new();
@@ -2502,9 +2497,8 @@ fn draw_welcome_view(
                 .active_project
                 .as_ref()
                 .is_some_and(|active| active == &project.manifest_path);
-            let is_selected = !workflow_active
-                && app.welcome_focus == WelcomeFocus::ProjectList
-                && app.selected_project == idx;
+            let is_selected =
+                app.welcome_focus == WelcomeFocus::ProjectList && app.selected_project == idx;
             let is_renaming = is_active && app.renaming_input.is_some();
             let marker = if is_active { "active" } else { "found " };
             let row_style = if is_selected {
@@ -2609,18 +2603,16 @@ fn draw_welcome_view(
             project_rows.push(Line::from(row));
         }
     }
-    let cursor_prefix = if workflow_active {
-        "  "
-    } else if app.welcome_focus == WelcomeFocus::CreateInput && !app.welcome_input_editing {
+    let cursor_prefix =
+        if app.welcome_focus == WelcomeFocus::CreateInput && !app.welcome_input_editing {
             "> "
         } else if app.welcome_focus == WelcomeFocus::CreateInput && app.welcome_input_editing {
             "> "
         } else {
             "  "
         };
-    let cursor_style = if workflow_active {
-        Style::default().fg(Color::DarkGray)
-    } else if app.welcome_focus == WelcomeFocus::CreateInput && !app.welcome_input_editing {
+    let cursor_style =
+        if app.welcome_focus == WelcomeFocus::CreateInput && !app.welcome_input_editing {
             Style::default()
                 .fg(Color::Black)
                 .bg(accent)
@@ -2628,15 +2620,9 @@ fn draw_welcome_view(
         } else {
             Style::default().fg(muted)
         };
-    let is_create_focused = !workflow_active
-        && app.welcome_focus == WelcomeFocus::CreateInput
-        && !app.welcome_input_editing;
-    let create_button_style = if workflow_active {
-        Style::default()
-            .fg(Color::DarkGray)
-            .bg(Color::Black)
-            .add_modifier(Modifier::DIM)
-    } else if is_create_focused {
+    let is_create_focused =
+        app.welcome_focus == WelcomeFocus::CreateInput && !app.welcome_input_editing;
+    let create_button_style = if is_create_focused {
         Style::default()
             .fg(Color::Black)
             .bg(accent)
@@ -2836,7 +2822,7 @@ fn draw_welcome_view(
         (Some(kind), Some(spinner)) => format!(" {spinner} {} ", kind.button_label()),
         _ => format!(" {} ", build_action_name(app.current_project_is_built())),
     };
-    let build_button_style = if workflow_active || app.active_project.is_none() {
+    let build_button_style = if app.active_project.is_none() {
         disabled_button_style
     } else if app.build_in_progress() {
         selected_button_style
@@ -2849,9 +2835,7 @@ fn draw_welcome_view(
     };
 
     let install_button_style =
-        if workflow_active
-            || (app.active_project.is_none() && !app.install_in_progress() && !app.build_in_progress())
-        {
+        if app.active_project.is_none() && !app.install_in_progress() && !app.build_in_progress() {
             disabled_button_style
         } else if let Some(FontTaskKind::Install) = app.font_task_kind() {
             app.font_task_button_style()
@@ -2871,8 +2855,7 @@ fn draw_welcome_view(
         ),
     };
 
-    let delete_button_style = if workflow_active
-        || !app.active_project_can_be_deleted()
+    let delete_button_style = if !app.active_project_can_be_deleted()
         || app.install_in_progress()
         || app.build_in_progress()
     {
@@ -2985,10 +2968,10 @@ fn draw_welcome_view(
     let fonts_block = Block::default()
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
-        .border_style(Style::default().fg(if workflow_active { Color::DarkGray } else { muted }))
+        .border_style(Style::default().fg(muted))
         .title(Span::styled(
             " Installed petiglyph fonts ",
-            Style::default().fg(if workflow_active { muted } else { accent }),
+            Style::default().fg(accent),
         ));
 
     let installed_font_count = app.installed_fonts.len();
@@ -3046,8 +3029,7 @@ fn draw_welcome_view(
             {
                 let is_focused = is_selected_font
                     && app.selected_installed_font_sub_index == 0
-                    && app.welcome_focus == WelcomeFocus::InstalledFontList
-                    && !workflow_active;
+                    && app.welcome_focus == WelcomeFocus::InstalledFontList;
 
                 if is_focused {
                     selected_font_row_idx = font_rows.len();
@@ -3113,9 +3095,7 @@ fn draw_welcome_view(
                 // Add Uninstall button
                 title_line.spans.push(Span::raw("  "));
                 let uninstall_button_style =
-                    if workflow_active {
-                        disabled_button_style
-                    } else if app.is_selected_font_uninstall_in_progress(&font.path) {
+                    if app.is_selected_font_uninstall_in_progress(&font.path) {
                         app.font_task_button_style()
                             .unwrap_or(disabled_button_style)
                     } else if app.install_in_progress() || app.build_in_progress() {
@@ -3146,8 +3126,7 @@ fn draw_welcome_view(
                 let sub_idx = b_idx + 1;
                 let is_focused = is_selected_font
                     && app.selected_installed_font_sub_index == sub_idx
-                    && app.welcome_focus == WelcomeFocus::InstalledFontList
-                    && !workflow_active;
+                    && app.welcome_focus == WelcomeFocus::InstalledFontList;
 
                 let wrapped_lines =
                     installed_font_block_display_lines_with_reference(block_str, sample_wrap_width);
@@ -3208,8 +3187,7 @@ fn draw_welcome_view(
                 let sub_idx = 1 + font.blocks.len() + a_idx;
                 let is_focused = is_selected_font
                     && app.selected_installed_font_sub_index == sub_idx
-                    && app.welcome_focus == WelcomeFocus::InstalledFontList
-                    && !workflow_active;
+                    && app.welcome_focus == WelcomeFocus::InstalledFontList;
                 let preview = font.animation_previews.get(a_idx);
                 let preview_lines = preview
                     .and_then(|preview| {
@@ -3349,11 +3327,7 @@ fn draw_welcome_view(
     frame.render_widget(
         Paragraph::new(rendered_font_rows)
             .wrap(Wrap { trim: false })
-            .style(if workflow_active {
-                Style::default().fg(Color::DarkGray).add_modifier(Modifier::DIM)
-            } else {
-                Style::default()
-            }),
+            .style(Style::default()),
         font_list_layout[0],
     );
     if show_font_scrollbar {
@@ -3375,7 +3349,10 @@ fn draw_welcome_view(
 impl App {
     fn start_home_workflow(&mut self, kind: HomeCreationKind) {
         self.home_workflow = HomeWorkflow::Import(kind);
-        if matches!(kind, HomeCreationKind::AnimatedGlyph | HomeCreationKind::AnimatedGridGlyph) {
+        if matches!(
+            kind,
+            HomeCreationKind::AnimatedGlyph | HomeCreationKind::AnimatedGridGlyph
+        ) {
             self.clear_animation_draft();
             self.glyph_tool_mode = GlyphToolMode::ImportAnimationFrames;
             self.selecting_for_animation_frames = true;
@@ -5941,6 +5918,9 @@ fn draw_ui(frame: &mut Frame, app: &App) {
         AppView::Welcome => draw_welcome_view(frame, app, body_area, accent, muted),
         AppView::Glyphs => draw_glyphs_view(frame, app, body_area, accent, muted),
     }
+    if app.view == AppView::Welcome {
+        draw_home_creation_popup(frame, app, area, accent, muted);
+    }
     draw_delete_project_confirmation_popup(frame, app, area, accent);
     draw_first_install_notice_popup(frame, app, area, accent, muted);
 
@@ -6139,12 +6119,7 @@ fn draw_ascii_full_repaint_frame(frame: &mut Frame, area: Rect) {
     );
 }
 
-fn draw_delete_project_confirmation_popup(
-    frame: &mut Frame,
-    app: &App,
-    area: Rect,
-    accent: Color,
-) {
+fn draw_delete_project_confirmation_popup(frame: &mut Frame, app: &App, area: Rect, accent: Color) {
     let Some(selection) = app.delete_project_confirm_selection else {
         return;
     };
@@ -6580,47 +6555,113 @@ fn draw_home_creation_area(frame: &mut Frame, app: &App, area: Rect, accent: Col
                         .borders(Borders::ALL)
                         .border_type(BorderType::Rounded)
                         .border_style(Style::default().fg(muted))
-                        .title(Span::styled(" Create ", Style::default().fg(accent))),
+                        .title(Span::styled(
+                            " Creation Workflows ",
+                            Style::default().fg(accent).add_modifier(Modifier::BOLD),
+                        )),
                 ),
                 area,
             );
         }
-        HomeWorkflow::Import(kind) => {
-            let workflow_label = match kind {
-                HomeCreationKind::Glyph => "Current workflow: create glyph",
-                HomeCreationKind::Grid => "Current workflow: create grid",
-                HomeCreationKind::AnimatedGlyph => "Current workflow: create animated glyph",
-                HomeCreationKind::AnimatedGridGlyph => {
-                    "Current workflow: create animated grid glyph"
-                }
-            };
-            let mut lines = vec![
-                Line::from(vec![
-                    Span::raw("  "),
-                    Span::styled(workflow_label, Style::default().fg(muted)),
-                ]),
-                Line::from(""),
-            ];
-            let reserved_footer_lines = 2u16;
-            let drag_height = area
-                .height
-                .saturating_sub(lines.len() as u16 + reserved_footer_lines);
-            lines.extend(drag_images_here_lines(area.width, drag_height, accent));
-            lines.push(Line::from(""));
-            lines.push(Line::from(vec![
-                Span::raw("  "),
-                Span::styled("Press Enter when done, Esc to cancel.", Style::default().fg(muted)),
-            ]));
-            frame.render_widget(Clear, area);
-            frame.render_widget(
-                Paragraph::new(lines).wrap(Wrap { trim: false }),
-                area,
-            );
-        }
-        _ => {
-            draw_animation_panel_ui(frame, app, area, accent, muted);
-        }
+        _ => {}
     }
+}
+
+fn draw_home_creation_popup(frame: &mut Frame, app: &App, area: Rect, accent: Color, muted: Color) {
+    let HomeWorkflow::Import(kind) = app.home_workflow else {
+        return;
+    };
+    let popup = centered_popup_rect(area, 122, 27);
+    frame.render_widget(Clear, popup);
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(Style::default().fg(accent))
+        .title(Span::styled(
+            " Creation Workflow In Progress ",
+            Style::default().fg(accent).add_modifier(Modifier::BOLD),
+        ));
+    let inner = block.inner(popup);
+    frame.render_widget(block, popup);
+    let workflow_name = match kind {
+        HomeCreationKind::Glyph => "Create glyph",
+        HomeCreationKind::Grid => "Create grid",
+        HomeCreationKind::AnimatedGlyph => "Create animated glyph",
+        HomeCreationKind::AnimatedGridGlyph => "Create animated grid glyph",
+    };
+    let steps = vec![
+        Line::from(vec![
+            Span::styled(" 1 ", Style::default().fg(Color::Black).bg(accent)),
+            Span::styled(" Import source images ", Style::default().fg(Color::White)),
+            Span::styled("< current", Style::default().fg(Color::Yellow)),
+        ]),
+        Line::from(vec![
+            Span::styled(" 2 ", Style::default().fg(Color::Black).bg(Color::DarkGray)),
+            Span::styled(" Pick source rows in Glyphs ", Style::default().fg(muted)),
+        ]),
+        Line::from(vec![
+            Span::styled(" 3 ", Style::default().fg(Color::Black).bg(Color::DarkGray)),
+            Span::styled(" Configure workflow details ", Style::default().fg(muted)),
+        ]),
+        Line::from(vec![
+            Span::styled(" 4 ", Style::default().fg(Color::Black).bg(Color::DarkGray)),
+            Span::styled(" Finalize and return ", Style::default().fg(muted)),
+        ]),
+    ];
+    let layout = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(2),
+            Constraint::Length(5),
+            Constraint::Min(0),
+            Constraint::Length(2),
+        ])
+        .split(inner);
+    frame.render_widget(
+        Paragraph::new(vec![Line::from(vec![
+            Span::raw("  "),
+            Span::styled(
+                format!("{workflow_name}: drop, paste, or drag files in this popup."),
+                Style::default()
+                    .fg(Color::White)
+                    .add_modifier(Modifier::BOLD),
+            ),
+        ])]),
+        layout[0],
+    );
+    frame.render_widget(
+        Paragraph::new(steps).block(
+            Block::default()
+                .borders(Borders::ALL)
+                .border_type(BorderType::Rounded)
+                .border_style(Style::default().fg(muted))
+                .title(Span::styled(" Steps ", Style::default().fg(muted))),
+        ),
+        layout[1],
+    );
+    let drag_lines = drag_images_here_lines(layout[2].width, layout[2].height, accent);
+    frame.render_widget(
+        Paragraph::new(drag_lines).wrap(Wrap { trim: false }),
+        layout[2],
+    );
+    frame.render_widget(
+        Paragraph::new(Line::from(vec![
+            Span::raw("  "),
+            Span::styled(
+                "Enter",
+                Style::default().fg(accent).add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(" continue to next step    ", Style::default().fg(muted)),
+            Span::styled(
+                "Esc",
+                Style::default()
+                    .fg(Color::Yellow)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(" cancel workflow", Style::default().fg(muted)),
+        ])),
+        layout[3],
+    );
 }
 
 fn draw_grid_config_ui(
@@ -9044,7 +9085,11 @@ mod tests {
             .collect();
 
         let rows = app.visible_glyph_rows();
-        assert_eq!(rows.len(), 2, "animation parents should be collapsed by default");
+        assert_eq!(
+            rows.len(),
+            2,
+            "animation parents should be collapsed by default"
+        );
         app.expanded_animations.insert("walk".to_string());
         let rows = app.visible_glyph_rows();
 
@@ -9157,7 +9202,11 @@ mod tests {
         ];
 
         let rows = app.visible_glyph_rows();
-        assert_eq!(rows.len(), 2, "animation parents should be collapsed by default");
+        assert_eq!(
+            rows.len(),
+            2,
+            "animation parents should be collapsed by default"
+        );
         app.expanded_animations.insert("run-grid".to_string());
         app.expanded_animations.insert("run-standard".to_string());
         let rows = app.visible_glyph_rows();
