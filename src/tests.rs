@@ -526,6 +526,29 @@ fn unified_tui_single_project_can_start_active() {
 }
 
 #[test]
+fn verbose_toggle_left_jumps_to_top_of_project_list() {
+    let workspace = make_temp_dir("verbose-left-project-list");
+    for name in ["project-a", "project-b"] {
+        let project_dir = workspace.join(name);
+        fs::create_dir_all(&project_dir).expect("project dir is created");
+        write_manifest(&project_dir.join("petiglyph.toml"), &Manifest::default())
+            .expect("manifest is written");
+    }
+
+    let mut app = App::new_workspace(workspace.clone(), None, TuiLaunchOverrides::default())
+        .expect("workspace TUI app initializes");
+    assert_eq!(app.welcome_focus, WelcomeFocus::ProjectList);
+
+    app.welcome_focus = WelcomeFocus::VerbosePathsToggle;
+    app.selected_project = 1;
+    handle_key(&mut app, KeyCode::Left).expect("left from verbose should jump to project list");
+    assert_eq!(app.welcome_focus, WelcomeFocus::ProjectList);
+    assert_eq!(app.selected_project, 0);
+
+    fs::remove_dir_all(workspace).expect("temp workspace is removed");
+}
+
+#[test]
 fn unified_tui_multiple_projects_can_be_selected_from_home() {
     let workspace = make_temp_dir("unified-multi-project");
     for name in ["project-a", "project-b"] {
@@ -574,7 +597,11 @@ fn unified_tui_multiple_projects_can_be_selected_from_home() {
 
     handle_key(&mut app, KeyCode::Down).expect("down leaves project list after last project");
     assert_eq!(app.welcome_focus, WelcomeFocus::CreateInput);
-    handle_key(&mut app, KeyCode::Right).expect("right moves to build button");
+    handle_key(&mut app, KeyCode::Right).expect("right moves to create buttons");
+    assert_eq!(app.welcome_focus, WelcomeFocus::HomeCreateButtons);
+    handle_key(&mut app, KeyCode::Up).expect("up in create buttons reaches create glyph");
+    assert_eq!(app.welcome_focus, WelcomeFocus::HomeCreateButtons);
+    handle_key(&mut app, KeyCode::Up).expect("up in create buttons reaches build");
     assert_eq!(app.welcome_focus, WelcomeFocus::BuildButton);
     handle_key(&mut app, KeyCode::Right).expect("right moves to install button");
     assert_eq!(app.welcome_focus, WelcomeFocus::InstallButton);
@@ -607,7 +634,11 @@ fn unified_tui_multiple_projects_can_be_selected_from_home() {
     assert_eq!(app.welcome_focus, WelcomeFocus::ProjectList);
     handle_key(&mut app, KeyCode::Down).expect("down from project list reaches create input");
     assert_eq!(app.welcome_focus, WelcomeFocus::CreateInput);
-    handle_key(&mut app, KeyCode::Right).expect("right jumps from create input to build");
+    handle_key(&mut app, KeyCode::Right).expect("right jumps from create input to create buttons");
+    assert_eq!(app.welcome_focus, WelcomeFocus::HomeCreateButtons);
+    handle_key(&mut app, KeyCode::Up).expect("up in create buttons reaches create glyph");
+    assert_eq!(app.welcome_focus, WelcomeFocus::HomeCreateButtons);
+    handle_key(&mut app, KeyCode::Up).expect("up in create buttons reaches build");
     assert_eq!(app.welcome_focus, WelcomeFocus::BuildButton);
     handle_key(&mut app, KeyCode::Right).expect("right moves to install");
     assert_eq!(app.welcome_focus, WelcomeFocus::InstallButton);
@@ -617,11 +648,19 @@ fn unified_tui_multiple_projects_can_be_selected_from_home() {
     assert_eq!(app.welcome_focus, WelcomeFocus::CreateInput);
     handle_key(&mut app, KeyCode::Left).expect("left stays on create input");
     assert_eq!(app.welcome_focus, WelcomeFocus::CreateInput);
-    handle_key(&mut app, KeyCode::Right).expect("right moves to build");
+    handle_key(&mut app, KeyCode::Right).expect("right moves to create buttons");
+    assert_eq!(app.welcome_focus, WelcomeFocus::HomeCreateButtons);
+    handle_key(&mut app, KeyCode::Up).expect("up in create buttons reaches create glyph");
+    assert_eq!(app.welcome_focus, WelcomeFocus::HomeCreateButtons);
+    handle_key(&mut app, KeyCode::Up).expect("up in create buttons reaches build");
     assert_eq!(app.welcome_focus, WelcomeFocus::BuildButton);
     handle_key(&mut app, KeyCode::Left).expect("left from build returns to create input");
     assert_eq!(app.welcome_focus, WelcomeFocus::CreateInput);
-    handle_key(&mut app, KeyCode::Right).expect("right moves to build button");
+    handle_key(&mut app, KeyCode::Right).expect("right moves to create buttons");
+    assert_eq!(app.welcome_focus, WelcomeFocus::HomeCreateButtons);
+    handle_key(&mut app, KeyCode::Up).expect("up in create buttons reaches create glyph");
+    assert_eq!(app.welcome_focus, WelcomeFocus::HomeCreateButtons);
+    handle_key(&mut app, KeyCode::Up).expect("up in create buttons reaches build");
     assert_eq!(app.welcome_focus, WelcomeFocus::BuildButton);
     handle_key(&mut app, KeyCode::Left).expect("left from build returns to create input");
     assert_eq!(app.welcome_focus, WelcomeFocus::CreateInput);
@@ -952,7 +991,7 @@ fn project_action_labels_switch_with_current_project_state() {
 }
 
 #[test]
-fn glyph_view_animate_button_runs_placeholder_action() {
+fn home_shortcut_starts_animated_glyph_workflow() {
     let project_dir = make_temp_dir("animate-glyph-enter");
     let manifest_path = project_dir.join("petiglyph.toml");
     let icons_dir = project_dir.join("icons");
@@ -974,16 +1013,14 @@ fn glyph_view_animate_button_runs_placeholder_action() {
     };
 
     let mut app = App::new(manifest_path.clone(), config);
-    app.view = AppView::Glyphs;
-    app.glyphs_focus = GlyphsFocus::AnimateButton;
-
-    handle_key(&mut app, KeyCode::Enter).expect("enter on animate glyph should succeed");
+    app.view = AppView::Welcome;
+    handle_key(&mut app, KeyCode::Char('3')).expect("home shortcut should start workflow");
     assert!(
         app.status
             .as_deref()
-            .is_some_and(|status| status.contains("Import animation frame images now"))
+            .is_some_and(|status| status.contains("import frames"))
     );
-    assert_eq!(app.view, AppView::Glyphs);
+    assert_eq!(app.view, AppView::Welcome);
 
     fs::remove_dir_all(project_dir).expect("temp project dir is removed");
 }
@@ -1016,10 +1053,8 @@ fn standard_animation_config_escape_cancels_popup() {
     };
 
     let mut app = App::new(manifest_path.clone(), config);
-    app.view = AppView::Glyphs;
-    app.glyphs_focus = GlyphsFocus::AnimateButton;
-
-    handle_key(&mut app, KeyCode::Enter).expect("open animation import");
+    app.view = AppView::Welcome;
+    handle_key(&mut app, KeyCode::Char('3')).expect("open animation import");
     handle_paste_event_for_test(&mut app, &frame.display().to_string())
         .expect("import animation frame");
     assert!(
@@ -1032,7 +1067,6 @@ fn standard_animation_config_escape_cancels_popup() {
             .is_some_and(|status| status.contains("loading animation frames"))
     );
     drain_background_tasks(&mut app);
-    handle_key(&mut app, KeyCode::Enter).expect("choose animation type");
     handle_key(&mut app, KeyCode::Enter).expect("advance to frame selection");
     handle_key(&mut app, KeyCode::Enter).expect("open standard animation config");
 
@@ -1132,7 +1166,6 @@ fn home_installed_font_buttons_can_be_navigated() {
             animation_rows: Vec::new(),
             animation_previews: Vec::new(),
             animation_exports: Vec::new(),
-            truncated: false,
         },
         InstalledFontSample {
             file_name: "beta.ttf".to_string(),
@@ -1141,11 +1174,21 @@ fn home_installed_font_buttons_can_be_navigated() {
             animation_rows: Vec::new(),
             animation_previews: Vec::new(),
             animation_exports: Vec::new(),
-            truncated: false,
         },
     ];
 
     app.welcome_focus = WelcomeFocus::BuildButton;
+    handle_key(&mut app, KeyCode::Down).expect("down should move to home create buttons");
+    assert_eq!(app.welcome_focus, WelcomeFocus::HomeCreateButtons);
+    handle_key(&mut app, KeyCode::Down).expect("down should move within home create buttons");
+    assert_eq!(app.welcome_focus, WelcomeFocus::HomeCreateButtons);
+    handle_key(&mut app, KeyCode::Up).expect("up returns to top create row");
+    assert_eq!(app.welcome_focus, WelcomeFocus::HomeCreateButtons);
+    handle_key(&mut app, KeyCode::Up).expect("up from create glyph returns to actions row");
+    assert_eq!(app.welcome_focus, WelcomeFocus::BuildButton);
+
+    handle_key(&mut app, KeyCode::Down).expect("down to create row again");
+    handle_key(&mut app, KeyCode::Down).expect("down to animated row");
     handle_key(&mut app, KeyCode::Down).expect("down should move to installed fonts");
     assert_eq!(app.welcome_focus, WelcomeFocus::InstalledFontList);
     assert_eq!(app.selected_installed_font, 0);
@@ -1215,7 +1258,6 @@ fn home_installed_font_animation_row_is_selectable_and_copyable() {
         animation_rows: vec!["Animation: walk (standard, 8 fps, 2 frames)".to_string()],
         animation_previews: Vec::new(),
         animation_exports: vec!["name: walk\ntype: standard\nfps: 8\n\nA\n\nB".to_string()],
-        truncated: false,
     }];
 
     app.welcome_focus = WelcomeFocus::InstalledFontList;
@@ -3349,7 +3391,7 @@ fn handle_key_supports_keypad_plus_minus_aliases_for_threshold() {
 }
 
 #[test]
-fn empty_glyphs_panel_focuses_create_grid() {
+fn empty_glyphs_panel_keeps_list_focus() {
     let project_dir = make_temp_dir("empty-glyphs-focus");
     let manifest_path = project_dir.join("petiglyph.toml");
     write_manifest(&manifest_path, &Manifest::default()).expect("manifest is written");
@@ -3375,10 +3417,10 @@ fn empty_glyphs_panel_focuses_create_grid() {
 
     handle_key(&mut app, KeyCode::Char('2')).expect("panel jump should work");
     assert_eq!(app.view, AppView::Glyphs);
-    assert_eq!(app.glyphs_focus, GlyphsFocus::GridButton);
+    assert_eq!(app.glyphs_focus, GlyphsFocus::List);
 
     handle_key(&mut app, KeyCode::Down).expect("down should not enter an empty list");
-    assert_eq!(app.glyphs_focus, GlyphsFocus::GridButton);
+    assert_eq!(app.glyphs_focus, GlyphsFocus::List);
 
     fs::remove_dir_all(project_dir).expect("temp project dir is removed");
 }
