@@ -64,6 +64,7 @@ const TUI_MIN_WIDTH: u16 = 96;
 const TUI_MIN_HEIGHT: u16 = 40;
 const TUI_MAX_WIDTH: u16 = 148;
 const TUI_MAX_HEIGHT: u16 = 92;
+const GLYPHS_PANEL_MAX_HEIGHT: u16 = 45;
 const DECPNM_NUMERIC_KEYPAD_MODE: &str = "\x1B>";
 const WELCOME_HINT_WIDTH: usize = 27;
 const DELETE_CONFIRM_CANCEL_INDEX: usize = 0;
@@ -6941,6 +6942,7 @@ fn draw_glyphs_view(
     accent: Color,
     muted: Color,
 ) {
+    let area = Rect::new(area.x, area.y, area.width, area.height.min(GLYPHS_PANEL_MAX_HEIGHT));
     if app.active_project.is_none() {
         draw_blocked_project_view(frame, area, " Glyphs ", accent, muted);
         return;
