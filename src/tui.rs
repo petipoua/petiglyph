@@ -278,7 +278,7 @@ enum HomeLauncherFocus {
 enum HomeWorkflow {
     Launcher,
     Import(HomeCreationKind),
-    SelectGridSource,
+    ConfigureGrid,
     SelectAnimationFrames(AnimationType),
 }
 
@@ -386,6 +386,8 @@ pub(crate) struct App {
     home_launcher_focus: HomeLauncherFocus,
     home_workflow: HomeWorkflow,
     home_workflow_import_count: usize,
+    home_workflow_grid_source_key: Option<String>,
+    home_workflow_error: Option<String>,
     pub(crate) last_build: Option<BuildSummary>,
     pub(crate) last_sample: Option<String>,
     pub(crate) installed_font_path: Option<PathBuf>,
@@ -1877,7 +1879,9 @@ fn handle_welcome_key(app: &mut App, key: KeyEvent) -> Result<()> {
         }
         KeyCode::Char('2') if !app.welcome_input_editing && app.active_project.is_some() => {
             app.start_home_workflow(HomeCreationKind::Grid);
-            app.status = Some("create grid: import images, then Enter to continue".to_string());
+            app.status = Some(
+                "create grid: drop only one image, then Enter to configure the grid".to_string(),
+            );
         }
         KeyCode::Char('3') if !app.welcome_input_editing && app.active_project.is_some() => {
             app.start_home_workflow(HomeCreationKind::AnimatedGlyph);
@@ -2338,10 +2342,26 @@ fn handle_home_creation_key(app: &mut App, key: KeyEvent) -> Result<()> {
                     app.complete_home_workflow_to_glyphs();
                 }
                 HomeCreationKind::Grid => {
-                    app.home_workflow = HomeWorkflow::SelectGridSource;
-                    app.selecting_for_grid = true;
-                    app.view = AppView::Glyphs;
-                    app.status = Some("select a source parent and press Enter".to_string());
+                    let Some(source_key) = app.home_workflow_grid_source_key.clone() else {
+                        app.status = Some(
+                            "create grid: drop exactly one image in the popup, then press Enter"
+                                .to_string(),
+                        );
+                        return Ok(());
+                    };
+                    app.grid_config = Some(GridConfig {
+                        source_key,
+                        rows: 2,
+                        cols: 2,
+                        horizontal_bleed: BleedLevel::Weak,
+                        vertical_bleed: BleedLevel::Off,
+                        focus: GridConfigFocus::Rows,
+                    });
+                    app.home_workflow = HomeWorkflow::ConfigureGrid;
+                    app.home_workflow_error = None;
+                    app.status = Some(
+                        "configure grid in popup: rows, cols, bleed, then Create Grid".to_string(),
+                    );
                 }
                 HomeCreationKind::AnimatedGlyph => {
                     app.home_workflow =
@@ -2360,15 +2380,22 @@ fn handle_home_creation_key(app: &mut App, key: KeyEvent) -> Result<()> {
             },
             _ => {}
         },
+        HomeWorkflow::ConfigureGrid => {
+            if let Some(mut config) = app.grid_config.clone() {
+                let res = handle_grid_config_key(app, &mut config, key);
+                app.grid_config = if app.grid_config.is_some() {
+                    Some(config)
+                } else {
+                    None
+                };
+                return res;
+            }
+            app.home_workflow = HomeWorkflow::Import(HomeCreationKind::Grid);
+        }
         _ => {
             handle_glyphs_key(app, key)?;
             if app.grid_config.is_none() && app.selecting_for_grid {
                 app.selecting_for_grid = false;
-            }
-            if matches!(app.home_workflow, HomeWorkflow::SelectGridSource)
-                && app.grid_config.is_some()
-            {
-                app.home_workflow = HomeWorkflow::Launcher;
             }
             if matches!(app.home_workflow, HomeWorkflow::SelectAnimationFrames(_))
                 && matches!(app.glyph_tool_mode, GlyphToolMode::ConfigureAnimation(_))
@@ -3352,6 +3379,8 @@ impl App {
     fn start_home_workflow(&mut self, kind: HomeCreationKind) {
         self.home_workflow = HomeWorkflow::Import(kind);
         self.home_workflow_import_count = 0;
+        self.home_workflow_grid_source_key = None;
+        self.home_workflow_error = None;
         if matches!(
             kind,
             HomeCreationKind::AnimatedGlyph | HomeCreationKind::AnimatedGridGlyph
@@ -3365,6 +3394,8 @@ impl App {
     fn reset_home_workflow(&mut self) {
         self.home_workflow = HomeWorkflow::Launcher;
         self.home_workflow_import_count = 0;
+        self.home_workflow_grid_source_key = None;
+        self.home_workflow_error = None;
         self.grid_config = None;
         self.selecting_for_grid = false;
         self.clear_animation_draft();
@@ -3595,6 +3626,8 @@ impl App {
             home_launcher_focus: HomeLauncherFocus::CreateGlyph,
             home_workflow: HomeWorkflow::Launcher,
             home_workflow_import_count: 0,
+            home_workflow_grid_source_key: None,
+            home_workflow_error: None,
             last_build: None,
             last_sample: None,
             installed_font_path: None,
@@ -3670,6 +3703,8 @@ impl App {
             home_launcher_focus: HomeLauncherFocus::CreateGlyph,
             home_workflow: HomeWorkflow::Launcher,
             home_workflow_import_count: 0,
+            home_workflow_grid_source_key: None,
+            home_workflow_error: None,
             last_build,
             last_sample,
             installed_font_path,
@@ -4401,6 +4436,18 @@ impl App {
             payload,
             ExistingImportPolicy::Rename,
         )?;
+
+        if matches!(self.home_workflow, HomeWorkflow::Import(HomeCreationKind::Grid)) {
+            if import.imported_source_keys.len() != 1 {
+                self.home_workflow_import_count = 0;
+                self.home_workflow_grid_source_key = None;
+                self.home_workflow_error = Some("drop only ONE IMAGE for the grid".to_string());
+                self.status = Some("create grid: drop only one image".to_string());
+                return Ok(());
+            }
+            self.home_workflow_grid_source_key = import.imported_source_keys.first().cloned();
+            self.home_workflow_error = None;
+        }
 
         if import.imported > 0 {
             self.home_workflow_import_count = self
@@ -6582,8 +6629,10 @@ fn draw_home_creation_area(frame: &mut Frame, app: &App, area: Rect, accent: Col
 }
 
 fn draw_home_creation_popup(frame: &mut Frame, app: &App, area: Rect, accent: Color, muted: Color) {
-    let HomeWorkflow::Import(kind) = app.home_workflow else {
-        return;
+    let (kind, configuring_grid) = match app.home_workflow {
+        HomeWorkflow::Import(kind) => (kind, false),
+        HomeWorkflow::ConfigureGrid => (HomeCreationKind::Grid, true),
+        _ => return,
     };
     let popup = centered_popup_rect(area, 122, 27);
     frame.render_widget(Clear, popup);
@@ -6606,20 +6655,33 @@ fn draw_home_creation_popup(frame: &mut Frame, app: &App, area: Rect, accent: Co
     let steps = vec![
         Line::from(vec![
             Span::styled(" 1 ", Style::default().fg(Color::Black).bg(accent)),
-            Span::styled(" Import source images ", Style::default().fg(Color::White)),
-            Span::styled("< current", Style::default().fg(Color::Yellow)),
+            Span::styled(
+                " Import source images (ONE image for grid) ",
+                Style::default().fg(Color::White),
+            ),
+            Span::styled(
+                if configuring_grid { "< done" } else { "< current" },
+                Style::default().fg(Color::Yellow),
+            ),
         ]),
         Line::from(vec![
             Span::styled(" 2 ", Style::default().fg(Color::Black).bg(Color::DarkGray)),
-            Span::styled(" Pick source rows in Glyphs ", Style::default().fg(muted)),
+            Span::styled(
+                " Configure rows, columns, bleed in popup ",
+                if configuring_grid {
+                    Style::default().fg(Color::White)
+                } else {
+                    Style::default().fg(muted)
+                },
+            ),
+            Span::styled(
+                if configuring_grid { "< current" } else { "" },
+                Style::default().fg(Color::Yellow),
+            ),
         ]),
         Line::from(vec![
             Span::styled(" 3 ", Style::default().fg(Color::Black).bg(Color::DarkGray)),
-            Span::styled(" Configure workflow details ", Style::default().fg(muted)),
-        ]),
-        Line::from(vec![
-            Span::styled(" 4 ", Style::default().fg(Color::Black).bg(Color::DarkGray)),
-            Span::styled(" Finalize and return ", Style::default().fg(muted)),
+            Span::styled(" Create grid and switch to Glyphs ", Style::default().fg(muted)),
         ]),
     ];
     let layout = Layout::default()
@@ -6627,6 +6689,7 @@ fn draw_home_creation_popup(frame: &mut Frame, app: &App, area: Rect, accent: Co
         .constraints([
             Constraint::Length(2),
             Constraint::Length(5),
+            Constraint::Length(1),
             Constraint::Min(0),
             Constraint::Length(2),
         ])
@@ -6635,7 +6698,12 @@ fn draw_home_creation_popup(frame: &mut Frame, app: &App, area: Rect, accent: Co
         Paragraph::new(vec![Line::from(vec![
             Span::raw("  "),
             Span::styled(
-                format!("{workflow_name}: drop, paste, or drag files in this popup."),
+                if configuring_grid {
+                    "Create grid: adjust rows/columns/bleed here, then activate Create Grid."
+                        .to_string()
+                } else {
+                    format!("{workflow_name}: drop, paste, or drag files in this popup.")
+                },
                 Style::default()
                     .fg(Color::White)
                     .add_modifier(Modifier::BOLD),
@@ -6653,16 +6721,37 @@ fn draw_home_creation_popup(frame: &mut Frame, app: &App, area: Rect, accent: Co
         ),
         layout[1],
     );
-    let drag_lines = drag_images_here_lines(
-        layout[2].width,
-        layout[2].height,
-        accent,
-        app.home_workflow_import_count,
-    );
-    frame.render_widget(
-        Paragraph::new(drag_lines).wrap(Wrap { trim: false }),
-        layout[2],
-    );
+    let error_line = app
+        .home_workflow_error
+        .as_ref()
+        .map(|message| {
+            Line::from(vec![
+                Span::raw("  "),
+                Span::styled(
+                    message.clone(),
+                    Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
+                ),
+            ])
+        })
+        .unwrap_or_else(|| Line::from(""));
+    frame.render_widget(Paragraph::new(vec![error_line]), layout[2]);
+
+    if configuring_grid {
+        if let Some(config) = &app.grid_config {
+            draw_grid_config_ui(frame, app, config, layout[3], accent, muted);
+        }
+    } else {
+        let drag_lines = drag_images_here_lines(
+            layout[3].width,
+            layout[3].height,
+            accent,
+            app.home_workflow_import_count,
+        );
+        frame.render_widget(
+            Paragraph::new(drag_lines).wrap(Wrap { trim: false }),
+            layout[3],
+        );
+    }
     frame.render_widget(
         Paragraph::new(Line::from(vec![
             Span::raw("  "),
@@ -6670,7 +6759,14 @@ fn draw_home_creation_popup(frame: &mut Frame, app: &App, area: Rect, accent: Co
                 "Enter",
                 Style::default().fg(accent).add_modifier(Modifier::BOLD),
             ),
-            Span::styled(" continue to next step    ", Style::default().fg(muted)),
+            Span::styled(
+                if configuring_grid {
+                    " continue / create grid    "
+                } else {
+                    " continue to next step    "
+                },
+                Style::default().fg(muted),
+            ),
             Span::styled(
                 "Esc",
                 Style::default()
@@ -6679,7 +6775,7 @@ fn draw_home_creation_popup(frame: &mut Frame, app: &App, area: Rect, accent: Co
             ),
             Span::styled(" cancel workflow", Style::default().fg(muted)),
         ])),
-        layout[3],
+        layout[4],
     );
 }
 
