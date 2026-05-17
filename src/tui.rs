@@ -1801,26 +1801,33 @@ fn handle_glyphs_key(app: &mut App, key: KeyEvent) -> Result<()> {
                     || selected_row_supports_invert(app)
                 {
                     app.glyphs_focus = GlyphsFocus::Preview;
-                    app.glyph_preview_control = if selected_row_supports_threshold(app) {
-                        GlyphPreviewControl::Threshold
-                    } else if selected_row_supports_invert(app) {
-                        GlyphPreviewControl::Invert
-                    } else {
-                        GlyphPreviewControl::Fps
-                    };
+                    if let Some(leftmost) = preview_leftmost_control(
+                        selected_row_supports_threshold(app),
+                        selected_row_supports_fps(app),
+                        selected_row_supports_invert(app),
+                    ) {
+                        app.glyph_preview_control = leftmost;
+                    }
                 } else if app.active_project.is_none() {
                     adjust_selected_threshold_by(app, -1);
                 }
             } else {
-                let leftmost = preview_leftmost_control(
+                let controls = preview_controls_for_row(
                     selected_row_supports_threshold(app),
                     selected_row_supports_fps(app),
                     selected_row_supports_invert(app),
                 );
-                if leftmost.is_none() || Some(app.glyph_preview_control) == leftmost {
+                let Some(current_idx) = controls
+                    .iter()
+                    .position(|control| *control == app.glyph_preview_control)
+                else {
                     app.glyphs_focus = GlyphsFocus::List;
-                } else if let Some(leftmost) = leftmost {
-                    app.glyph_preview_control = leftmost;
+                    return Ok(());
+                };
+                if current_idx == 0 {
+                    app.glyphs_focus = GlyphsFocus::List;
+                } else {
+                    app.glyph_preview_control = controls[current_idx - 1];
                 }
             }
         }
@@ -1841,46 +1848,32 @@ fn handle_glyphs_key(app: &mut App, key: KeyEvent) -> Result<()> {
                     || selected_row_supports_invert(app)
                 {
                     app.glyphs_focus = GlyphsFocus::Preview;
-                    app.glyph_preview_control = if selected_row_supports_threshold(app) {
-                        GlyphPreviewControl::Threshold
-                    } else if selected_row_supports_invert(app) {
-                        GlyphPreviewControl::Invert
-                    } else {
-                        GlyphPreviewControl::Fps
-                    };
+                    if let Some(leftmost) = preview_leftmost_control(
+                        selected_row_supports_threshold(app),
+                        selected_row_supports_fps(app),
+                        selected_row_supports_invert(app),
+                    ) {
+                        app.glyph_preview_control = leftmost;
+                    }
                 } else if app.active_project.is_none() {
                     adjust_selected_threshold_by(app, 1);
                 }
             } else {
-                app.glyph_preview_control = match app.glyph_preview_control {
-                    GlyphPreviewControl::Threshold => {
-                        if selected_row_supports_invert(app) {
-                            GlyphPreviewControl::Invert
-                        } else if selected_row_supports_fps(app) {
-                            GlyphPreviewControl::Fps
-                        } else {
-                            GlyphPreviewControl::Threshold
-                        }
+                let controls = preview_controls_for_row(
+                    selected_row_supports_threshold(app),
+                    selected_row_supports_fps(app),
+                    selected_row_supports_invert(app),
+                );
+                if let Some(current_idx) = controls
+                    .iter()
+                    .position(|control| *control == app.glyph_preview_control)
+                {
+                    if let Some(next) = controls.get(current_idx + 1) {
+                        app.glyph_preview_control = *next;
                     }
-                    GlyphPreviewControl::Invert => {
-                        if selected_row_supports_fps(app) {
-                            GlyphPreviewControl::Fps
-                        } else if selected_row_supports_threshold(app) {
-                            GlyphPreviewControl::Threshold
-                        } else {
-                            GlyphPreviewControl::Invert
-                        }
-                    }
-                    GlyphPreviewControl::Fps => {
-                        if selected_row_supports_threshold(app) {
-                            GlyphPreviewControl::Threshold
-                        } else if selected_row_supports_invert(app) {
-                            GlyphPreviewControl::Invert
-                        } else {
-                            GlyphPreviewControl::Fps
-                        }
-                    }
-                };
+                } else if let Some(first) = controls.first() {
+                    app.glyph_preview_control = *first;
+                }
             }
         }
         KeyCode::Enter | KeyCode::Char(' ') => {
@@ -6171,15 +6164,27 @@ fn preview_leftmost_control(
     supports_fps: bool,
     supports_invert: bool,
 ) -> Option<GlyphPreviewControl> {
+    preview_controls_for_row(supports_threshold, supports_fps, supports_invert)
+        .into_iter()
+        .next()
+}
+
+fn preview_controls_for_row(
+    supports_threshold: bool,
+    supports_fps: bool,
+    supports_invert: bool,
+) -> Vec<GlyphPreviewControl> {
+    let mut controls = Vec::new();
     if supports_threshold {
-        Some(GlyphPreviewControl::Threshold)
-    } else if supports_invert {
-        Some(GlyphPreviewControl::Invert)
-    } else if supports_fps {
-        Some(GlyphPreviewControl::Fps)
-    } else {
-        None
+        controls.push(GlyphPreviewControl::Threshold);
     }
+    if supports_fps {
+        controls.push(GlyphPreviewControl::Fps);
+    }
+    if supports_invert {
+        controls.push(GlyphPreviewControl::Invert);
+    }
+    controls
 }
 
 fn selected_row_threshold_value(app: &App) -> Option<u8> {
@@ -10833,14 +10838,14 @@ mod tests {
     }
 
     #[test]
-    fn preview_leftmost_control_prefers_threshold_then_invert_then_fps() {
+    fn preview_leftmost_control_prefers_threshold_then_fps_then_invert() {
         assert_eq!(
             preview_leftmost_control(true, true, false),
             Some(GlyphPreviewControl::Threshold)
         );
         assert_eq!(
             preview_leftmost_control(false, true, true),
-            Some(GlyphPreviewControl::Invert)
+            Some(GlyphPreviewControl::Fps)
         );
         assert_eq!(
             preview_leftmost_control(false, true, false),
