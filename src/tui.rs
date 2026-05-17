@@ -31,6 +31,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tui_input::{Input, backend::crossterm::EventHandler};
 use walkdir::WalkDir;
 
+use crate::animation_media;
 use crate::artifact_warning::incompatible_artifact_warning;
 use crate::build::{
     BuildSummary, MappingEntry, PreprocessedGlyph, build_outputs, expected_bdf_path,
@@ -194,7 +195,10 @@ pub(crate) fn tui_workspace(
         app.refresh_pipeline_debug_log();
         session.terminal.draw(|frame| draw_ui(frame, &app))?;
         if let Err(err) = app.poll_animation_create_pending() {
-            app.status = Some(format_status_from_error(&app.manifest_path, &err.to_string()));
+            app.status = Some(format_status_from_error(
+                &app.manifest_path,
+                &err.to_string(),
+            ));
             tui_debug_log("animation.create.error", app_debug_state(&app));
         }
         if log_next_draw_after_esc {
@@ -518,6 +522,7 @@ struct LoadedGlyphs {
 struct AnimationImportTaskOutput {
     import: DropImportResult,
     loaded: Option<LoadedGlyphs>,
+    detail_status: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -1683,7 +1688,7 @@ fn handle_glyphs_key(app: &mut App, key: KeyEvent) -> Result<()> {
                 if let Some(selected_source_key) = selected_source_parent_key(app) {
                     if !app.animation_imported_set.contains(&selected_source_key) {
                         app.status = Some(
-                            "only images imported in this animation flow can be used as frames"
+                            "only media imported in this animation flow can be used as frames"
                                 .to_string(),
                         );
                         return Ok(());
@@ -2059,14 +2064,14 @@ fn handle_welcome_key(app: &mut App, key: KeyEvent) -> Result<()> {
         KeyCode::Char('3') if !app.welcome_input_editing && app.active_project.is_some() => {
             app.start_home_workflow(HomeCreationKind::AnimatedGlyph);
             app.status = Some(
-                "create animated glyph: import frame images, then Enter to configure in popup"
+                "create animated glyph: import frame media, then Enter to configure in popup"
                     .to_string(),
             );
         }
         KeyCode::Char('4') if !app.welcome_input_editing && app.active_project.is_some() => {
             app.start_home_workflow(HomeCreationKind::AnimatedGridGlyph);
             app.status = Some(
-                "create animated grid glyph: import frame images, then Enter to configure in popup"
+                "create animated grid glyph: import frame media, then Enter to configure in popup"
                     .to_string(),
             );
         }
@@ -2545,8 +2550,10 @@ fn handle_home_creation_key(app: &mut App, key: KeyEvent) -> Result<()> {
                         return Ok(());
                     }
                     if app.animation_selection_order.is_empty() {
-                        app.status =
-                            Some("drop at least one frame image in the popup, then press Enter".to_string());
+                        app.status = Some(
+                            "drop at least one frame media file in the popup, then press Enter"
+                                .to_string(),
+                        );
                         return Ok(());
                     }
                     app.start_animation_config(AnimationType::Standard);
@@ -2559,8 +2566,10 @@ fn handle_home_creation_key(app: &mut App, key: KeyEvent) -> Result<()> {
                         return Ok(());
                     }
                     if app.animation_selection_order.is_empty() {
-                        app.status =
-                            Some("drop at least one frame image in the popup, then press Enter".to_string());
+                        app.status = Some(
+                            "drop at least one frame media file in the popup, then press Enter"
+                                .to_string(),
+                        );
                         return Ok(());
                     }
                     app.start_animation_config(AnimationType::Grid);
@@ -4699,7 +4708,10 @@ impl App {
             ExistingImportPolicy::Rename,
         )?;
 
-        if matches!(self.home_workflow, HomeWorkflow::Import(HomeCreationKind::Grid)) {
+        if matches!(
+            self.home_workflow,
+            HomeWorkflow::Import(HomeCreationKind::Grid)
+        ) {
             if import.imported_source_keys.len() != 1 {
                 self.home_workflow_import_count = 0;
                 self.home_workflow_grid_source_key = None;
@@ -4743,17 +4755,38 @@ impl App {
         let (sender, receiver) = mpsc::channel();
         thread::spawn(move || {
             let result = (|| -> Result<AnimationImportTaskOutput> {
-                let import = import_image_files_to_input(
+                let media_import = animation_media::import_animation_media_to_input(
                     &config.input_dir,
                     &payload,
-                    ExistingImportPolicy::ReuseIdentical,
+                    animation_media::ExistingImportPolicy::ReuseIdentical,
                 )?;
+                let import = DropImportResult {
+                    imported: media_import.imported,
+                    renamed: media_import.renamed,
+                    skipped_existing: media_import.skipped_existing,
+                    skipped_unsupported: media_import.skipped_unsupported,
+                    skipped_missing: media_import.skipped_missing,
+                    imported_source_keys: media_import.imported_source_keys,
+                };
                 let loaded = if !import.imported_source_keys.is_empty() {
                     Some(load_interactive_glyphs_from_config(&config)?)
                 } else {
                     None
                 };
-                Ok(AnimationImportTaskOutput { import, loaded })
+                let detail_status = Some(format_animation_media_import_status(
+                    import.imported,
+                    import.renamed,
+                    import.skipped_existing,
+                    import.skipped_unsupported,
+                    import.skipped_missing,
+                    media_import.media_files_processed,
+                    media_import.frames_extracted,
+                ));
+                Ok(AnimationImportTaskOutput {
+                    import,
+                    loaded,
+                    detail_status,
+                })
             })()
             .map_err(|err| err.to_string());
             let _ = sender.send(result);
@@ -5122,13 +5155,15 @@ impl App {
                 }
             ));
         } else {
-            self.status = Some(format_drop_import_status(
-                output.import.imported,
-                output.import.renamed,
-                output.import.skipped_existing,
-                output.import.skipped_unsupported,
-                output.import.skipped_missing,
-            ));
+            self.status = Some(output.detail_status.unwrap_or_else(|| {
+                format_drop_import_status(
+                    output.import.imported,
+                    output.import.renamed,
+                    output.import.skipped_existing,
+                    output.import.skipped_unsupported,
+                    output.import.skipped_missing,
+                )
+            }));
         }
     }
 
@@ -5986,7 +6021,8 @@ fn set_selected_threshold(app: &mut App, threshold: u8) {
         Some(threshold)
     };
     for source_key in &sources {
-        if let Err(err) = persist_threshold_override(&app.manifest_path, source_key, threshold_override)
+        if let Err(err) =
+            persist_threshold_override(&app.manifest_path, source_key, threshold_override)
         {
             app.status = Some(format!("failed to save override for {source_key}: {err}"));
             return;
@@ -6068,7 +6104,9 @@ fn set_selected_invert(app: &mut App, invert: bool) {
 
     for source_key in &sources {
         if let Err(err) = persist_invert_override(&app.manifest_path, source_key, invert) {
-            app.status = Some(format!("failed to save invert override for {source_key}: {err}"));
+            app.status = Some(format!(
+                "failed to save invert override for {source_key}: {err}"
+            ));
             return;
         }
     }
@@ -6199,7 +6237,10 @@ fn selected_row_threshold_value(app: &App) -> Option<u8> {
 
 fn selected_row_fps_value(app: &App) -> Option<u8> {
     let idx = selected_animation_index(app)?;
-    app.config.animations.get(idx).map(|animation| animation.fps)
+    app.config
+        .animations
+        .get(idx)
+        .map(|animation| animation.fps)
 }
 
 fn set_selected_animation_fps(app: &mut App, fps: u8) {
@@ -6222,7 +6263,9 @@ fn set_selected_animation_fps(app: &mut App, fps: u8) {
             app.status = Some(format!("animation not found: `{animation_name}`"));
         }
         Err(err) => {
-            app.status = Some(format!("failed to update fps for `{animation_name}`: {err}"));
+            app.status = Some(format!(
+                "failed to update fps for `{animation_name}`: {err}"
+            ));
         }
     }
 }
@@ -7004,7 +7047,7 @@ fn draw_animation_panel_ui(frame: &mut Frame, app: &App, area: Rect, accent: Col
                 let inner = box_width.saturating_sub(2);
                 let top = format!("╭{}╮", dashed_pattern(inner));
                 let bottom = format!("╰{}╯", dashed_pattern(inner));
-                let label = center_label("DRAG/PASTE IMAGES", inner);
+                let label = center_label("DRAG/PASTE MEDIA", inner);
                 let border_style = Style::default().fg(accent);
                 let label_style = Style::default().fg(accent).add_modifier(Modifier::BOLD);
                 lines.push(Line::from(vec![
@@ -7214,7 +7257,7 @@ fn draw_home_creation_popup(frame: &mut Frame, app: &App, area: Rect, accent: Co
         vec![
             Line::from(vec![
                 Span::styled(" 1 ", Style::default().fg(Color::Black).bg(accent)),
-                Span::styled(" Import frame images ", Style::default().fg(Color::White)),
+                Span::styled(" Import frame media ", Style::default().fg(Color::White)),
                 Span::styled(
                     if configuring_animation {
                         "< done"
@@ -7235,7 +7278,11 @@ fn draw_home_creation_popup(frame: &mut Frame, app: &App, area: Rect, accent: Co
                     },
                 ),
                 Span::styled(
-                    if configuring_animation { "< current" } else { "" },
+                    if configuring_animation {
+                        "< current"
+                    } else {
+                        ""
+                    },
                     Style::default().fg(Color::Yellow),
                 ),
             ]),
@@ -7249,36 +7296,43 @@ fn draw_home_creation_popup(frame: &mut Frame, app: &App, area: Rect, accent: Co
         ]
     } else {
         vec![
-        Line::from(vec![
-            Span::styled(" 1 ", Style::default().fg(Color::Black).bg(accent)),
-            Span::styled(
-                " Import source images (ONE image for grid) ",
-                Style::default().fg(Color::White),
-            ),
-            Span::styled(
-                if configuring_grid { "< done" } else { "< current" },
-                Style::default().fg(Color::Yellow),
-            ),
-        ]),
-        Line::from(vec![
-            Span::styled(" 2 ", Style::default().fg(Color::Black).bg(Color::DarkGray)),
-            Span::styled(
-                " Configure rows, columns, bleed in popup ",
-                if configuring_grid {
-                    Style::default().fg(Color::White)
-                } else {
-                    Style::default().fg(muted)
-                },
-            ),
-            Span::styled(
-                if configuring_grid { "< current" } else { "" },
-                Style::default().fg(Color::Yellow),
-            ),
-        ]),
-        Line::from(vec![
-            Span::styled(" 3 ", Style::default().fg(Color::Black).bg(Color::DarkGray)),
-            Span::styled(" Create grid and switch to Glyphs ", Style::default().fg(muted)),
-        ]),
+            Line::from(vec![
+                Span::styled(" 1 ", Style::default().fg(Color::Black).bg(accent)),
+                Span::styled(
+                    " Import source images (ONE image for grid) ",
+                    Style::default().fg(Color::White),
+                ),
+                Span::styled(
+                    if configuring_grid {
+                        "< done"
+                    } else {
+                        "< current"
+                    },
+                    Style::default().fg(Color::Yellow),
+                ),
+            ]),
+            Line::from(vec![
+                Span::styled(" 2 ", Style::default().fg(Color::Black).bg(Color::DarkGray)),
+                Span::styled(
+                    " Configure rows, columns, bleed in popup ",
+                    if configuring_grid {
+                        Style::default().fg(Color::White)
+                    } else {
+                        Style::default().fg(muted)
+                    },
+                ),
+                Span::styled(
+                    if configuring_grid { "< current" } else { "" },
+                    Style::default().fg(Color::Yellow),
+                ),
+            ]),
+            Line::from(vec![
+                Span::styled(" 3 ", Style::default().fg(Color::Black).bg(Color::DarkGray)),
+                Span::styled(
+                    " Create grid and switch to Glyphs ",
+                    Style::default().fg(muted),
+                ),
+            ]),
         ]
     };
     let layout = Layout::default()
@@ -7301,7 +7355,15 @@ fn draw_home_creation_popup(frame: &mut Frame, app: &App, area: Rect, accent: Co
                 } else if configuring_animation {
                     format!("{workflow_name}: configure in this popup, then create.")
                 } else {
-                    format!("{workflow_name}: drop, paste, or drag files in this popup.")
+                    let import_hint = if matches!(
+                        kind,
+                        HomeCreationKind::AnimatedGlyph | HomeCreationKind::AnimatedGridGlyph
+                    ) {
+                        "drop, paste, or drag images/GIFs/videos in this popup."
+                    } else {
+                        "drop, paste, or drag files in this popup."
+                    };
+                    format!("{workflow_name}: {import_hint}")
                 },
                 Style::default()
                     .fg(Color::White)
@@ -7351,6 +7413,11 @@ fn draw_home_creation_popup(frame: &mut Frame, app: &App, area: Rect, accent: Co
             layout[3].height,
             accent,
             app.home_workflow_import_count,
+            matches!(
+                kind,
+                HomeCreationKind::AnimatedGlyph | HomeCreationKind::AnimatedGridGlyph
+            ),
+            app.animation_import_spinner_frame(),
         );
         frame.render_widget(
             Paragraph::new(drag_lines).wrap(Wrap { trim: false }),
@@ -7477,7 +7544,7 @@ fn draw_grid_config_ui(
             Constraint::Length(11), // Cols
             Constraint::Length(28), // Left/right bleed
             Constraint::Length(28), // Top/bottom bleed
-            Constraint::Length(2), // spacer
+            Constraint::Length(2),  // spacer
             Constraint::Length(15), // Create
         ])
         .split(centered_controls[1]);
@@ -7703,7 +7770,11 @@ fn draw_animation_config_ui(
     let fps_style = style_for(AnimationConfigFocus::Fps);
     frame.render_widget(
         Paragraph::new(format!(" FPS: {} ", config.fps))
-            .block(Block::default().borders(Borders::ALL).border_style(fps_style))
+            .block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .border_style(fps_style),
+            )
             .style(fps_style),
         fields[0],
     );
@@ -7712,14 +7783,22 @@ fn draw_animation_config_ui(
         let rows_style = style_for(AnimationConfigFocus::Rows);
         frame.render_widget(
             Paragraph::new(format!(" Rows: {} ", config.rows))
-                .block(Block::default().borders(Borders::ALL).border_style(rows_style))
+                .block(
+                    Block::default()
+                        .borders(Borders::ALL)
+                        .border_style(rows_style),
+                )
                 .style(rows_style),
             fields[1],
         );
         let cols_style = style_for(AnimationConfigFocus::Cols);
         frame.render_widget(
             Paragraph::new(format!(" Cols: {} ", config.cols))
-                .block(Block::default().borders(Borders::ALL).border_style(cols_style))
+                .block(
+                    Block::default()
+                        .borders(Borders::ALL)
+                        .border_style(cols_style),
+                )
                 .style(cols_style),
             fields[2],
         );
@@ -7737,13 +7816,16 @@ fn draw_animation_config_ui(
             fields[3],
         );
         frame.render_widget(
-            Paragraph::new(bleed_toggle_line(" Top/bottom bleed ", config.vertical_bleed))
-                .block(
-                    Block::default()
-                        .borders(Borders::ALL)
-                        .border_style(style_for(AnimationConfigFocus::VerticalBleed)),
-                )
-                .style(style_for(AnimationConfigFocus::VerticalBleed)),
+            Paragraph::new(bleed_toggle_line(
+                " Top/bottom bleed ",
+                config.vertical_bleed,
+            ))
+            .block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .border_style(style_for(AnimationConfigFocus::VerticalBleed)),
+            )
+            .style(style_for(AnimationConfigFocus::VerticalBleed)),
             fields[4],
         );
         6
@@ -7752,7 +7834,10 @@ fn draw_animation_config_ui(
     };
 
     let create_label = if app.animation_create_in_progress() {
-        format!(" Create Animation {} ", app.animation_create_spinner_frame())
+        format!(
+            " Create Animation {} ",
+            app.animation_create_spinner_frame()
+        )
     } else {
         " Create Animation ".to_string()
     };
@@ -7760,7 +7845,11 @@ fn draw_animation_config_ui(
         Paragraph::new(create_label)
             .alignment(Alignment::Center)
             .style(create_style)
-            .block(Block::default().borders(Borders::ALL).border_style(create_style)),
+            .block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .border_style(create_style),
+            ),
         fields[create_idx],
     );
 
@@ -7832,7 +7921,12 @@ fn draw_glyphs_view(
     accent: Color,
     muted: Color,
 ) {
-    let area = Rect::new(area.x, area.y, area.width, area.height.min(GLYPHS_PANEL_MAX_HEIGHT));
+    let area = Rect::new(
+        area.x,
+        area.y,
+        area.width,
+        area.height.min(GLYPHS_PANEL_MAX_HEIGHT),
+    );
     if app.active_project.is_none() {
         draw_blocked_project_view(frame, area, " Glyphs ", accent, muted);
         return;
@@ -8273,7 +8367,11 @@ fn draw_glyphs_view(
                 let invert_line = Line::from(vec![
                     Span::raw("  Invert: "),
                     Span::styled(
-                        if invert_hint.unwrap_or(false) { "on" } else { "off" },
+                        if invert_hint.unwrap_or(false) {
+                            "on"
+                        } else {
+                            "off"
+                        },
                         Style::default().fg(accent).add_modifier(Modifier::BOLD),
                     ),
                     Span::styled(
@@ -8539,10 +8637,7 @@ fn draw_glyphs_view(
             ));
         }
 
-        preview_content.insert(
-            0,
-            Line::from(edit_spans),
-        );
+        preview_content.insert(0, Line::from(edit_spans));
     }
 
     let p = Paragraph::new(preview_content)
@@ -9197,6 +9292,20 @@ fn format_drop_import_status(
     )
 }
 
+fn format_animation_media_import_status(
+    imported: usize,
+    renamed: usize,
+    skipped_existing: usize,
+    skipped_unsupported: usize,
+    skipped_missing: usize,
+    media_files_processed: usize,
+    frames_extracted: usize,
+) -> String {
+    format!(
+        "animation media import: {media_files_processed} media processed, {frames_extracted} extracted frames, {imported} added, {renamed} renamed, {skipped_existing} already present, {skipped_unsupported} unsupported, {skipped_missing} missing"
+    )
+}
+
 fn import_image_files_to_input(
     input_dir: &Path,
     payload: &str,
@@ -9437,6 +9546,8 @@ fn drag_images_here_lines(
     available_height: u16,
     accent: Color,
     imported_count: usize,
+    animation_media_mode: bool,
+    processing_spinner: Option<&str>,
 ) -> Vec<Line<'static>> {
     let horizontal_padding = 4usize;
     let horizontal_pad = " ".repeat(horizontal_padding);
@@ -9454,11 +9565,28 @@ fn drag_images_here_lines(
     let top_border = format!("╭{}╮", dashed_pattern(inner_width));
     let bottom_border = format!("╰{}╯", dashed_pattern(inner_width));
     let side_for_row = |row: usize| if row % 2 == 0 { " " } else { "│" };
-    let centered_label = center_label("DRAG/PASTE IMAGES HERE", inner_width);
-    let counter_text = if imported_count > 0 {
-        format!("Images added: {imported_count} ✓")
+    let centered_label = center_label(
+        if animation_media_mode {
+            "DRAG/PASTE MEDIA HERE"
+        } else {
+            "DRAG/PASTE IMAGES HERE"
+        },
+        inner_width,
+    );
+    let counter_text = if let Some(spinner) = processing_spinner {
+        format!("Processing {spinner}")
+    } else if imported_count > 0 {
+        if animation_media_mode {
+            format!("Media added: {imported_count} ✓")
+        } else {
+            format!("Images added: {imported_count} ✓")
+        }
     } else {
-        format!("Images added: {imported_count}")
+        if animation_media_mode {
+            format!("Media added: {imported_count}")
+        } else {
+            format!("Images added: {imported_count}")
+        }
     };
     let counter_label = center_label(&counter_text, inner_width);
     let border_style = Style::default().fg(accent);
@@ -9680,22 +9808,20 @@ mod tests {
     use super::{
         AnimationConfig, AnimationConfigFocus, AnimationImportTaskOutput, AnimationPreview,
         AnimationType, App, AppView, BleedLevel, DropImportResult, ExistingImportPolicy,
-        GlyphPreviewControl,
-        HomeCreationKind, HomeWorkflow, InteractiveGlyph, KeyCode, RuntimeConfig,
-        VisibleGlyphRow,
-        animation_frame_source_for_preview, default_animation_name_from_frames,
-        composition_preview_lines_stable_frame, drag_images_here_lines, emitted_composition_cols,
-        glyph_matches_animation_frame_source, handle_key, handle_paste_event_for_test,
-        import_image_files_to_input, installed_animation_blocks_for_definition,
-        installed_animation_frame_index, installed_animation_source_block, preview_lines,
-        preview_leftmost_control, prune_static_sample_blocks, step_animation_preview,
-        scrollbar_thumb_geometry, visible_window_bounds, persist_composition_definition,
-        selected_threshold_sources, animation_has_non_uniform_frame_invert,
-        animation_has_non_uniform_frame_thresholds,
+        GlyphPreviewControl, HomeCreationKind, HomeWorkflow, InteractiveGlyph, KeyCode,
+        RuntimeConfig, VisibleGlyphRow, animation_frame_source_for_preview,
+        animation_has_non_uniform_frame_invert, animation_has_non_uniform_frame_thresholds,
+        composition_preview_lines_stable_frame, default_animation_name_from_frames,
+        drag_images_here_lines, emitted_composition_cols, glyph_matches_animation_frame_source,
+        handle_key, handle_paste_event_for_test, import_image_files_to_input,
+        installed_animation_blocks_for_definition, installed_animation_frame_index,
+        installed_animation_source_block, persist_composition_definition, preview_leftmost_control,
+        preview_lines, prune_static_sample_blocks, scrollbar_thumb_geometry,
+        selected_threshold_sources, step_animation_preview, visible_window_bounds,
     };
     use crate::build::{CompositionTileInfo, PreprocessedGlyph};
-    use image::{Rgba, RgbaImage};
     use crate::project::{AnimationDef, CompositionDef, Manifest, read_manifest, write_manifest};
+    use image::{Rgba, RgbaImage};
     use std::collections::BTreeMap;
     use std::fs;
     use std::path::PathBuf;
@@ -9837,7 +9963,11 @@ mod tests {
             name: "run".to_string(),
             animation_type: AnimationType::Standard,
             fps: 20,
-            frames: vec!["a.png".to_string(), "b.png".to_string(), "c.png".to_string()],
+            frames: vec![
+                "a.png".to_string(),
+                "b.png".to_string(),
+                "c.png".to_string(),
+            ],
             rows: None,
             cols: None,
             horizontal_bleed: None,
@@ -9852,11 +9982,14 @@ mod tests {
 
         // Simulate a render cadence (~48ms) where old logic could alias into abrupt speed shifts.
         for tick in [48u64, 96, 144, 192, 240, 288, 336, 384, 432, 480] {
-            step_animation_preview(&mut preview, &animation, started_at + Duration::from_millis(tick));
+            step_animation_preview(
+                &mut preview,
+                &animation,
+                started_at + Duration::from_millis(tick),
+            );
         }
         assert_eq!(
-            preview.frame_index,
-            0,
+            preview.frame_index, 0,
             "20fps over 480ms should advance exactly 9 frames (mod 3 -> 0) with accumulator timing"
         );
 
@@ -9875,8 +10008,7 @@ mod tests {
             );
         }
         assert_eq!(
-            faster_preview.frame_index,
-            1,
+            faster_preview.frame_index, 1,
             "21fps over 480ms should only be one frame ahead of 20fps in this window"
         );
     }
@@ -9982,8 +10114,8 @@ mod tests {
             },
             working_threshold: 64,
             saved_threshold: None,
-        saved_invert: false,
-        working_invert: false,
+            saved_invert: false,
+            working_invert: false,
         };
 
         assert!(!glyph_matches_animation_frame_source(
@@ -10018,7 +10150,8 @@ mod tests {
         let b = char::from_u32(0x100001).expect("valid char");
         let c = char::from_u32(0x100002).expect("valid char");
         let sample_blocks = vec![format!("{a}{b}{c}")];
-        let animation_frames = std::iter::once(format!("{b}")).collect::<std::collections::HashSet<_>>();
+        let animation_frames =
+            std::iter::once(format!("{b}")).collect::<std::collections::HashSet<_>>();
 
         let filtered = prune_static_sample_blocks(sample_blocks, &animation_frames);
 
@@ -10030,7 +10163,8 @@ mod tests {
         let a = char::from_u32(0x100000).expect("valid char");
         let b = char::from_u32(0x100001).expect("valid char");
         let sample_blocks = vec![format!("{a}"), format!("{b}")];
-        let animation_frames = std::iter::once(format!("{b}")).collect::<std::collections::HashSet<_>>();
+        let animation_frames =
+            std::iter::once(format!("{b}")).collect::<std::collections::HashSet<_>>();
 
         let filtered = prune_static_sample_blocks(sample_blocks, &animation_frames);
 
@@ -10244,8 +10378,8 @@ mod tests {
                     },
                     working_threshold: 64,
                     saved_threshold: None,
-                saved_invert: false,
-                working_invert: false,
+                    saved_invert: false,
+                    working_invert: false,
                 })
             })
             .collect::<Vec<_>>();
@@ -10317,8 +10451,8 @@ mod tests {
                 },
                 working_threshold: 64,
                 saved_threshold: None,
-            saved_invert: false,
-            working_invert: false,
+                saved_invert: false,
+                working_invert: false,
             })
             .collect();
 
@@ -10422,8 +10556,8 @@ mod tests {
                 },
                 working_threshold: 64,
                 saved_threshold: None,
-            saved_invert: false,
-            working_invert: false,
+                saved_invert: false,
+                working_invert: false,
             },
             InteractiveGlyph {
                 glyph: PreprocessedGlyph {
@@ -10439,8 +10573,8 @@ mod tests {
                 },
                 working_threshold: 64,
                 saved_threshold: None,
-            saved_invert: false,
-            working_invert: false,
+                saved_invert: false,
+                working_invert: false,
             },
         ];
 
@@ -10564,7 +10698,10 @@ mod tests {
         };
         let mut app = App::new(manifest_path, config);
         app.start_home_workflow(HomeCreationKind::AnimatedGlyph);
-        assert!(matches!(app.home_workflow, HomeWorkflow::Import(HomeCreationKind::AnimatedGlyph)));
+        assert!(matches!(
+            app.home_workflow,
+            HomeWorkflow::Import(HomeCreationKind::AnimatedGlyph)
+        ));
 
         handle_paste_event_for_test(&mut app, &frame_path.display().to_string())
             .expect("drop/paste import should succeed");
@@ -10615,6 +10752,7 @@ mod tests {
                 imported_source_keys: vec!["frame.png".to_string()],
             },
             loaded: None,
+            detail_status: None,
         };
 
         app.finish_animation_import(output);
@@ -10791,7 +10929,10 @@ mod tests {
             animations: Vec::new(),
             codepoint_start: 0x10_0000,
         };
-        let frames = vec!["run-fast_001.png".to_string(), "run-fast_002.png".to_string()];
+        let frames = vec![
+            "run-fast_001.png".to_string(),
+            "run-fast_002.png".to_string(),
+        ];
         let name = default_animation_name_from_frames(&config, &frames);
         assert_eq!(name, "runfast_anim");
     }
@@ -10897,8 +11038,8 @@ mod tests {
                 },
                 working_threshold: 64,
                 saved_threshold: None,
-            saved_invert: false,
-            working_invert: false,
+                saved_invert: false,
+                working_invert: false,
             },
             InteractiveGlyph {
                 glyph: PreprocessedGlyph {
@@ -10914,8 +11055,8 @@ mod tests {
                 },
                 working_threshold: 64,
                 saved_threshold: None,
-            saved_invert: false,
-            working_invert: false,
+                saved_invert: false,
+                working_invert: false,
             },
         ];
         app.expanded_animations.insert("run_anim".to_string());
@@ -10985,8 +11126,8 @@ mod tests {
                 },
                 working_threshold: 60,
                 saved_threshold: Some(60),
-            saved_invert: false,
-            working_invert: false,
+                saved_invert: false,
+                working_invert: false,
             },
             InteractiveGlyph {
                 glyph: PreprocessedGlyph {
@@ -11002,14 +11143,16 @@ mod tests {
                 },
                 working_threshold: 72,
                 saved_threshold: Some(72),
-            saved_invert: false,
-            working_invert: false,
+                saved_invert: false,
+                working_invert: false,
             },
         ];
 
         assert!(animation_has_non_uniform_frame_thresholds(&app, &animation));
         app.glyphs[1].working_threshold = 60;
-        assert!(!animation_has_non_uniform_frame_thresholds(&app, &animation));
+        assert!(!animation_has_non_uniform_frame_thresholds(
+            &app, &animation
+        ));
 
         fs::remove_dir_all(project_dir).expect("temp dir is removed");
     }
@@ -11090,11 +11233,11 @@ mod tests {
     #[test]
     fn drag_images_placeholder_handles_small_and_regular_regions() {
         assert!(
-            drag_images_here_lines(6, 2, ratatui::style::Color::Cyan, 0).is_empty(),
+            drag_images_here_lines(6, 2, ratatui::style::Color::Cyan, 0, false, None).is_empty(),
             "very small regions should skip drag placeholder rendering"
         );
 
-        let lines = drag_images_here_lines(40, 7, ratatui::style::Color::Cyan, 3);
+        let lines = drag_images_here_lines(40, 7, ratatui::style::Color::Cyan, 3, false, None);
         assert_eq!(lines.len(), 7, "placeholder should fill requested height");
         let rendered = lines
             .iter()
@@ -11116,11 +11259,13 @@ mod tests {
             "placeholder body should include import counter"
         );
         assert!(
-            rendered.iter().any(|line| line.contains("Images added: 3 ✓")),
+            rendered
+                .iter()
+                .any(|line| line.contains("Images added: 3 ✓")),
             "placeholder should show a checkmark when images have been added"
         );
 
-        let zero_lines = drag_images_here_lines(40, 7, ratatui::style::Color::Cyan, 0);
+        let zero_lines = drag_images_here_lines(40, 7, ratatui::style::Color::Cyan, 0, false, None);
         let zero_rendered = zero_lines
             .iter()
             .map(|line| {
@@ -11141,6 +11286,51 @@ mod tests {
                 .iter()
                 .all(|line| !line.contains("Images added: 0 ✓")),
             "placeholder should not show checkmark when no images were added"
+        );
+
+        let media_lines = drag_images_here_lines(40, 7, ratatui::style::Color::Cyan, 2, true, None);
+        let media_rendered = media_lines
+            .iter()
+            .map(|line| {
+                line.spans
+                    .iter()
+                    .map(|span| span.content.as_ref())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>();
+        assert!(
+            media_rendered
+                .iter()
+                .any(|line| line.contains("DRAG/PASTE MEDIA HERE")),
+            "animation placeholder should show media label"
+        );
+        assert!(
+            media_rendered
+                .iter()
+                .any(|line| line.contains("Media added: 2")),
+            "animation placeholder should show media counter"
+        );
+
+        let processing_lines =
+            drag_images_here_lines(40, 7, ratatui::style::Color::Cyan, 0, true, Some("|"));
+        let processing_rendered = processing_lines
+            .iter()
+            .map(|line| {
+                line.spans
+                    .iter()
+                    .map(|span| span.content.as_ref())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>();
+        assert!(
+            processing_rendered
+                .iter()
+                .any(|line| line.contains("Processing |")),
+            "placeholder should show a processing spinner before completion"
+        );
+        assert!(
+            processing_rendered.iter().all(|line| !line.contains("✓")),
+            "placeholder should not show checkmark while processing is active"
         );
     }
 }

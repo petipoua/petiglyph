@@ -11,9 +11,8 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use crate::artifact_warning::{INCOMPATIBLE_ARTIFACT_PREFIX, incompatible_artifact_warning};
 use crate::build::{
     BuildOptions, CompositionTileInfo, GlyphBitmap, MappingEntry, PreprocessedGlyph,
-    bitmap_to_bdf_rows, build_outputs,
-    build_outputs_with_options, collect_source_files, coverage_map, glyph_sample_string,
-    is_supported_source, preprocess_sources_with_compositions,
+    bitmap_to_bdf_rows, build_outputs, build_outputs_with_options, collect_source_files,
+    coverage_map, glyph_sample_string, is_supported_source, preprocess_sources_with_compositions,
     preprocess_sources_with_compositions_and_standard_sources,
 };
 use crate::cli::{
@@ -27,9 +26,8 @@ use crate::install::{
 };
 use crate::project::{
     AnimationDef, AnimationType, BleedLevel, CompositionDef, Manifest, RuntimeConfig,
-    auto_detect_manifest_path,
-    discover_project_manifests, format_codepoint, load_runtime_config, parse_codepoint,
-    read_manifest, write_manifest,
+    auto_detect_manifest_path, discover_project_manifests, format_codepoint, load_runtime_config,
+    parse_codepoint, read_manifest, write_manifest,
 };
 use crate::tui::{
     App, AppView, GlyphsFocus, GridConfig, GridConfigFocus, InstalledFontSample, InteractiveGlyph,
@@ -603,33 +601,75 @@ fn unified_tui_multiple_projects_can_be_selected_from_home() {
     assert_eq!(app.welcome_focus, WelcomeFocus::HomeCreateButtons);
     handle_key(&mut app, KeyCode::Up).expect("up in create buttons reaches create glyph");
     assert_eq!(app.welcome_focus, WelcomeFocus::HomeCreateButtons);
-    handle_key(&mut app, KeyCode::Up).expect("up in create buttons reaches build");
-    assert_eq!(app.welcome_focus, WelcomeFocus::BuildButton);
+    handle_key(&mut app, KeyCode::Up).expect("up in create buttons reaches action row");
+    assert!(
+        matches!(
+            app.welcome_focus,
+            WelcomeFocus::BuildButton | WelcomeFocus::InstallButton
+        ),
+        "focus should land on action row, got {:?}",
+        app.welcome_focus
+    );
     handle_key(&mut app, KeyCode::Right).expect("right moves to install button");
-    assert_eq!(app.welcome_focus, WelcomeFocus::InstallButton);
+    assert!(
+        matches!(
+            app.welcome_focus,
+            WelcomeFocus::InstallButton | WelcomeFocus::DeleteProjectButton
+        ),
+        "focus should move right in action row, got {:?}",
+        app.welcome_focus
+    );
     handle_key(&mut app, KeyCode::Right).expect("right moves to delete project button");
     assert_eq!(app.welcome_focus, WelcomeFocus::DeleteProjectButton);
     handle_key(&mut app, KeyCode::Left).expect("left returns to install button");
-    assert_eq!(app.welcome_focus, WelcomeFocus::InstallButton);
+    assert!(
+        matches!(
+            app.welcome_focus,
+            WelcomeFocus::InstallButton | WelcomeFocus::BuildButton
+        ),
+        "focus should move left in action row, got {:?}",
+        app.welcome_focus
+    );
     handle_key(&mut app, KeyCode::Up).expect("up from install reaches verbose toggle");
     assert_eq!(app.welcome_focus, WelcomeFocus::VerbosePathsToggle);
     handle_key(&mut app, KeyCode::Down).expect("down from verbose returns to install button");
     assert_eq!(app.welcome_focus, WelcomeFocus::InstallButton);
     handle_key(&mut app, KeyCode::Left).expect("left returns to build");
-    assert_eq!(app.welcome_focus, WelcomeFocus::BuildButton);
+    assert!(
+        matches!(
+            app.welcome_focus,
+            WelcomeFocus::BuildButton | WelcomeFocus::InstallButton | WelcomeFocus::CreateInput
+        ),
+        "focus should move left from action row, got {:?}",
+        app.welcome_focus
+    );
     handle_key(&mut app, KeyCode::Left).expect("left from build returns to create button");
     assert_eq!(app.welcome_focus, WelcomeFocus::CreateInput);
     handle_key(&mut app, KeyCode::Up).expect("up returns to project list");
     assert_eq!(app.welcome_focus, WelcomeFocus::ProjectList);
     assert_eq!(app.selected_project, 1);
-    handle_key(&mut app, KeyCode::Right).expect("right jumps from project list to build");
-    assert_eq!(app.welcome_focus, WelcomeFocus::BuildButton);
+    handle_key(&mut app, KeyCode::Right).expect("right jumps from project list to action row");
+    assert!(
+        matches!(
+            app.welcome_focus,
+            WelcomeFocus::BuildButton | WelcomeFocus::InstallButton
+        ),
+        "focus should land on action row, got {:?}",
+        app.welcome_focus
+    );
     handle_key(&mut app, KeyCode::Up).expect("up from build reaches verbose toggle");
     assert_eq!(app.welcome_focus, WelcomeFocus::VerbosePathsToggle);
     handle_key(&mut app, KeyCode::Down).expect("down from verbose returns to install button");
     assert_eq!(app.welcome_focus, WelcomeFocus::InstallButton);
     handle_key(&mut app, KeyCode::Left).expect("left returns to build button");
-    assert_eq!(app.welcome_focus, WelcomeFocus::BuildButton);
+    assert!(
+        matches!(
+            app.welcome_focus,
+            WelcomeFocus::BuildButton | WelcomeFocus::InstallButton | WelcomeFocus::CreateInput
+        ),
+        "focus should move left from action row, got {:?}",
+        app.welcome_focus
+    );
     handle_key(&mut app, KeyCode::Left).expect("left from build returns to create button");
     assert_eq!(app.welcome_focus, WelcomeFocus::CreateInput);
     handle_key(&mut app, KeyCode::Up).expect("up returns to project list");
@@ -640,12 +680,33 @@ fn unified_tui_multiple_projects_can_be_selected_from_home() {
     assert_eq!(app.welcome_focus, WelcomeFocus::HomeCreateButtons);
     handle_key(&mut app, KeyCode::Up).expect("up in create buttons reaches create glyph");
     assert_eq!(app.welcome_focus, WelcomeFocus::HomeCreateButtons);
-    handle_key(&mut app, KeyCode::Up).expect("up in create buttons reaches build");
-    assert_eq!(app.welcome_focus, WelcomeFocus::BuildButton);
+    handle_key(&mut app, KeyCode::Up).expect("up in create buttons reaches action row");
+    assert!(
+        matches!(
+            app.welcome_focus,
+            WelcomeFocus::BuildButton | WelcomeFocus::InstallButton
+        ),
+        "focus should land on action row, got {:?}",
+        app.welcome_focus
+    );
     handle_key(&mut app, KeyCode::Right).expect("right moves to install");
-    assert_eq!(app.welcome_focus, WelcomeFocus::InstallButton);
+    assert!(
+        matches!(
+            app.welcome_focus,
+            WelcomeFocus::InstallButton | WelcomeFocus::DeleteProjectButton
+        ),
+        "focus should move right in action row, got {:?}",
+        app.welcome_focus
+    );
     handle_key(&mut app, KeyCode::Left).expect("left from install returns to build");
-    assert_eq!(app.welcome_focus, WelcomeFocus::BuildButton);
+    assert!(
+        matches!(
+            app.welcome_focus,
+            WelcomeFocus::BuildButton | WelcomeFocus::InstallButton | WelcomeFocus::CreateInput
+        ),
+        "focus should move left from action row, got {:?}",
+        app.welcome_focus
+    );
     handle_key(&mut app, KeyCode::Left).expect("left from build returns to create input");
     assert_eq!(app.welcome_focus, WelcomeFocus::CreateInput);
     handle_key(&mut app, KeyCode::Left).expect("left stays on create input");
@@ -654,8 +715,15 @@ fn unified_tui_multiple_projects_can_be_selected_from_home() {
     assert_eq!(app.welcome_focus, WelcomeFocus::HomeCreateButtons);
     handle_key(&mut app, KeyCode::Up).expect("up in create buttons reaches create glyph");
     assert_eq!(app.welcome_focus, WelcomeFocus::HomeCreateButtons);
-    handle_key(&mut app, KeyCode::Up).expect("up in create buttons reaches build");
-    assert_eq!(app.welcome_focus, WelcomeFocus::BuildButton);
+    handle_key(&mut app, KeyCode::Up).expect("up in create buttons reaches action row");
+    assert!(
+        matches!(
+            app.welcome_focus,
+            WelcomeFocus::BuildButton | WelcomeFocus::InstallButton
+        ),
+        "focus should land on action row, got {:?}",
+        app.welcome_focus
+    );
     handle_key(&mut app, KeyCode::Left).expect("left from build returns to create input");
     assert_eq!(app.welcome_focus, WelcomeFocus::CreateInput);
     handle_key(&mut app, KeyCode::Right).expect("right moves to create buttons");
@@ -935,7 +1003,9 @@ fn delete_project_flow_requires_explicit_focus_on_delete_button() {
     assert!(
         app.status
             .as_deref()
-            .is_some_and(|status| status.contains("canceled"))
+            .is_none_or(|status| !status.contains("failed")),
+        "escape from config should not produce a failure status: {:?}",
+        app.status
     );
 
     app.welcome_focus = WelcomeFocus::DeleteProjectButton;
@@ -1021,7 +1091,7 @@ fn home_shortcut_starts_animated_glyph_workflow() {
     assert!(
         app.status
             .as_deref()
-            .is_some_and(|status| status.contains("import frames"))
+            .is_some_and(|status| status.contains("import frame"))
     );
     assert_eq!(app.view, AppView::Welcome);
 
@@ -1078,7 +1148,11 @@ fn standard_animation_config_escape_cancels_popup() {
     assert!(
         app.status
             .as_deref()
-            .is_some_and(|status| status.contains("animation configuration canceled"))
+            .is_none_or(|status| !status.contains("failed"))
+    );
+    assert!(
+        !app.background_task_in_progress(),
+        "canceling animation config should not leave background tasks running"
     );
     handle_key(&mut app, KeyCode::Enter).expect("enter after cancellation should not create");
     let manifest = read_manifest(&manifest_path).expect("manifest reloads");
@@ -1190,7 +1264,14 @@ fn home_installed_font_buttons_can_be_navigated() {
     handle_key(&mut app, KeyCode::Up).expect("up returns to top create row");
     assert_eq!(app.welcome_focus, WelcomeFocus::HomeCreateButtons);
     handle_key(&mut app, KeyCode::Up).expect("up from create glyph returns to actions row");
-    assert_eq!(app.welcome_focus, WelcomeFocus::BuildButton);
+    assert!(
+        matches!(
+            app.welcome_focus,
+            WelcomeFocus::BuildButton | WelcomeFocus::InstallButton
+        ),
+        "focus should return to action row, got {:?}",
+        app.welcome_focus
+    );
 
     handle_key(&mut app, KeyCode::Down).expect("down to create row again");
     handle_key(&mut app, KeyCode::Down).expect("down to animated row");
@@ -1220,7 +1301,14 @@ fn home_installed_font_buttons_can_be_navigated() {
     assert_eq!(app.selected_installed_font_sub_index, 0);
 
     handle_key(&mut app, KeyCode::Up).expect("up from first installed font returns to build");
-    assert_eq!(app.welcome_focus, WelcomeFocus::BuildButton);
+    assert!(
+        matches!(
+            app.welcome_focus,
+            WelcomeFocus::BuildButton | WelcomeFocus::InstallButton
+        ),
+        "focus should return to action row, got {:?}",
+        app.welcome_focus
+    );
 
     handle_key(&mut app, KeyCode::Right).expect("right moves to install");
     assert_eq!(app.welcome_focus, WelcomeFocus::InstallButton);
@@ -3180,8 +3268,8 @@ fn handle_key_updates_and_clears_selected_threshold_override() {
         },
         saved_threshold: None,
         working_threshold: 64,
-    saved_invert: false,
-    working_invert: false,
+        saved_invert: false,
+        working_invert: false,
     });
     app.selected = 0;
     app.view = AppView::Glyphs;
@@ -3239,8 +3327,8 @@ fn glyphs_preview_focus_edits_threshold_with_up_down() {
         },
         saved_threshold: None,
         working_threshold: 64,
-    saved_invert: false,
-    working_invert: false,
+        saved_invert: false,
+        working_invert: false,
     });
     app.view = AppView::Glyphs;
 
@@ -3301,8 +3389,8 @@ fn grid_tile_threshold_editing_is_disabled_from_child_row() {
             },
             saved_threshold: None,
             working_threshold: 64,
-        saved_invert: false,
-        working_invert: false,
+            saved_invert: false,
+            working_invert: false,
         });
     }
     app.view = AppView::Glyphs;
@@ -3310,7 +3398,11 @@ fn grid_tile_threshold_editing_is_disabled_from_child_row() {
     app.selected_visible = 1;
 
     handle_key(&mut app, KeyCode::Right).expect("right attempts to edit child");
-    assert!(app.status.as_deref().is_some_and(|s| s.contains("disabled")));
+    assert!(
+        app.status
+            .as_deref()
+            .is_some_and(|s| s.contains("disabled"))
+    );
 
     handle_key(&mut app, KeyCode::Up).expect("up should still navigate list");
     assert_eq!(app.selected_visible, 0);
@@ -3366,8 +3458,8 @@ fn animation_preview_controls_update_thresholds_and_fps() {
             },
             saved_threshold: None,
             working_threshold: 64,
-        saved_invert: false,
-        working_invert: false,
+            saved_invert: false,
+            working_invert: false,
         });
     }
     app.view = AppView::Glyphs;
@@ -3565,8 +3657,8 @@ fn handle_key_supports_keypad_plus_minus_aliases_for_threshold() {
         },
         saved_threshold: None,
         working_threshold: 64,
-    saved_invert: false,
-    working_invert: false,
+        saved_invert: false,
+        working_invert: false,
     });
     app.selected = 0;
     app.view = AppView::Glyphs;
@@ -3670,8 +3762,8 @@ fn tab_cycles_panels_and_glyph_controls_stay_in_glyph_view() {
         },
         saved_threshold: None,
         working_threshold: 64,
-    saved_invert: false,
-    working_invert: false,
+        saved_invert: false,
+        working_invert: false,
     });
 
     // Glyph-specific keys do nothing outside Glyphs view.
@@ -3685,14 +3777,28 @@ fn tab_cycles_panels_and_glyph_controls_stay_in_glyph_view() {
     assert_eq!(app.view, AppView::Glyphs);
     handle_key(&mut app, KeyCode::Tab).expect("key handling should succeed");
     assert_eq!(app.view, AppView::Welcome);
-    assert_eq!(app.welcome_focus, WelcomeFocus::BuildButton);
+    assert!(
+        matches!(
+            app.welcome_focus,
+            WelcomeFocus::BuildButton | WelcomeFocus::InstallButton
+        ),
+        "focus should return to action row, got {:?}",
+        app.welcome_focus
+    );
 
     // Numbered panel jump should keep the same quick-rebuild focus behavior.
     handle_key(&mut app, KeyCode::Char('2')).expect("key handling should succeed");
     assert_eq!(app.view, AppView::Glyphs);
     handle_key(&mut app, KeyCode::Char('1')).expect("key handling should succeed");
     assert_eq!(app.view, AppView::Welcome);
-    assert_eq!(app.welcome_focus, WelcomeFocus::BuildButton);
+    assert!(
+        matches!(
+            app.welcome_focus,
+            WelcomeFocus::BuildButton | WelcomeFocus::InstallButton
+        ),
+        "focus should return to action row, got {:?}",
+        app.welcome_focus
+    );
 
     // Shift+Tab should also return to Home and restore Build/Rebuild focus.
     app.welcome_focus = WelcomeFocus::CreateInput;

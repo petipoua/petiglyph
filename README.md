@@ -57,6 +57,12 @@ Keyboard controls during the import popup:
 - `Enter` continues to the next workflow step
 - `Esc` cancels the workflow
 
+Animated workflow import input types:
+
+- `Create animated glyph` / `Create animated grid glyph` accept still images, GIF files, and video files in the popup import area.
+- GIF/video inputs are expanded into deterministic per-frame PNG files in `icons/` and auto-selected as animation frames.
+- Video import requires `ffmpeg` available on `PATH`.
+
 ## CLI Commands
 
 ```bash
@@ -441,7 +447,8 @@ For composition grids, `ttf.bleed` log lines show which internal tile edges rece
 
 ## Notes
 
-- supported inputs: `png`, `jpg`, `jpeg`, `webp`, `avif`, `bmp`, `gif`, `svg`
+- supported build inputs: `png`, `jpg`, `jpeg`, `webp`, `avif`, `bmp`, `gif`, `svg`
+- animated popup import also accepts video files: `mp4`, `mov`, `mkv`, `webm`, `avi`, `m4v` (frame extraction via `ffmpeg`)
 - if source alpha exists, alpha drives glyph coverage
 - otherwise, border color is treated as background and contrast becomes coverage
 - `glyph_size` is the generated terminal-cell height; one-cell glyphs use half that width so they fit normal tall terminal cells without needing a trailing blank

@@ -1,3 +1,4 @@
+mod animation_media;
 mod artifact_warning;
 mod build;
 mod cli;
