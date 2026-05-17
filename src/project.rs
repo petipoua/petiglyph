@@ -20,6 +20,8 @@ pub(crate) struct Manifest {
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub(crate) threshold_overrides: BTreeMap<String, u8>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub(crate) invert_overrides: BTreeMap<String, bool>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub(crate) compositions: BTreeMap<String, CompositionDef>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub(crate) animations: Vec<AnimationDef>,
@@ -126,6 +128,7 @@ impl Default for Manifest {
             codepoint_start: "U+100000".to_string(),
             project_id: None,
             threshold_overrides: BTreeMap::new(),
+            invert_overrides: BTreeMap::new(),
             compositions: BTreeMap::new(),
             animations: Vec::new(),
         }
@@ -142,6 +145,7 @@ pub(crate) struct RuntimeConfig {
     pub(crate) glyph_size: u32,
     pub(crate) base_threshold: u8,
     pub(crate) threshold_overrides: BTreeMap<String, u8>,
+    pub(crate) invert_overrides: BTreeMap<String, bool>,
     pub(crate) compositions: BTreeMap<String, CompositionDef>,
     pub(crate) animations: Vec<AnimationDef>,
     pub(crate) codepoint_start: u32,
@@ -471,6 +475,7 @@ pub(crate) fn load_runtime_config(
         glyph_size,
         base_threshold,
         threshold_overrides: manifest.threshold_overrides,
+        invert_overrides: manifest.invert_overrides,
         compositions: manifest.compositions,
         animations: manifest.animations,
         codepoint_start,

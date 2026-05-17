@@ -346,6 +346,7 @@ struct AnimationPreview {
 enum GlyphPreviewControl {
     Threshold,
     Fps,
+    Invert,
 }
 
 #[derive(Debug, Clone)]
@@ -425,6 +426,8 @@ pub(crate) struct InteractiveGlyph {
     pub(crate) glyph: PreprocessedGlyph,
     pub(crate) saved_threshold: Option<u8>,
     pub(crate) working_threshold: u8,
+    pub(crate) saved_invert: bool,
+    pub(crate) working_invert: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -1753,6 +1756,9 @@ fn handle_glyphs_key(app: &mut App, key: KeyEvent) -> Result<()> {
                             set_selected_animation_fps(app, value.saturating_sub(1).clamp(1, 30));
                         }
                     }
+                    GlyphPreviewControl::Invert => {
+                        toggle_selected_invert(app);
+                    }
                 }
             }
         }
@@ -1772,6 +1778,9 @@ fn handle_glyphs_key(app: &mut App, key: KeyEvent) -> Result<()> {
                             set_selected_animation_fps(app, value.saturating_add(1).clamp(1, 30));
                         }
                     }
+                    GlyphPreviewControl::Invert => {
+                        toggle_selected_invert(app);
+                    }
                 }
             }
         }
@@ -1787,10 +1796,15 @@ fn handle_glyphs_key(app: &mut App, key: KeyEvent) -> Result<()> {
                         "grid tile thresholds are disabled; edit the grid parent instead"
                             .to_string(),
                     );
-                } else if selected_row_supports_threshold(app) || selected_row_supports_fps(app) {
+                } else if selected_row_supports_threshold(app)
+                    || selected_row_supports_fps(app)
+                    || selected_row_supports_invert(app)
+                {
                     app.glyphs_focus = GlyphsFocus::Preview;
                     app.glyph_preview_control = if selected_row_supports_threshold(app) {
                         GlyphPreviewControl::Threshold
+                    } else if selected_row_supports_invert(app) {
+                        GlyphPreviewControl::Invert
                     } else {
                         GlyphPreviewControl::Fps
                     };
@@ -1801,6 +1815,7 @@ fn handle_glyphs_key(app: &mut App, key: KeyEvent) -> Result<()> {
                 let leftmost = preview_leftmost_control(
                     selected_row_supports_threshold(app),
                     selected_row_supports_fps(app),
+                    selected_row_supports_invert(app),
                 );
                 if leftmost.is_none() || Some(app.glyph_preview_control) == leftmost {
                     app.glyphs_focus = GlyphsFocus::List;
@@ -1821,10 +1836,15 @@ fn handle_glyphs_key(app: &mut App, key: KeyEvent) -> Result<()> {
                         "grid tile thresholds are disabled; edit the grid parent instead"
                             .to_string(),
                     );
-                } else if selected_row_supports_threshold(app) || selected_row_supports_fps(app) {
+                } else if selected_row_supports_threshold(app)
+                    || selected_row_supports_fps(app)
+                    || selected_row_supports_invert(app)
+                {
                     app.glyphs_focus = GlyphsFocus::Preview;
                     app.glyph_preview_control = if selected_row_supports_threshold(app) {
                         GlyphPreviewControl::Threshold
+                    } else if selected_row_supports_invert(app) {
+                        GlyphPreviewControl::Invert
                     } else {
                         GlyphPreviewControl::Fps
                     };
@@ -1834,15 +1854,28 @@ fn handle_glyphs_key(app: &mut App, key: KeyEvent) -> Result<()> {
             } else {
                 app.glyph_preview_control = match app.glyph_preview_control {
                     GlyphPreviewControl::Threshold => {
-                        if selected_row_supports_fps(app) {
+                        if selected_row_supports_invert(app) {
+                            GlyphPreviewControl::Invert
+                        } else if selected_row_supports_fps(app) {
                             GlyphPreviewControl::Fps
                         } else {
                             GlyphPreviewControl::Threshold
                         }
                     }
+                    GlyphPreviewControl::Invert => {
+                        if selected_row_supports_fps(app) {
+                            GlyphPreviewControl::Fps
+                        } else if selected_row_supports_threshold(app) {
+                            GlyphPreviewControl::Threshold
+                        } else {
+                            GlyphPreviewControl::Invert
+                        }
+                    }
                     GlyphPreviewControl::Fps => {
                         if selected_row_supports_threshold(app) {
                             GlyphPreviewControl::Threshold
+                        } else if selected_row_supports_invert(app) {
+                            GlyphPreviewControl::Invert
                         } else {
                             GlyphPreviewControl::Fps
                         }
@@ -1851,6 +1884,12 @@ fn handle_glyphs_key(app: &mut App, key: KeyEvent) -> Result<()> {
             }
         }
         KeyCode::Enter | KeyCode::Char(' ') => {
+            if app.glyphs_focus == GlyphsFocus::Preview
+                && app.glyph_preview_control == GlyphPreviewControl::Invert
+            {
+                toggle_selected_invert(app);
+                return Ok(());
+            }
             if app.selecting_for_grid {
                 if matches!(
                     app.selected_visible_row(),
@@ -4535,10 +4574,18 @@ impl App {
                 .get(&glyph.source_parent_key)
                 .copied();
             let working_threshold = saved_threshold.unwrap_or(self.config.base_threshold);
+            let saved_invert = self
+                .config
+                .invert_overrides
+                .get(&glyph.source_parent_key)
+                .copied()
+                .unwrap_or(false);
             InteractiveGlyph {
                 glyph,
                 saved_threshold,
                 working_threshold,
+                saved_invert,
+                working_invert: saved_invert,
             }
         })
         .collect::<Vec<_>>();
@@ -5342,6 +5389,7 @@ fn inactive_runtime_config(workspace_root: &Path) -> RuntimeConfig {
         glyph_size: 64,
         base_threshold: 64,
         threshold_overrides: Default::default(),
+        invert_overrides: Default::default(),
         compositions: Default::default(),
         animations: Vec::new(),
         codepoint_start: 0x10_0000,
@@ -5529,6 +5577,22 @@ pub(crate) fn persist_threshold_override(
         None => {
             manifest.threshold_overrides.remove(source_key);
         }
+    }
+    write_manifest(manifest_path, &manifest)
+}
+
+pub(crate) fn persist_invert_override(
+    manifest_path: &Path,
+    source_key: &str,
+    invert: bool,
+) -> Result<()> {
+    let mut manifest = read_manifest(manifest_path)?;
+    if invert {
+        manifest
+            .invert_overrides
+            .insert(source_key.to_string(), true);
+    } else {
+        manifest.invert_overrides.remove(source_key);
     }
     write_manifest(manifest_path, &manifest)
 }
@@ -5873,6 +5937,39 @@ fn animation_has_non_uniform_frame_thresholds(app: &App, animation: &AnimationDe
     values.any(|value| value != first)
 }
 
+fn selected_invert_sources(app: &App) -> Option<Vec<String>> {
+    selected_threshold_sources(app)
+}
+
+fn selected_row_supports_invert(app: &App) -> bool {
+    selected_invert_sources(app).is_some()
+}
+
+fn selected_row_invert_value(app: &App) -> Option<bool> {
+    let sources = selected_invert_sources(app)?;
+    let first = sources.first()?;
+    app.glyphs
+        .iter()
+        .find(|glyph| glyph.glyph.source_parent_key == *first)
+        .map(|glyph| glyph.working_invert)
+        .or(Some(false))
+}
+
+fn animation_has_non_uniform_frame_invert(app: &App, animation: &AnimationDef) -> bool {
+    let mut values = animation_threshold_parent_sources(animation)
+        .into_iter()
+        .filter_map(|source_key| {
+            app.glyphs
+                .iter()
+                .find(|g| g.glyph.source_parent_key == source_key)
+                .map(|g| g.working_invert)
+        });
+    let Some(first) = values.next() else {
+        return false;
+    };
+    values.any(|value| value != first)
+}
+
 fn selected_glyph(app: &App) -> Option<&InteractiveGlyph> {
     let idx = selected_visible_glyph_index(app)?;
     app.glyphs.get(idx)
@@ -5963,6 +6060,57 @@ fn remove_selected_threshold_override(app: &mut App) {
     ));
 }
 
+fn set_selected_invert(app: &mut App, invert: bool) {
+    if app.active_project.is_none() {
+        app.status = Some(
+            "create a project in Home or relaunch with --manifest before tuning glyphs".to_string(),
+        );
+        return;
+    }
+
+    let Some(sources) = selected_invert_sources(app) else {
+        app.status = Some("no glyph selected".to_string());
+        return;
+    };
+
+    for source_key in &sources {
+        if let Err(err) = persist_invert_override(&app.manifest_path, source_key, invert) {
+            app.status = Some(format!("failed to save invert override for {source_key}: {err}"));
+            return;
+        }
+    }
+
+    let source_set = sources.iter().cloned().collect::<BTreeSet<_>>();
+    for glyph in &mut app.glyphs {
+        if source_set.contains(&glyph.glyph.source_parent_key) {
+            glyph.saved_invert = invert;
+            glyph.working_invert = invert;
+        }
+    }
+
+    for source_key in sources {
+        if invert {
+            app.config.invert_overrides.insert(source_key, true);
+        } else {
+            app.config.invert_overrides.remove(&source_key);
+        }
+    }
+
+    app.status = Some(if invert {
+        "saved invert override: on".to_string()
+    } else {
+        "cleared invert override(s): normal colors".to_string()
+    });
+}
+
+fn toggle_selected_invert(app: &mut App) {
+    let Some(current) = selected_row_invert_value(app) else {
+        app.status = Some("no glyph selected".to_string());
+        return;
+    };
+    set_selected_invert(app, !current);
+}
+
 #[cfg(test)]
 pub(crate) fn handle_key(app: &mut App, code: KeyCode) -> Result<()> {
     handle_key_event(
@@ -6021,9 +6169,12 @@ fn selected_row_supports_fps(app: &App) -> bool {
 fn preview_leftmost_control(
     supports_threshold: bool,
     supports_fps: bool,
+    supports_invert: bool,
 ) -> Option<GlyphPreviewControl> {
     if supports_threshold {
         Some(GlyphPreviewControl::Threshold)
+    } else if supports_invert {
+        Some(GlyphPreviewControl::Invert)
     } else if supports_fps {
         Some(GlyphPreviewControl::Fps)
     } else {
@@ -7913,6 +8064,7 @@ fn draw_glyphs_view(
                 let animation = &app.config.animations[*animation_idx];
                 let has_non_uniform_thresholds =
                     animation_has_non_uniform_frame_thresholds(app, animation);
+                let has_non_uniform_invert = animation_has_non_uniform_frame_invert(app, animation);
                 vec![
                     Line::from(""),
                     Line::from(vec![
@@ -7949,6 +8101,20 @@ fn draw_glyphs_view(
                     } else {
                         Line::from(vec![
                             Span::raw("  Thresholds: "),
+                            Span::styled("uniform across frames", Style::default().fg(muted)),
+                        ])
+                    },
+                    if has_non_uniform_invert {
+                        Line::from(vec![
+                            Span::raw("  Invert: "),
+                            Span::styled(
+                                "frame-specific overrides active",
+                                Style::default().fg(Color::Yellow),
+                            ),
+                        ])
+                    } else {
+                        Line::from(vec![
+                            Span::raw("  Invert: "),
                             Span::styled("uniform across frames", Style::default().fg(muted)),
                         ])
                     },
@@ -8028,6 +8194,21 @@ fn draw_glyphs_view(
                         ),
                     ]),
                     Line::from(vec![
+                        Span::raw("  Invert: "),
+                        Span::styled(
+                            if active.working_invert { "on" } else { "off" },
+                            Style::default().fg(accent).add_modifier(Modifier::BOLD),
+                        ),
+                        Span::styled(
+                            if active.saved_invert {
+                                " (overridden)"
+                            } else {
+                                " (default)"
+                            },
+                            Style::default().fg(muted),
+                        ),
+                    ]),
+                    Line::from(vec![
                         Span::raw("  Animation: "),
                         Span::styled(
                             active_animation
@@ -8057,6 +8238,11 @@ fn draw_glyphs_view(
                     .iter()
                     .find(|g| g.glyph.source_parent_key == *source_key)
                     .map(|g| (g.working_threshold, g.saved_threshold.is_some()));
+                let invert_hint = app
+                    .glyphs
+                    .iter()
+                    .find(|g| g.glyph.source_parent_key == *source_key)
+                    .map(|g| g.working_invert);
                 let threshold_line = if let Some((threshold, overridden)) = threshold_hint {
                     Line::from(vec![
                         Span::raw("  Threshold: "),
@@ -8079,6 +8265,21 @@ fn draw_glyphs_view(
                         Span::styled("n/a", Style::default().fg(muted)),
                     ])
                 };
+                let invert_line = Line::from(vec![
+                    Span::raw("  Invert: "),
+                    Span::styled(
+                        if invert_hint.unwrap_or(false) { "on" } else { "off" },
+                        Style::default().fg(accent).add_modifier(Modifier::BOLD),
+                    ),
+                    Span::styled(
+                        if invert_hint.unwrap_or(false) {
+                            " (overridden)"
+                        } else {
+                            " (default)"
+                        },
+                        Style::default().fg(muted),
+                    ),
+                ]);
                 vec![
                     Line::from(""),
                     Line::from(vec![
@@ -8126,6 +8327,7 @@ fn draw_glyphs_view(
                         Span::styled("]", Style::default().fg(muted)),
                     ]),
                     threshold_line,
+                    invert_line,
                     Line::from(vec![
                         Span::raw("  Preview: "),
                         Span::styled("Assembled composition", Style::default().fg(muted)),
@@ -8159,6 +8361,12 @@ fn draw_glyphs_view(
                         .find(|g| glyph_matches_animation_row_frame(g, animation, frame_source_key))
                         .map(|g| g.working_threshold)
                         .unwrap_or(app.config.base_threshold);
+                    let invert = app
+                        .glyphs
+                        .iter()
+                        .find(|g| glyph_matches_animation_row_frame(g, animation, frame_source_key))
+                        .map(|g| g.working_invert)
+                        .unwrap_or(false);
                     let mut ascii = if animation.animation_type == AnimationType::Grid {
                         let rows = animation.rows.unwrap_or(2);
                         let cols = emitted_composition_cols(animation.cols.unwrap_or(2));
@@ -8173,6 +8381,7 @@ fn draw_glyphs_view(
                         composition_preview_lines_stable_frame(
                             &tiles,
                             threshold,
+                            invert,
                             rows,
                             cols,
                             preview_area.width.saturating_sub(4) / 2,
@@ -8188,6 +8397,7 @@ fn draw_glyphs_view(
                                 preview_lines_stable_frame(
                                     &g.glyph,
                                     threshold,
+                                    invert,
                                     preview_area.width.saturating_sub(4) / 2,
                                     preview_area.height.saturating_sub(8),
                                 )
@@ -8212,6 +8422,7 @@ fn draw_glyphs_view(
                                 let mut ascii = preview_lines(
                                     &active.glyph,
                                     active.working_threshold,
+                                    active.working_invert,
                                     preview_area.width.saturating_sub(4) / 2,
                                     preview_area.height.saturating_sub(6),
                                 );
@@ -8224,6 +8435,7 @@ fn draw_glyphs_view(
                             let mut ascii = preview_lines(
                                 &active.glyph,
                                 active.working_threshold,
+                                active.working_invert,
                                 preview_area.width.saturating_sub(4) / 2,
                                 preview_area.height.saturating_sub(6),
                             );
@@ -8244,9 +8456,11 @@ fn draw_glyphs_view(
                                 .first()
                                 .map(|g| g.working_threshold)
                                 .unwrap_or(app.config.base_threshold);
+                            let invert = tiles.first().map(|g| g.working_invert).unwrap_or(false);
                             let mut ascii = composition_preview_lines(
                                 &tiles,
                                 threshold,
+                                invert,
                                 *rows,
                                 *cols,
                                 preview_area.width.saturating_sub(4) / 2,
@@ -8262,7 +8476,8 @@ fn draw_glyphs_view(
 
     let supports_threshold = selected_row_supports_threshold(app);
     let supports_fps = selected_row_supports_fps(app);
-    if supports_threshold || supports_fps {
+    let supports_invert = selected_row_supports_invert(app);
+    if supports_threshold || supports_fps || supports_invert {
         let button_style = |selected: bool| {
             if selected {
                 Style::default()
@@ -8283,6 +8498,9 @@ fn draw_glyphs_view(
         let fps_value = selected_row_fps_value(app)
             .map(|value| value.to_string())
             .unwrap_or_else(|| "-".to_string());
+        let invert_value = selected_row_invert_value(app)
+            .map(|value| if value { "on" } else { "off" })
+            .unwrap_or("-");
 
         let threshold_selected = supports_threshold
             && app.glyphs_focus == GlyphsFocus::Preview
@@ -8290,6 +8508,9 @@ fn draw_glyphs_view(
         let fps_selected = supports_fps
             && app.glyphs_focus == GlyphsFocus::Preview
             && app.glyph_preview_control == GlyphPreviewControl::Fps;
+        let invert_selected = supports_invert
+            && app.glyphs_focus == GlyphsFocus::Preview
+            && app.glyph_preview_control == GlyphPreviewControl::Invert;
 
         let mut edit_spans = vec![
             Span::raw("  Edit "),
@@ -8303,6 +8524,13 @@ fn draw_glyphs_view(
             edit_spans.push(Span::styled(
                 format!(" FPS: {fps_value} "),
                 button_style(fps_selected),
+            ));
+        }
+        if supports_invert {
+            edit_spans.push(Span::raw(" "));
+            edit_spans.push(Span::styled(
+                format!(" Invert: {invert_value} "),
+                button_style(invert_selected),
             ));
         }
 
@@ -8333,6 +8561,7 @@ fn source_display_name(source_key: &str) -> String {
 fn composition_preview_lines(
     tiles: &[&InteractiveGlyph],
     threshold: u8,
+    invert: bool,
     rows: usize,
     cols: usize,
     max_w: u16,
@@ -8378,7 +8607,7 @@ fn composition_preview_lines(
                     continue;
                 }
                 let dst_idx = dst_y * width + dst_x;
-                matrix[dst_idx] = tile.glyph.coverage[src_idx] >= threshold;
+                matrix[dst_idx] = (tile.glyph.coverage[src_idx] >= threshold) ^ invert;
             }
         }
     }
@@ -8395,6 +8624,7 @@ fn composition_preview_lines(
 fn composition_preview_lines_stable_frame(
     tiles: &[&InteractiveGlyph],
     threshold: u8,
+    invert: bool,
     rows: usize,
     cols: usize,
     max_w: u16,
@@ -8438,7 +8668,7 @@ fn composition_preview_lines_stable_frame(
                     continue;
                 }
                 let dst_idx = dst_y * width + dst_x;
-                matrix[dst_idx] = tile.glyph.coverage[src_idx] >= threshold;
+                matrix[dst_idx] = (tile.glyph.coverage[src_idx] >= threshold) ^ invert;
             }
         }
     }
@@ -8607,6 +8837,7 @@ fn render_binary_preview_lines(
 fn preview_lines(
     glyph: &PreprocessedGlyph,
     threshold: u8,
+    invert: bool,
     max_w: u16,
     max_h: u16,
 ) -> Vec<Line<'static>> {
@@ -8621,7 +8852,7 @@ fn preview_lines(
     for y in 0..src_h {
         for x in 0..src_w {
             let idx = y * src_w + x;
-            if glyph.coverage[idx] >= threshold {
+            if (glyph.coverage[idx] >= threshold) ^ invert {
                 matrix[idx] = true;
             }
         }
@@ -8639,6 +8870,7 @@ fn preview_lines(
 fn preview_lines_stable_frame(
     glyph: &PreprocessedGlyph,
     threshold: u8,
+    invert: bool,
     max_w: u16,
     max_h: u16,
 ) -> Vec<Line<'static>> {
@@ -8652,7 +8884,7 @@ fn preview_lines_stable_frame(
     for y in 0..src_h {
         for x in 0..src_w {
             let idx = y * src_w + x;
-            if glyph.coverage[idx] >= threshold {
+            if (glyph.coverage[idx] >= threshold) ^ invert {
                 matrix[idx] = true;
             }
         }
@@ -9069,10 +9301,17 @@ fn load_interactive_glyphs_from_config(config: &RuntimeConfig) -> Result<LoadedG
             .get(&glyph.source_parent_key)
             .copied();
         let working_threshold = saved_threshold.unwrap_or(config.base_threshold);
+        let saved_invert = config
+            .invert_overrides
+            .get(&glyph.source_parent_key)
+            .copied()
+            .unwrap_or(false);
         InteractiveGlyph {
             glyph,
             saved_threshold,
             working_threshold,
+            saved_invert,
+            working_invert: saved_invert,
         }
     })
     .collect::<Vec<_>>();
@@ -9446,7 +9685,8 @@ mod tests {
         installed_animation_frame_index, installed_animation_source_block, preview_lines,
         preview_leftmost_control, prune_static_sample_blocks, step_animation_preview,
         scrollbar_thumb_geometry, visible_window_bounds, persist_composition_definition,
-        selected_threshold_sources, animation_has_non_uniform_frame_thresholds,
+        selected_threshold_sources, animation_has_non_uniform_frame_invert,
+        animation_has_non_uniform_frame_thresholds,
     };
     use crate::build::{CompositionTileInfo, PreprocessedGlyph};
     use image::{Rgba, RgbaImage};
@@ -9489,6 +9729,7 @@ mod tests {
             glyph_size: 8,
             base_threshold: 64,
             threshold_overrides: BTreeMap::new(),
+            invert_overrides: BTreeMap::new(),
             compositions: BTreeMap::new(),
             animations: Vec::new(),
             codepoint_start: 0x10_0000,
@@ -9530,6 +9771,7 @@ mod tests {
             glyph_size: 8,
             base_threshold: 64,
             threshold_overrides: BTreeMap::new(),
+            invert_overrides: BTreeMap::new(),
             compositions: BTreeMap::new(),
             animations: Vec::new(),
             codepoint_start: 0x10_0000,
@@ -9735,6 +9977,8 @@ mod tests {
             },
             working_threshold: 64,
             saved_threshold: None,
+        saved_invert: false,
+        working_invert: false,
         };
 
         assert!(!glyph_matches_animation_frame_source(
@@ -9801,6 +10045,7 @@ mod tests {
             glyph_size: 8,
             base_threshold: 64,
             threshold_overrides: BTreeMap::new(),
+            invert_overrides: BTreeMap::new(),
             compositions: BTreeMap::new(),
             animations: Vec::new(),
             codepoint_start: 0x10_0000,
@@ -9838,6 +10083,7 @@ mod tests {
             glyph_size: 8,
             base_threshold: 64,
             threshold_overrides: BTreeMap::new(),
+            invert_overrides: BTreeMap::new(),
             compositions: BTreeMap::new(),
             animations: Vec::new(),
             codepoint_start: 0x10_0000,
@@ -9892,6 +10138,7 @@ mod tests {
             glyph_size: 8,
             base_threshold: 64,
             threshold_overrides: BTreeMap::new(),
+            invert_overrides: BTreeMap::new(),
             compositions: BTreeMap::new(),
             animations: Vec::new(),
             codepoint_start: 0x10_0000,
@@ -9949,7 +10196,7 @@ mod tests {
             composition_tile: None,
         };
 
-        let lines = preview_lines(&glyph, 64, 37, 37);
+        let lines = preview_lines(&glyph, 64, false, 37, 37);
         let rendered = lines
             .iter()
             .map(|line| {
@@ -9992,6 +10239,8 @@ mod tests {
                     },
                     working_threshold: 64,
                     saved_threshold: None,
+                saved_invert: false,
+                working_invert: false,
                 })
             })
             .collect::<Vec<_>>();
@@ -10000,6 +10249,7 @@ mod tests {
         let lines = composition_preview_lines_stable_frame(
             &tile_refs,
             64,
+            false,
             2,
             emitted_composition_cols(2),
             12,
@@ -10031,6 +10281,7 @@ mod tests {
             glyph_size: 8,
             base_threshold: 64,
             threshold_overrides: BTreeMap::new(),
+            invert_overrides: BTreeMap::new(),
             compositions: BTreeMap::new(),
             animations: vec![AnimationDef {
                 name: "walk".to_string(),
@@ -10061,6 +10312,8 @@ mod tests {
                 },
                 working_threshold: 64,
                 saved_threshold: None,
+            saved_invert: false,
+            working_invert: false,
             })
             .collect();
 
@@ -10115,6 +10368,7 @@ mod tests {
             glyph_size: 8,
             base_threshold: 64,
             threshold_overrides: BTreeMap::new(),
+            invert_overrides: BTreeMap::new(),
             compositions: BTreeMap::new(),
             animations: vec![
                 AnimationDef {
@@ -10163,6 +10417,8 @@ mod tests {
                 },
                 working_threshold: 64,
                 saved_threshold: None,
+            saved_invert: false,
+            working_invert: false,
             },
             InteractiveGlyph {
                 glyph: PreprocessedGlyph {
@@ -10178,6 +10434,8 @@ mod tests {
                 },
                 working_threshold: 64,
                 saved_threshold: None,
+            saved_invert: false,
+            working_invert: false,
             },
         ];
 
@@ -10294,6 +10552,7 @@ mod tests {
             glyph_size: 8,
             base_threshold: 64,
             threshold_overrides: BTreeMap::new(),
+            invert_overrides: BTreeMap::new(),
             compositions: BTreeMap::new(),
             animations: Vec::new(),
             codepoint_start: 0x10_0000,
@@ -10334,6 +10593,7 @@ mod tests {
             glyph_size: 8,
             base_threshold: 64,
             threshold_overrides: BTreeMap::new(),
+            invert_overrides: BTreeMap::new(),
             compositions: BTreeMap::new(),
             animations: Vec::new(),
             codepoint_start: 0x10_0000,
@@ -10385,6 +10645,7 @@ mod tests {
             glyph_size: 8,
             base_threshold: 64,
             threshold_overrides: BTreeMap::new(),
+            invert_overrides: BTreeMap::new(),
             compositions: BTreeMap::new(),
             animations: Vec::new(),
             codepoint_start: 0x10_0000,
@@ -10455,6 +10716,7 @@ mod tests {
             glyph_size: 8,
             base_threshold: 64,
             threshold_overrides: BTreeMap::new(),
+            invert_overrides: BTreeMap::new(),
             compositions: BTreeMap::from([(
                 "frame.png".to_string(),
                 CompositionDef {
@@ -10519,6 +10781,7 @@ mod tests {
             glyph_size: 8,
             base_threshold: 64,
             threshold_overrides: BTreeMap::new(),
+            invert_overrides: BTreeMap::new(),
             compositions: BTreeMap::new(),
             animations: Vec::new(),
             codepoint_start: 0x10_0000,
@@ -10539,6 +10802,7 @@ mod tests {
             glyph_size: 8,
             base_threshold: 64,
             threshold_overrides: BTreeMap::new(),
+            invert_overrides: BTreeMap::new(),
             compositions: BTreeMap::new(),
             animations: Vec::new(),
             codepoint_start: 0x10_0000,
@@ -10569,16 +10833,20 @@ mod tests {
     }
 
     #[test]
-    fn preview_leftmost_control_prefers_threshold_then_fps() {
+    fn preview_leftmost_control_prefers_threshold_then_invert_then_fps() {
         assert_eq!(
-            preview_leftmost_control(true, true),
+            preview_leftmost_control(true, true, false),
             Some(GlyphPreviewControl::Threshold)
         );
         assert_eq!(
-            preview_leftmost_control(false, true),
+            preview_leftmost_control(false, true, true),
+            Some(GlyphPreviewControl::Invert)
+        );
+        assert_eq!(
+            preview_leftmost_control(false, true, false),
             Some(GlyphPreviewControl::Fps)
         );
-        assert_eq!(preview_leftmost_control(false, false), None);
+        assert_eq!(preview_leftmost_control(false, false, false), None);
     }
 
     #[test]
@@ -10594,6 +10862,7 @@ mod tests {
             glyph_size: 8,
             base_threshold: 64,
             threshold_overrides: BTreeMap::new(),
+            invert_overrides: BTreeMap::new(),
             compositions: BTreeMap::new(),
             animations: vec![AnimationDef {
                 name: "run_anim".to_string(),
@@ -10623,6 +10892,8 @@ mod tests {
                 },
                 working_threshold: 64,
                 saved_threshold: None,
+            saved_invert: false,
+            working_invert: false,
             },
             InteractiveGlyph {
                 glyph: PreprocessedGlyph {
@@ -10638,6 +10909,8 @@ mod tests {
                 },
                 working_threshold: 64,
                 saved_threshold: None,
+            saved_invert: false,
+            working_invert: false,
             },
         ];
         app.expanded_animations.insert("run_anim".to_string());
@@ -10686,6 +10959,7 @@ mod tests {
             glyph_size: 8,
             base_threshold: 64,
             threshold_overrides: BTreeMap::new(),
+            invert_overrides: BTreeMap::new(),
             compositions: BTreeMap::new(),
             animations: vec![animation.clone()],
             codepoint_start: 0x10_0000,
@@ -10706,6 +10980,8 @@ mod tests {
                 },
                 working_threshold: 60,
                 saved_threshold: Some(60),
+            saved_invert: false,
+            working_invert: false,
             },
             InteractiveGlyph {
                 glyph: PreprocessedGlyph {
@@ -10721,12 +10997,87 @@ mod tests {
                 },
                 working_threshold: 72,
                 saved_threshold: Some(72),
+            saved_invert: false,
+            working_invert: false,
             },
         ];
 
         assert!(animation_has_non_uniform_frame_thresholds(&app, &animation));
         app.glyphs[1].working_threshold = 60;
         assert!(!animation_has_non_uniform_frame_thresholds(&app, &animation));
+
+        fs::remove_dir_all(project_dir).expect("temp dir is removed");
+    }
+
+    #[test]
+    fn animation_non_uniform_invert_detection_tracks_frame_specific_overrides() {
+        let project_dir = make_temp_dir("animation-non-uniform-invert");
+        let manifest_path = project_dir.join("petiglyph.toml");
+        let animation = AnimationDef {
+            name: "blink_anim".to_string(),
+            animation_type: AnimationType::Standard,
+            fps: 12,
+            frames: vec!["a.png".to_string(), "b.png".to_string()],
+            rows: None,
+            cols: None,
+            horizontal_bleed: None,
+            vertical_bleed: None,
+        };
+        let config = RuntimeConfig {
+            project_dir: project_dir.clone(),
+            project_id: "test-animation-non-uniform-invert".to_string(),
+            input_dir: project_dir.join("icons"),
+            out_dir: project_dir.join("build"),
+            font_name: "Petiglyph".to_string(),
+            glyph_size: 8,
+            base_threshold: 64,
+            threshold_overrides: BTreeMap::new(),
+            invert_overrides: BTreeMap::new(),
+            compositions: BTreeMap::new(),
+            animations: vec![animation.clone()],
+            codepoint_start: 0x10_0000,
+        };
+        let mut app = App::new(manifest_path, config);
+        app.glyphs = vec![
+            InteractiveGlyph {
+                glyph: PreprocessedGlyph {
+                    source_path: PathBuf::from("icons/a.png"),
+                    source_key: "a.png".to_string(),
+                    source_parent_key: "a.png".to_string(),
+                    glyph_name: "a".to_string(),
+                    width: 1,
+                    height: 1,
+                    coverage: vec![255],
+                    image_fingerprint: "fnv1a64:test-a".to_string(),
+                    composition_tile: None,
+                },
+                working_threshold: 64,
+                saved_threshold: None,
+                saved_invert: true,
+                working_invert: true,
+            },
+            InteractiveGlyph {
+                glyph: PreprocessedGlyph {
+                    source_path: PathBuf::from("icons/b.png"),
+                    source_key: "b.png".to_string(),
+                    source_parent_key: "b.png".to_string(),
+                    glyph_name: "b".to_string(),
+                    width: 1,
+                    height: 1,
+                    coverage: vec![255],
+                    image_fingerprint: "fnv1a64:test-b".to_string(),
+                    composition_tile: None,
+                },
+                working_threshold: 64,
+                saved_threshold: None,
+                saved_invert: false,
+                working_invert: false,
+            },
+        ];
+
+        assert!(animation_has_non_uniform_frame_invert(&app, &animation));
+        app.glyphs[1].working_invert = true;
+        assert!(!animation_has_non_uniform_frame_invert(&app, &animation));
 
         fs::remove_dir_all(project_dir).expect("temp dir is removed");
     }

@@ -232,7 +232,8 @@ pub(crate) fn build_outputs_with_options(
             &config.threshold_overrides,
             &glyph.source_parent_key,
         );
-        let bitmap = threshold_bitmap(glyph, threshold);
+        let invert = effective_invert(&config.invert_overrides, &glyph.source_parent_key);
+        let bitmap = threshold_bitmap(glyph, threshold, invert);
 
         let preview_path = previews_dir.join(format!("{}.png", glyph.glyph_name));
         write_preview_png(&preview_path, &bitmap)
@@ -912,6 +913,10 @@ fn effective_threshold(
     overrides.get(source_key).copied().unwrap_or(base_threshold)
 }
 
+fn effective_invert(overrides: &BTreeMap<String, bool>, source_key: &str) -> bool {
+    overrides.get(source_key).copied().unwrap_or(false)
+}
+
 #[allow(dead_code)]
 pub(crate) fn preprocess_sources(
     sources: &[PathBuf],
@@ -1074,17 +1079,17 @@ pub(crate) fn coverage_map(source: &RgbaImage, glyph_size: u32) -> Result<Vec<u8
     coverage_map_from_image(source, glyph_size)
 }
 
-fn threshold_bitmap(glyph: &PreprocessedGlyph, threshold: u8) -> GlyphBitmap {
+fn threshold_bitmap(glyph: &PreprocessedGlyph, threshold: u8, invert: bool) -> GlyphBitmap {
     let pixels = glyph
         .coverage
         .iter()
-        .map(|v| *v >= threshold)
+        .map(|v| (*v >= threshold) ^ invert)
         .collect::<Vec<bool>>();
     glyph_debug::log_step(
         "threshold",
         format!(
-            "source={} glyph={} threshold={}",
-            glyph.source_parent_key, glyph.glyph_name, threshold
+            "source={} glyph={} threshold={} invert={}",
+            glyph.source_parent_key, glyph.glyph_name, threshold, invert
         ),
     );
     glyph_debug::write_bitmap_png(
