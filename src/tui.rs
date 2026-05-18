@@ -75,7 +75,6 @@ const HTY_FULL_REPAINT_ENV: &str = "PETIGLYPH_TUI_HTY_FULL_REPAINT";
 const GLYPH_SOURCE_COUNT_REFRESH_MS: u64 = 300;
 const INSTALL_METADATA_PREFIX: &str = ".petiglyph-install-";
 const INSTALL_METADATA_SUFFIX: &str = ".json";
-const INSTALLED_FONT_BLOCK_REFERENCE_SEPARATOR: &str = "  │  ";
 const DEBUG_LOG_VISIBLE_LINES: usize = 6;
 static HTY_FULL_REPAINT_ENABLED: OnceLock<bool> = OnceLock::new();
 
@@ -3357,8 +3356,7 @@ fn draw_welcome_view(
                     && app.selected_installed_font_sub_index == sub_idx
                     && app.welcome_focus == WelcomeFocus::InstalledFontList;
 
-                let wrapped_lines =
-                    installed_font_block_display_lines_with_reference(block_str, sample_wrap_width);
+                let wrapped_lines = installed_font_block_display_lines(block_str, sample_wrap_width);
 
                 if is_focused {
                     selected_font_row_idx = font_rows.len() + wrapped_lines.len().saturating_sub(1);
@@ -9731,64 +9729,6 @@ pub(crate) fn installed_font_block_display_lines(block: &str, max_chars: usize) 
     wrap_sample_for_display(block, max_chars)
 }
 
-fn pad_to_char_width(text: &str, target_chars: usize) -> String {
-    let width = text.chars().count();
-    if width >= target_chars {
-        return text.to_string();
-    }
-    format!("{text}{}", " ".repeat(target_chars - width))
-}
-
-fn block_elements_reference_lines(lines: &[String]) -> Vec<String> {
-    lines
-        .iter()
-        .map(|line| {
-            line.chars()
-                .map(|ch| if ch.is_whitespace() { ' ' } else { '█' })
-                .collect::<String>()
-        })
-        .collect()
-}
-
-pub(crate) fn installed_font_block_display_lines_with_reference(
-    block: &str,
-    max_chars: usize,
-) -> Vec<String> {
-    let multiline = block.split('\n').nth(1).is_some();
-    if !multiline {
-        return installed_font_block_display_lines(block, max_chars);
-    }
-
-    let separator_width = INSTALLED_FONT_BLOCK_REFERENCE_SEPARATOR.chars().count();
-    let available = max_chars.max(1);
-    if available <= separator_width + 2 {
-        return installed_font_block_display_lines(block, max_chars);
-    }
-
-    let pane_width = (available - separator_width) / 2;
-    let left_width = pane_width.max(1);
-    let right_width = (available - separator_width - left_width).max(1);
-
-    let left_lines = installed_font_block_display_lines(block, left_width);
-    if left_lines.is_empty() {
-        return left_lines;
-    }
-    let reference_lines = block_elements_reference_lines(&left_lines);
-    let mut out = Vec::with_capacity(left_lines.len().max(reference_lines.len()));
-    for idx in 0..left_lines.len().max(reference_lines.len()) {
-        let left = left_lines.get(idx).cloned().unwrap_or_default();
-        let mut right = reference_lines.get(idx).cloned().unwrap_or_default();
-        right = right.chars().take(right_width).collect::<String>();
-        out.push(format!(
-            "{}{}{}",
-            pad_to_char_width(&left, left_width),
-            INSTALLED_FONT_BLOCK_REFERENCE_SEPARATOR,
-            right
-        ));
-    }
-    out
-}
-
 fn installed_animation_frame_index(
     fps: u8,
     frame_count: usize,
@@ -9836,7 +9776,7 @@ fn installed_animation_preview_lines(
     preview
         .frame_blocks
         .get(frame_index)
-        .map(|block| installed_font_block_display_lines_with_reference(block, max_chars))
+        .map(|block| installed_font_block_display_lines(block, max_chars))
 }
 
 #[cfg(test)]

@@ -33,8 +33,7 @@ use crate::tui::{
     App, AppView, GlyphsFocus, GridConfig, GridConfigFocus, InstalledFontSample, InteractiveGlyph,
     TuiLaunchOverrides, WelcomeFocus, build_action_name, format_projects_card_hint,
     format_welcome_input_field, handle_key, handle_key_event_for_test, handle_paste_event_for_test,
-    install_action_name, installed_font_block_display_lines,
-    installed_font_block_display_lines_with_reference, persist_threshold_override,
+    install_action_name, installed_font_block_display_lines, persist_threshold_override,
     regroup_installed_sample_blocks, render_ui_for_test, requested_keyboard_enhancement_flags,
     resolve_installed_font_path_with, sample_glyphs_from_ttf_bytes, should_dispatch_key_kind,
     switch_notice_visible, wrap_sample_for_display,
@@ -887,22 +886,6 @@ fn installed_font_card_keeps_grid_tiles_adjacent() {
         vec!["ABC", "DEF", "GHI"],
         "installed font card must not inject spaces between composition tiles"
     );
-}
-
-#[test]
-fn installed_font_card_adds_block_reference_for_multiline_grids() {
-    let lines = installed_font_block_display_lines_with_reference("AB\n C", 20);
-    assert_eq!(
-        lines,
-        vec!["AB       │  ██", " C       │   █"],
-        "multiline grids should include a full-block reference column"
-    );
-}
-
-#[test]
-fn installed_font_card_reference_helper_keeps_single_line_blocks_unchanged() {
-    let lines = installed_font_block_display_lines_with_reference("ABCD", 20);
-    assert_eq!(lines, vec!["ABCD"]);
 }
 
 #[test]
