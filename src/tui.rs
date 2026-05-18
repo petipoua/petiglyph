@@ -42,7 +42,8 @@ use crate::glyph_debug;
 use crate::install::{
     DEFAULT_INSTALL_NAME_MODE, FontInstallNameMode, effective_font_name,
     expected_install_ttf_path_for_mode, install_built_font, install_dir_for_manifest,
-    installed_ttf_candidates_for_manifest_font, uninstall_installed_font_file,
+    installed_ttf_candidates_for_manifest_font, supplementary_pua_usage_summary,
+    uninstall_installed_font_file,
 };
 use crate::project::{
     AnimationDef, AnimationType, BleedLevel, CompositionDef, RuntimeConfig, create_project_in_dir,
@@ -375,6 +376,7 @@ pub(crate) struct App {
     pub(crate) welcome_input_editing: bool,
     pub(crate) verbose_paths: bool,
     pub(crate) installed_fonts: Vec<InstalledFontSample>,
+    pua_usage_summary: Option<crate::install::PuaUsageSummary>,
     installed_animation_started_at: Instant,
     pub(crate) selected_installed_font: usize,
     pub(crate) selected_installed_font_sub_index: usize,
@@ -3216,7 +3218,7 @@ fn draw_welcome_view(
         Line::from(vec![
             Span::raw("  "),
             Span::styled(
-                "Machine-wide inventory of petiglyph-managed fonts.",
+                supplementary_pua_usage_line(app.pua_usage_summary.as_ref()),
                 Style::default().fg(muted),
             ),
         ]),
@@ -3847,6 +3849,7 @@ impl App {
             welcome_input_editing: false,
             verbose_paths: false,
             installed_fonts: Vec::new(),
+            pua_usage_summary: None,
             installed_animation_started_at: Instant::now(),
             selected_installed_font: 0,
             selected_installed_font_sub_index: 0,
@@ -3927,6 +3930,7 @@ impl App {
             welcome_input_editing: false,
             verbose_paths: false,
             installed_fonts: Vec::new(),
+            pua_usage_summary: None,
             installed_animation_started_at: Instant::now(),
             selected_installed_font: 0,
             selected_installed_font_sub_index: 0,
@@ -3989,6 +3993,7 @@ impl App {
                 self.status = Some(format!("font scan warning: {err}"));
             }
         }
+        self.pua_usage_summary = supplementary_pua_usage_summary().ok();
         self.sync_selected_installed_font();
 
         if self.projects.is_empty() {
@@ -9472,6 +9477,34 @@ fn installed_fonts_restart_warning() -> String {
         return format!("restart all {name} terminals to render newly installed glyphs");
     }
     "restart all terminals to render newly installed glyphs".to_string()
+}
+
+fn format_count_k(value: usize) -> String {
+    if value >= 1_000 {
+        let whole = value / 1_000;
+        let tenth = (value % 1_000) / 100;
+        format!("{whole}.{tenth}k")
+    } else {
+        value.to_string()
+    }
+}
+
+fn supplementary_pua_usage_line(summary: Option<&crate::install::PuaUsageSummary>) -> String {
+    let Some(summary) = summary else {
+        return "supplementary PUA usage unavailable on this machine.".to_string();
+    };
+
+    let mut line = format!(
+        "supplementary PUA: petiglyph {} / {} used; external {}; available {}",
+        format_count_k(summary.petiglyph_occupied),
+        format_count_k(summary.supplementary_pua_total),
+        format_count_k(summary.external_occupied),
+        format_count_k(summary.available)
+    );
+    if summary.petiglyph_occupied >= 10_000 {
+        line.push_str(" (petiglyph usage > 10k)");
+    }
+    line
 }
 
 fn visible_window_bounds(

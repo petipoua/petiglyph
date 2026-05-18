@@ -24,6 +24,8 @@ const UNICODE_REGISTRY_VERSION: u32 = 1;
 const SUPPLEMENTARY_PUA_START: u32 = 0xF0000;
 const SUPPLEMENTARY_PUA_END: u32 = 0x10_FFFF;
 const TEST_EXTERNAL_FONT_SCAN_DIR_NAME: &str = ".external-fonts";
+const EXTERNAL_PUA_CACHE_FILE_NAME: &str = ".external-pua-cache.json";
+const EXTERNAL_PUA_CACHE_VERSION: u32 = 1;
 const MIN_PROJECT_RANGE_SIZE: u32 = 1;
 const FILE_LOCK_TIMEOUT: Duration = Duration::from_secs(15);
 const FILE_LOCK_STALE_AFTER: Duration = Duration::from_secs(120);
@@ -109,6 +111,22 @@ struct UnicodeRegistryFile {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+struct ExternalPuaCacheEntry {
+    path: String,
+    size_bytes: u64,
+    modified_unix_ms: u128,
+    #[serde(default)]
+    codepoints: Vec<u32>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct ExternalPuaCacheFile {
+    version: u32,
+    #[serde(default)]
+    entries: Vec<ExternalPuaCacheEntry>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 struct FirstInstallStateFile {
     version: u32,
     first_install_recorded_unix_ms: u128,
@@ -160,6 +178,14 @@ pub(crate) struct SampleCoverageDiagnosis {
     pub(crate) checked_codepoints: usize,
     pub(crate) missing_codepoints: usize,
     pub(crate) probes: Vec<SampleCoverageProbe>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub(crate) struct PuaUsageSummary {
+    pub(crate) supplementary_pua_total: usize,
+    pub(crate) external_occupied: usize,
+    pub(crate) petiglyph_occupied: usize,
+    pub(crate) available: usize,
 }
 
 fn current_platform() -> Result<FontPlatform> {
@@ -467,6 +493,61 @@ fn save_unicode_registry(path: &Path, registry: &UnicodeRegistryFile) -> Result<
     write_atomic_string(path, &raw)
 }
 
+fn load_external_pua_cache(path: &Path) -> ExternalPuaCacheFile {
+    if !path.exists() {
+        return ExternalPuaCacheFile {
+            version: EXTERNAL_PUA_CACHE_VERSION,
+            entries: Vec::new(),
+        };
+    }
+
+    let raw = match fs::read_to_string(path) {
+        Ok(raw) => raw,
+        Err(_) => {
+            return ExternalPuaCacheFile {
+                version: EXTERNAL_PUA_CACHE_VERSION,
+                entries: Vec::new(),
+            };
+        }
+    };
+
+    let parsed = serde_json::from_str::<ExternalPuaCacheFile>(&raw);
+    let Ok(cache) = parsed else {
+        return ExternalPuaCacheFile {
+            version: EXTERNAL_PUA_CACHE_VERSION,
+            entries: Vec::new(),
+        };
+    };
+
+    if cache.version != EXTERNAL_PUA_CACHE_VERSION {
+        return ExternalPuaCacheFile {
+            version: EXTERNAL_PUA_CACHE_VERSION,
+            entries: Vec::new(),
+        };
+    }
+
+    cache
+}
+
+fn save_external_pua_cache(path: &Path, cache: &ExternalPuaCacheFile) -> Result<()> {
+    let raw = serde_json::to_string_pretty(cache)
+        .context("failed to serialize external supplementary PUA cache")?;
+    write_atomic_string(path, &raw)
+}
+
+fn metadata_modified_unix_ms(metadata: &fs::Metadata) -> Option<u128> {
+    metadata
+        .modified()
+        .ok()
+        .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
+        .map(|d| d.as_millis())
+}
+
+fn supplementary_pua_slot_count() -> usize {
+    usize::try_from(SUPPLEMENTARY_PUA_END - SUPPLEMENTARY_PUA_START + 1)
+        .expect("supplementary PUA slot count fits in usize")
+}
+
 fn project_slug_for_manifest(manifest_path: &Path) -> Result<String> {
     let project_dir = manifest_path
         .parent()
@@ -509,6 +590,30 @@ pub(crate) fn install_dir_for_manifest(_manifest_path: &Path) -> Result<PathBuf>
 pub(crate) fn managed_install_dir() -> Result<PathBuf> {
     let font_root = user_font_root()?;
     Ok(install_dir_for_project(&font_root))
+}
+
+pub(crate) fn supplementary_pua_usage_summary() -> Result<PuaUsageSummary> {
+    let install_dir = managed_install_dir()?;
+    fs::create_dir_all(&install_dir)
+        .with_context(|| format!("failed to create {}", install_dir.display()))?;
+
+    let lock_path = install_dir.join(UNICODE_REGISTRY_LOCK_FILE_NAME);
+    let _guard = acquire_file_lock(&lock_path, "Unicode registry")?;
+
+    let external = collect_external_supplementary_pua_codepoints(None, &install_dir)?;
+    let petiglyph = collect_managed_supplementary_pua_codepoints(&install_dir)?;
+    let total = supplementary_pua_slot_count();
+
+    let mut combined = external.clone();
+    combined.extend(petiglyph.iter().copied());
+    let available = total.saturating_sub(combined.len());
+
+    Ok(PuaUsageSummary {
+        supplementary_pua_total: total,
+        external_occupied: external.len(),
+        petiglyph_occupied: petiglyph.len(),
+        available,
+    })
 }
 
 fn user_fontconfig_conf_dir() -> Result<PathBuf> {
@@ -567,14 +672,16 @@ fn collect_pua_codepoints_from_face(face: &ttf_parser::Face<'_>, occupied: &mut 
     }
 }
 
-fn collect_pua_codepoints_from_font_data(data: &[u8], occupied: &mut BTreeSet<u32>) {
+fn collect_pua_codepoints_from_font_data(data: &[u8]) -> BTreeSet<u32> {
+    let mut occupied = BTreeSet::new();
     let face_count = ttf_parser::fonts_in_collection(data).unwrap_or(1);
     for face_index in 0..face_count {
         let Ok(face) = ttf_parser::Face::parse(data, face_index) else {
             continue;
         };
-        collect_pua_codepoints_from_face(&face, occupied);
+        collect_pua_codepoints_from_face(&face, &mut occupied);
     }
+    occupied
 }
 
 fn system_font_scan_roots() -> Result<Vec<PathBuf>> {
@@ -614,6 +721,13 @@ fn collect_external_supplementary_pua_codepoints(
 ) -> Result<BTreeSet<u32>> {
     let roots = external_font_scan_roots(registry_root_override)?;
     let mut occupied = BTreeSet::new();
+    let cache_path = managed_install_dir.join(EXTERNAL_PUA_CACHE_FILE_NAME);
+    let mut cache = load_external_pua_cache(&cache_path);
+    let mut cache_by_path = BTreeMap::new();
+    for entry in cache.entries.drain(..) {
+        cache_by_path.insert(entry.path.clone(), entry);
+    }
+    let mut seen_paths = BTreeSet::new();
 
     for root in roots {
         if !root.exists() {
@@ -631,12 +745,70 @@ fn collect_external_supplementary_pua_codepoints(
             if path.starts_with(managed_install_dir) {
                 continue;
             }
+            let path_key = path.display().to_string();
+            seen_paths.insert(path_key.clone());
+
+            let metadata = match entry.metadata() {
+                Ok(metadata) => metadata,
+                Err(_) => continue,
+            };
+            let size_bytes = metadata.len();
+            let modified_unix_ms = metadata_modified_unix_ms(&metadata).unwrap_or(0);
+
+            if let Some(cached) = cache_by_path.get(&path_key)
+                && cached.size_bytes == size_bytes
+                && cached.modified_unix_ms == modified_unix_ms
+            {
+                occupied.extend(cached.codepoints.iter().copied());
+                continue;
+            }
 
             let Ok(data) = fs::read(path) else {
                 continue;
             };
-            collect_pua_codepoints_from_font_data(&data, &mut occupied);
+            let found = collect_pua_codepoints_from_font_data(&data);
+            occupied.extend(found.iter().copied());
+            cache_by_path.insert(
+                path_key,
+                ExternalPuaCacheEntry {
+                    path: path.display().to_string(),
+                    size_bytes,
+                    modified_unix_ms,
+                    codepoints: found.into_iter().collect(),
+                },
+            );
         }
+    }
+
+    cache.entries = cache_by_path
+        .into_values()
+        .filter(|entry| seen_paths.contains(&entry.path))
+        .collect();
+    cache.version = EXTERNAL_PUA_CACHE_VERSION;
+    let _ = save_external_pua_cache(&cache_path, &cache);
+
+    Ok(occupied)
+}
+
+fn collect_managed_supplementary_pua_codepoints(install_dir: &Path) -> Result<BTreeSet<u32>> {
+    let mut occupied = BTreeSet::new();
+    if !install_dir.is_dir() {
+        return Ok(occupied);
+    }
+
+    for entry in fs::read_dir(install_dir)
+        .with_context(|| format!("failed to read {}", install_dir.display()))?
+    {
+        let entry =
+            entry.with_context(|| format!("failed to read entry in {}", install_dir.display()))?;
+        let path = entry.path();
+        if !path.is_file() || !is_supported_font_file(&path) {
+            continue;
+        }
+        let Ok(data) = fs::read(&path) else {
+            continue;
+        };
+        occupied.extend(collect_pua_codepoints_from_font_data(&data));
     }
 
     Ok(occupied)
@@ -1966,6 +2138,7 @@ fn uninstall_tool_state_for_font_root(font_root: &Path) -> Result<ToolUninstallR
             file_name,
             UNICODE_REGISTRY_FILE_NAME
                 | UNICODE_REGISTRY_LOCK_FILE_NAME
+                | EXTERNAL_PUA_CACHE_FILE_NAME
                 | FIRST_INSTALL_STATE_FILE_NAME
                 | LEGACY_FIRST_INSTALL_STATE_FILE_NAME_V2
         );

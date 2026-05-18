@@ -9,7 +9,8 @@ use crate::build::{BuildOptions, BuildSummary, build_outputs_with_options};
 use crate::doctor::{DoctorReport, doctor};
 use crate::install::{
     DEFAULT_INSTALL_NAME_MODE, FontPlatform, UninstallOutcome, diagnose_sample_coverage,
-    effective_font_name, install_built_font, uninstall_project_font, uninstall_tool_state,
+    effective_font_name, install_built_font, supplementary_pua_usage_summary,
+    uninstall_project_font, uninstall_tool_state,
 };
 use crate::project::{
     RuntimeConfig, create_project, delete_project_for_manifest, discover_project_manifests,
@@ -236,6 +237,8 @@ struct ListCommandData {
     workspace_dir: String,
     projects: Vec<ListProjectData>,
     installed_fonts: Vec<ListInstalledFontData>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pua_usage: Option<crate::install::PuaUsageSummary>,
 }
 
 #[derive(Debug, Serialize)]
@@ -762,6 +765,39 @@ fn print_list_result(data: &ListCommandData) {
             );
         }
     }
+    if let Some(summary) = &data.pua_usage {
+        println!();
+        println!("{}supplementary pua usage:{}", colors.cyan, colors.reset);
+        println!(
+            "  petiglyph: {}/{} codepoints",
+            format_count_k(summary.petiglyph_occupied),
+            format_count_k(summary.supplementary_pua_total)
+        );
+        println!(
+            "  external:  {} codepoints",
+            format_count_k(summary.external_occupied)
+        );
+        println!(
+            "  available: {} codepoints",
+            format_count_k(summary.available)
+        );
+        if summary.petiglyph_occupied >= 10_000 {
+            println!(
+                "  note:      petiglyph managed usage is above 10k ({})",
+                format_count_k(summary.petiglyph_occupied)
+            );
+        }
+    }
+}
+
+fn format_count_k(value: usize) -> String {
+    if value >= 1_000 {
+        let whole = value / 1_000;
+        let tenth = (value % 1_000) / 100;
+        format!("{whole}.{tenth}k")
+    } else {
+        value.to_string()
+    }
 }
 
 fn print_delete_result(data: &DeleteCommandData) {
@@ -1100,10 +1136,13 @@ fn list_command() -> Result<ListCommandData> {
         }
     }
 
+    let pua_usage = supplementary_pua_usage_summary().ok();
+
     Ok(ListCommandData {
         workspace_dir: current_dir.display().to_string(),
         projects,
         installed_fonts,
+        pua_usage,
     })
 }
 

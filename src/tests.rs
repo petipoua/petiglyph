@@ -3066,6 +3066,13 @@ fn unicode_registry_avoids_external_font_pua_conflicts() {
         reserved.range_start > 0x10_0000,
         "reservation should move forward past external occupied codepoint"
     );
+    assert!(
+        registry_root
+            .join("petiglyph")
+            .join(".external-pua-cache.json")
+            .is_file(),
+        "external supplementary PUA scan should persist cache file"
+    );
 
     fs::remove_dir_all(source_project).expect("source project is removed");
     fs::remove_dir_all(registry_root).expect("registry root is removed");
