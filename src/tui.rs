@@ -3219,9 +3219,12 @@ fn draw_welcome_view(
             Span::raw("  "),
             Span::styled(
                 supplementary_pua_usage_line(app.pua_usage_summary.as_ref()),
-                Style::default().fg(muted),
+                Style::default()
+                    .fg(Color::White)
+                    .add_modifier(Modifier::BOLD),
             ),
         ]),
+        Line::from(""),
         Line::from(vec![
             Span::raw("  "),
             Span::styled(
@@ -9495,7 +9498,7 @@ fn supplementary_pua_usage_line(summary: Option<&crate::install::PuaUsageSummary
     };
 
     let mut line = format!(
-        "supplementary PUA: petiglyph {} / {} used; external {}; available {}",
+        "PUA usage: petiglyph {} / {} used; external {}; available {}",
         format_count_k(summary.petiglyph_occupied),
         format_count_k(summary.supplementary_pua_total),
         format_count_k(summary.external_occupied),
