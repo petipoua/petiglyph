@@ -387,12 +387,35 @@ codepoint_start = "U+100000"
 [compositions]
 "ollama.png" = { rows = 2, cols = 3 }
 # optional: disable seam-hiding bleed if it distorts strict line geometry
-"logo.png" = { rows = 2, cols = 2, horizontal_bleed = true, vertical_bleed = false }
+"logo.png" = { rows = 2, cols = 2, horizontal_bleed = "off", vertical_bleed = "weak" }
+
+[invert_overrides]
+"claude.png" = true
+
+[[animations]]
+name = "runner_anim"
+type = "standard"
+fps = 10
+frames = ["runner_001.png", "runner_002.png", "runner_003.png"]
+
+[[animations]]
+name = "spinner_anim"
+type = "grid"
+fps = 8
+frames = ["spinner_sheet.png", "spinner_sheet_2.png"]
+rows = 2
+cols = 2
+horizontal_bleed = "weak"
+vertical_bleed = "off"
 ```
 
 `threshold_overrides` stores per-file threshold tuning relative to `input_dir`.
-`compositions` stores per-file tile grids; each tile becomes its own glyph and is arranged as a grid sample. Left/right TTF bleed defaults on for internal grid edges, while top/bottom bleed defaults off; use `horizontal_bleed = false` or `vertical_bleed = true` to override the defaults when seam hiding distorts important geometry.
+`invert_overrides` stores per-file monochrome inversion.
+`compositions` stores per-file tile grids; each tile becomes its own glyph and is arranged as a grid sample. Left/right TTF bleed defaults to `"weak"` for internal grid edges, while top/bottom bleed defaults to `"off"`; tune with `"off" | "weak" | "strong"` as needed.
+`animations` stores animation definitions for standard and grid animated glyph playback and export.
 `project_id` is managed automatically (generated if missing) and anchors install/Unicode ownership.
+
+Legacy manifests may still contain boolean bleed values in compositions (`true`/`false`); they are accepted and normalized when loaded.
 
 ## TUI Keys
 
@@ -409,9 +432,12 @@ codepoint_start = "U+100000"
 - `C`: remove the selected image composition from `petiglyph.toml`
 - `←` / `→` or `+` / `-`: adjust threshold by 1 for selected glyph (Glyphs view)
 - `PgUp` / `PgDn`: adjust threshold by 10 for selected glyph (Glyphs view)
+- `↑` / `↓` on animation rows can also adjust FPS
+- `Space` / `Enter` on invert-capable rows toggles invert
 - `r`: clear selected glyph override (Glyphs view)
 - `b`: build font outputs directly
 - `i`: install font directly
+- `D`: delete selected animation (or animation linked to selected frame row)
 - `q` / `Esc`: quit
 
 ## Build Outputs

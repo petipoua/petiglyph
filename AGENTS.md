@@ -51,6 +51,7 @@
   - [src/project.rs](/home/peti_poua/Code/petiglyph/src/project.rs)
   - [src/build.rs](/home/peti_poua/Code/petiglyph/src/build.rs)
   - [src/compose.rs](/home/peti_poua/Code/petiglyph/src/compose.rs)
+  - [src/animation_media.rs](/home/peti_poua/Code/petiglyph/src/animation_media.rs)
   - [src/image_pipeline.rs](/home/peti_poua/Code/petiglyph/src/image_pipeline.rs)
   - [src/glyph_debug.rs](/home/peti_poua/Code/petiglyph/src/glyph_debug.rs)
   - [src/install.rs](/home/peti_poua/Code/petiglyph/src/install.rs)
@@ -63,7 +64,7 @@
   - [Cargo.toml](/home/peti_poua/Code/petiglyph/Cargo.toml)
   - [README.md](/home/peti_poua/Code/petiglyph/README.md)
   - [petiglyph.toml](/home/peti_poua/Code/petiglyph/petiglyph.toml) (sample/root manifest)
-  - [PLAN-ANIMATE.md](/home/peti_poua/Code/petiglyph/PLAN-ANIMATE.md)
+  - [PLAN-VIDEO.md](/home/peti_poua/Code/petiglyph/PLAN-VIDEO.md)
 - Local Arch packaging helpers:
   - [PKGBUILD](/home/peti_poua/Code/petiglyph/PKGBUILD)
   - `scripts/aur.sh`
@@ -75,7 +76,7 @@
 - `petiglyph-*.pkg.tar.zst`, `petiglyph-debug-*.pkg.tar.zst`, and `petiglyph-*.tar.gz` are build artifacts.
 - `target/` is Cargo build output.
 - `build/` at repo root is generated output from the sample/root project manifest.
-- `test1/` and `test2/` are local project fixtures with generated outputs and should not be treated as canonical source.
+- `test-hello/`, `test58914/`, `test_parse*`, and `test_ws*` are local fixtures/scratch artifacts and should not be treated as canonical source.
 
 ### Recent History You Should Know
 
