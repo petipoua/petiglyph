@@ -37,6 +37,30 @@ enum AnimationInputKind {
 const MAX_FRAMES_PER_MEDIA_INPUT: usize = 1200;
 const MAX_TOTAL_EXTRACTED_FRAMES_PER_IMPORT: usize = 3000;
 
+struct TempExtractDir(PathBuf);
+
+impl TempExtractDir {
+    fn new(tag: &str) -> Result<Self> {
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("time should be monotonic")
+            .as_nanos();
+        let dir = std::env::temp_dir().join(format!("petiglyph-frame-extract-{tag}-{nonce}"));
+        fs::create_dir_all(&dir).with_context(|| format!("failed to create {}", dir.display()))?;
+        Ok(Self(dir))
+    }
+
+    fn path(&self) -> &Path {
+        &self.0
+    }
+}
+
+impl Drop for TempExtractDir {
+    fn drop(&mut self) {
+        let _ = fs::remove_dir_all(&self.0);
+    }
+}
+
 pub(crate) fn import_animation_media_to_input(
     input_dir: &Path,
     payload: &str,
@@ -76,22 +100,38 @@ pub(crate) fn import_animation_media_to_input(
             }
             AnimationInputKind::Gif => {
                 result.media_files_processed += 1;
-                let temp_paths = expand_gif_frames_to_temp_pngs(&source)?;
+                let remaining_total =
+                    MAX_TOTAL_EXTRACTED_FRAMES_PER_IMPORT.saturating_sub(result.frames_extracted);
+                if remaining_total == 0 {
+                    bail!(
+                        "drop exceeded total extracted frame limit ({MAX_TOTAL_EXTRACTED_FRAMES_PER_IMPORT})"
+                    );
+                }
+                let cap = MAX_FRAMES_PER_MEDIA_INPUT.min(remaining_total);
+                let (_temp_dir, temp_paths) = expand_gif_frames_to_temp_pngs(&source, cap)?;
                 import_expanded_frames(
                     input_dir,
                     &source,
-                    temp_paths,
+                    &temp_paths,
                     existing_policy,
                     &mut result,
                 )?;
             }
             AnimationInputKind::Video => {
                 result.media_files_processed += 1;
-                let temp_paths = expand_video_frames_to_temp_pngs(&source)?;
+                let remaining_total =
+                    MAX_TOTAL_EXTRACTED_FRAMES_PER_IMPORT.saturating_sub(result.frames_extracted);
+                if remaining_total == 0 {
+                    bail!(
+                        "drop exceeded total extracted frame limit ({MAX_TOTAL_EXTRACTED_FRAMES_PER_IMPORT})"
+                    );
+                }
+                let cap = MAX_FRAMES_PER_MEDIA_INPUT.min(remaining_total);
+                let (_temp_dir, temp_paths) = expand_video_frames_to_temp_pngs(&source, cap)?;
                 import_expanded_frames(
                     input_dir,
                     &source,
-                    temp_paths,
+                    &temp_paths,
                     existing_policy,
                     &mut result,
                 )?;
@@ -105,7 +145,7 @@ pub(crate) fn import_animation_media_to_input(
 fn import_expanded_frames(
     input_dir: &Path,
     source_media_path: &Path,
-    temp_frame_paths: Vec<PathBuf>,
+    temp_frame_paths: &[PathBuf],
     existing_policy: ExistingImportPolicy,
     result: &mut AnimationMediaImportResult,
 ) -> Result<()> {
@@ -116,16 +156,10 @@ fn import_expanded_frames(
         );
     }
 
-    let media_hash = hash_file_bytes_hex8(source_media_path)?;
+    let media_hash = media_identity_hash_hex8(source_media_path)?;
     let stem = slug_stem(source_media_path);
 
     for (idx, frame_path) in temp_frame_paths.iter().enumerate() {
-        if idx >= MAX_FRAMES_PER_MEDIA_INPUT {
-            bail!(
-                "{} exceeded frame extraction limit ({MAX_FRAMES_PER_MEDIA_INPUT})",
-                source_media_path.to_string_lossy()
-            );
-        }
         if result.frames_extracted >= MAX_TOTAL_EXTRACTED_FRAMES_PER_IMPORT {
             bail!(
                 "drop exceeded total extracted frame limit ({MAX_TOTAL_EXTRACTED_FRAMES_PER_IMPORT})"
@@ -236,37 +270,50 @@ fn is_supported_still_image(path: &Path) -> bool {
     }
 }
 
-fn expand_gif_frames_to_temp_pngs(path: &Path) -> Result<Vec<PathBuf>> {
+fn expand_gif_frames_to_temp_pngs(
+    path: &Path,
+    max_frames: usize,
+) -> Result<(TempExtractDir, Vec<PathBuf>)> {
+    if max_frames == 0 {
+        bail!("frame extraction limit is zero");
+    }
     let file = File::open(path).with_context(|| format!("failed to open {}", path.display()))?;
     let decoder = GifDecoder::new(BufReader::new(file))
         .with_context(|| format!("failed to decode gif {}", path.display()))?;
-    let frames = decoder
-        .into_frames()
-        .collect_frames()
-        .with_context(|| format!("failed to decode gif frames from {}", path.display()))?;
+    let temp_root = TempExtractDir::new("gif")?;
+    let mut out = Vec::new();
 
-    if frames.is_empty() {
-        return Ok(Vec::new());
-    }
-
-    let temp_root = mk_temp_extract_dir("gif")?;
-    let mut out = Vec::with_capacity(frames.len());
-
-    for (idx, frame) in frames.into_iter().enumerate() {
-        let out_path = temp_root.join(format!("{:06}.png", idx + 1));
+    for (idx, frame) in decoder.into_frames().enumerate() {
+        if idx >= max_frames {
+            break;
+        }
+        let out_path = temp_root.path().join(format!("{:06}.png", idx + 1));
         frame
+            .with_context(|| {
+                format!(
+                    "failed to decode gif frame {} from {}",
+                    idx + 1,
+                    path.display()
+                )
+            })?
             .into_buffer()
             .save(&out_path)
             .with_context(|| format!("failed to write gif frame {}", out_path.display()))?;
         out.push(out_path);
     }
 
-    Ok(out)
+    Ok((temp_root, out))
 }
 
-fn expand_video_frames_to_temp_pngs(path: &Path) -> Result<Vec<PathBuf>> {
-    let temp_root = mk_temp_extract_dir("video")?;
-    let output_pattern = temp_root.join("%06d.png");
+fn expand_video_frames_to_temp_pngs(
+    path: &Path,
+    max_frames: usize,
+) -> Result<(TempExtractDir, Vec<PathBuf>)> {
+    if max_frames == 0 {
+        bail!("frame extraction limit is zero");
+    }
+    let temp_root = TempExtractDir::new("video")?;
+    let output_pattern = temp_root.path().join("%06d.png");
 
     let ffmpeg_check = Command::new("ffmpeg").arg("-version").output();
     if ffmpeg_check.is_err() {
@@ -282,6 +329,8 @@ fn expand_video_frames_to_temp_pngs(path: &Path) -> Result<Vec<PathBuf>> {
         .arg("0")
         .arg("-start_number")
         .arg("1")
+        .arg("-frames:v")
+        .arg(max_frames.to_string())
         .arg(&output_pattern)
         .output()
         .with_context(|| format!("failed to run ffmpeg for {}", path.display()))?;
@@ -296,9 +345,12 @@ fn expand_video_frames_to_temp_pngs(path: &Path) -> Result<Vec<PathBuf>> {
     }
 
     let mut frames = Vec::new();
-    for entry in fs::read_dir(&temp_root)
-        .with_context(|| format!("failed to scan extracted frames in {}", temp_root.display()))?
-    {
+    for entry in fs::read_dir(temp_root.path()).with_context(|| {
+        format!(
+            "failed to scan extracted frames in {}",
+            temp_root.path().display()
+        )
+    })? {
         let path = entry?.path();
         if path
             .extension()
@@ -309,23 +361,23 @@ fn expand_video_frames_to_temp_pngs(path: &Path) -> Result<Vec<PathBuf>> {
         }
     }
     frames.sort();
-    Ok(frames)
+    Ok((temp_root, frames))
 }
 
-fn mk_temp_extract_dir(tag: &str) -> Result<PathBuf> {
-    let nonce = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .expect("time should be monotonic")
-        .as_nanos();
-    let dir = std::env::temp_dir().join(format!("petiglyph-frame-extract-{tag}-{nonce}"));
-    fs::create_dir_all(&dir).with_context(|| format!("failed to create {}", dir.display()))?;
-    Ok(dir)
-}
+fn media_identity_hash_hex8(path: &Path) -> Result<String> {
+    let metadata =
+        fs::metadata(path).with_context(|| format!("failed to read {}", path.display()))?;
+    let mut identity = path.to_string_lossy().into_owned().into_bytes();
+    identity.extend_from_slice(&metadata.len().to_le_bytes());
+    let modified_nanos = metadata
+        .modified()
+        .ok()
+        .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
+        .map_or(0u128, |d| d.as_nanos());
+    identity.extend_from_slice(&modified_nanos.to_le_bytes());
 
-fn hash_file_bytes_hex8(path: &Path) -> Result<String> {
-    let bytes = fs::read(path).with_context(|| format!("failed to read {}", path.display()))?;
     let mut hash: u64 = 0xcbf29ce484222325;
-    for byte in bytes {
+    for byte in identity {
         hash ^= byte as u64;
         hash = hash.wrapping_mul(0x100000001b3);
     }
@@ -572,7 +624,7 @@ fn source_key_from_input_path(input_dir: &Path, source_path: &Path) -> String {
 #[cfg(test)]
 mod tests {
     use super::classify_input_kind;
-    use super::hash_file_bytes_hex8;
+    use super::media_identity_hash_hex8;
     use super::slug_stem;
     use super::{AnimationInputKind, ExistingImportPolicy, import_animation_media_to_input};
     use image::{Rgba, RgbaImage};
@@ -623,13 +675,13 @@ mod tests {
     }
 
     #[test]
-    fn media_hash_is_stable_for_same_bytes() {
+    fn media_hash_is_stable_for_same_file_state() {
         let dir = make_temp_dir("anim-media-hash");
         let path = dir.join("x.bin");
         fs::write(&path, [1u8, 2u8, 3u8, 4u8]).expect("write test bytes");
 
-        let a = hash_file_bytes_hex8(&path).expect("hash a");
-        let b = hash_file_bytes_hex8(&path).expect("hash b");
+        let a = media_identity_hash_hex8(&path).expect("hash a");
+        let b = media_identity_hash_hex8(&path).expect("hash b");
         assert_eq!(a, b);
 
         fs::remove_dir_all(dir).expect("temp dir removed");
