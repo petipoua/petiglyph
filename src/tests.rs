@@ -3024,6 +3024,54 @@ fn unicode_registry_can_relocate_project_range_while_preserving_locked_codepoint
 }
 
 #[test]
+fn unicode_registry_avoids_external_font_pua_conflicts() {
+    let registry_root = make_temp_dir("unicode-registry-external-font-conflict");
+    let external_dir = registry_root.join(".external-fonts");
+    fs::create_dir_all(&external_dir).expect("external font scan dir is created");
+
+    let source_project = make_temp_dir("external-font-source-project");
+    let source_input = source_project.join("icons");
+    let source_out = source_project.join("build");
+    fs::create_dir_all(&source_input).expect("source icons dir is created");
+    fs::create_dir_all(&source_out).expect("source build dir is created");
+    write_test_png(&source_input.join("a.png"));
+
+    let source_config = RuntimeConfig {
+        project_dir: source_project.clone(),
+        project_id: "external-font-source".to_string(),
+        input_dir: source_input,
+        out_dir: source_out,
+        font_name: "ExternalPUA".to_string(),
+        glyph_size: 32,
+        base_threshold: 64,
+        threshold_overrides: BTreeMap::new(),
+        invert_overrides: BTreeMap::new(),
+        compositions: BTreeMap::new(),
+        animations: Vec::new(),
+        codepoint_start: 0x10_0000,
+    };
+    let summary = build_outputs(&source_config).expect("source external font builds");
+    let external_font_path = external_dir.join("foreign.ttf");
+    fs::copy(&summary.ttf_path, &external_font_path).expect("external font copy succeeds");
+
+    let locked = BTreeSet::new();
+    let reserved =
+        reserve_project_unicode_range(Some(&registry_root), "project-a", 0x10_0000, 1, &locked)
+            .expect("reservation should skip external PUA codepoint");
+    assert_ne!(
+        reserved.range_start, 0x10_0000,
+        "reservation should not pick a codepoint already occupied by external font"
+    );
+    assert!(
+        reserved.range_start > 0x10_0000,
+        "reservation should move forward past external occupied codepoint"
+    );
+
+    fs::remove_dir_all(source_project).expect("source project is removed");
+    fs::remove_dir_all(registry_root).expect("registry root is removed");
+}
+
+#[test]
 fn build_force_remap_recovers_from_foreign_codepoint_conflict() {
     let project_dir = make_temp_dir("force-remap-conflict");
     let input_dir = project_dir.join("icons");

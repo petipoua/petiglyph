@@ -9,6 +9,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command as ProcessCommand;
 use std::thread;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use walkdir::WalkDir;
 
 use crate::project::{
     AnimationType, format_codepoint, load_runtime_config, parse_codepoint, read_manifest, slugify,
@@ -22,6 +23,7 @@ const UNICODE_REGISTRY_LOCK_FILE_NAME: &str = ".unicode-registry.lock";
 const UNICODE_REGISTRY_VERSION: u32 = 1;
 const SUPPLEMENTARY_PUA_START: u32 = 0xF0000;
 const SUPPLEMENTARY_PUA_END: u32 = 0x10_FFFF;
+const TEST_EXTERNAL_FONT_SCAN_DIR_NAME: &str = ".external-fonts";
 const MIN_PROJECT_RANGE_SIZE: u32 = 1;
 const FILE_LOCK_TIMEOUT: Duration = Duration::from_secs(15);
 const FILE_LOCK_STALE_AFTER: Duration = Duration::from_secs(120);
@@ -537,12 +539,120 @@ fn range_overlaps(a_start: u32, a_end: u32, b_start: u32, b_end: u32) -> bool {
     a_start <= b_end && b_start <= a_end
 }
 
+fn is_supported_font_file(path: &Path) -> bool {
+    path.extension()
+        .and_then(|ext| ext.to_str())
+        .is_some_and(|ext| {
+            matches!(
+                ext.to_ascii_lowercase().as_str(),
+                "ttf" | "otf" | "ttc" | "otc"
+            )
+        })
+}
+
+fn collect_pua_codepoints_from_face(face: &ttf_parser::Face<'_>, occupied: &mut BTreeSet<u32>) {
+    let Some(cmap) = face.tables().cmap else {
+        return;
+    };
+
+    for subtable in cmap.subtables {
+        if !subtable.is_unicode() {
+            continue;
+        }
+        subtable.codepoints(|codepoint| {
+            if (SUPPLEMENTARY_PUA_START..=SUPPLEMENTARY_PUA_END).contains(&codepoint) {
+                occupied.insert(codepoint);
+            }
+        });
+    }
+}
+
+fn collect_pua_codepoints_from_font_data(data: &[u8], occupied: &mut BTreeSet<u32>) {
+    let face_count = ttf_parser::fonts_in_collection(data).unwrap_or(1);
+    for face_index in 0..face_count {
+        let Ok(face) = ttf_parser::Face::parse(data, face_index) else {
+            continue;
+        };
+        collect_pua_codepoints_from_face(&face, occupied);
+    }
+}
+
+fn system_font_scan_roots() -> Result<Vec<PathBuf>> {
+    let mut roots = Vec::new();
+    match current_platform()? {
+        FontPlatform::Linux => {
+            roots.push(PathBuf::from("/usr/share/fonts"));
+            roots.push(PathBuf::from("/usr/local/share/fonts"));
+            roots.push(user_font_root()?);
+        }
+        FontPlatform::Macos => {
+            roots.push(PathBuf::from("/System/Library/Fonts"));
+            roots.push(PathBuf::from("/Library/Fonts"));
+            roots.push(user_font_root()?);
+        }
+        FontPlatform::Windows => {
+            let windir = env::var_os("WINDIR")
+                .map(PathBuf::from)
+                .unwrap_or_else(|| PathBuf::from("C:\\Windows"));
+            roots.push(windir.join("Fonts"));
+            roots.push(user_font_root()?);
+        }
+    }
+    Ok(roots)
+}
+
+fn external_font_scan_roots(registry_root_override: Option<&Path>) -> Result<Vec<PathBuf>> {
+    if let Some(root) = registry_root_override {
+        return Ok(vec![root.join(TEST_EXTERNAL_FONT_SCAN_DIR_NAME)]);
+    }
+    system_font_scan_roots()
+}
+
+fn collect_external_supplementary_pua_codepoints(
+    registry_root_override: Option<&Path>,
+    managed_install_dir: &Path,
+) -> Result<BTreeSet<u32>> {
+    let roots = external_font_scan_roots(registry_root_override)?;
+    let mut occupied = BTreeSet::new();
+
+    for root in roots {
+        if !root.exists() {
+            continue;
+        }
+
+        for entry in WalkDir::new(&root).follow_links(false) {
+            let Ok(entry) = entry else {
+                continue;
+            };
+            let path = entry.path();
+            if !entry.file_type().is_file() || !is_supported_font_file(path) {
+                continue;
+            }
+            if path.starts_with(managed_install_dir) {
+                continue;
+            }
+
+            let Ok(data) = fs::read(path) else {
+                continue;
+            };
+            collect_pua_codepoints_from_font_data(&data, &mut occupied);
+        }
+    }
+
+    Ok(occupied)
+}
+
 fn can_use_range(
     start: u32,
     end: u32,
     project_id: &str,
     registry: &UnicodeRegistryFile,
+    external_occupied: &BTreeSet<u32>,
 ) -> Result<bool> {
+    if external_occupied.range(start..=end).next().is_some() {
+        return Ok(false);
+    }
+
     for assignment in &registry.assignments {
         if assignment.project_id == project_id {
             continue;
@@ -587,6 +697,7 @@ fn find_first_fit(
     span: u32,
     project_id: &str,
     registry: &UnicodeRegistryFile,
+    external_occupied: &BTreeSet<u32>,
 ) -> Result<Option<(u32, u32)>> {
     let latest_start = SUPPLEMENTARY_PUA_END
         .checked_sub(span.saturating_sub(1))
@@ -608,6 +719,10 @@ fn find_first_fit(
         let mut cursor = initial;
         while cursor <= upper_bound {
             let end = cursor + span - 1;
+            if let Some(first_external) = external_occupied.range(cursor..=end).next().copied() {
+                cursor = first_external.saturating_add(1);
+                continue;
+            }
             let mut bumped = false;
             for (other_start, other_end) in &occupied {
                 if *other_end < cursor || *other_start > end {
@@ -640,16 +755,35 @@ fn find_first_fit_containing_locked(
     project_id: &str,
     registry: &UnicodeRegistryFile,
     locked_codepoints: &BTreeSet<u32>,
+    external_occupied: &BTreeSet<u32>,
 ) -> Result<Option<(u32, u32)>> {
     if locked_codepoints.is_empty() {
-        return find_first_fit(preferred_start, span, project_id, registry);
+        return find_first_fit(
+            preferred_start,
+            span,
+            project_id,
+            registry,
+            external_occupied,
+        );
     }
 
     let Some(min_locked) = locked_codepoints.iter().min().copied() else {
-        return find_first_fit(preferred_start, span, project_id, registry);
+        return find_first_fit(
+            preferred_start,
+            span,
+            project_id,
+            registry,
+            external_occupied,
+        );
     };
     let Some(max_locked) = locked_codepoints.iter().max().copied() else {
-        return find_first_fit(preferred_start, span, project_id, registry);
+        return find_first_fit(
+            preferred_start,
+            span,
+            project_id,
+            registry,
+            external_occupied,
+        );
     };
 
     if max_locked < min_locked {
@@ -695,7 +829,7 @@ fn find_first_fit_containing_locked(
 
     for start in starts {
         let end = start + span - 1;
-        if can_use_range(start, end, project_id, registry)? {
+        if can_use_range(start, end, project_id, registry, external_occupied)? {
             return Ok(Some((start, end)));
         }
     }
@@ -747,8 +881,19 @@ pub(crate) fn reserve_project_unicode_range(
 
     let registry_path = install_dir.join(UNICODE_REGISTRY_FILE_NAME);
     let mut registry = load_unicode_registry(&registry_path)?;
+    let external_occupied =
+        collect_external_supplementary_pua_codepoints(registry_root_override, &install_dir)?;
 
     let mut project_assignment_idx = None;
+    if locked_codepoints
+        .iter()
+        .any(|cp| external_occupied.contains(cp))
+    {
+        bail!(
+            "glyph lock/codepoint conflict: project {} uses codepoints already mapped by external installed fonts",
+            project_id
+        );
+    }
     for (idx, assignment) in registry.assignments.iter().enumerate() {
         if assignment.project_id == project_id {
             project_assignment_idx = Some(idx);
@@ -790,7 +935,13 @@ pub(crate) fn reserve_project_unicode_range(
                 .checked_add(required_span - 1)
                 .ok_or_else(|| anyhow::anyhow!("Unicode range expansion overflow"))?;
             if expanded_end <= SUPPLEMENTARY_PUA_END
-                && can_use_range(start, expanded_end, project_id, &registry)?
+                && can_use_range(
+                    start,
+                    expanded_end,
+                    project_id,
+                    &registry,
+                    &external_occupied,
+                )?
             {
                 end = expanded_end;
                 (start, end, true)
@@ -801,6 +952,7 @@ pub(crate) fn reserve_project_unicode_range(
                     project_id,
                     &registry,
                     locked_codepoints,
+                    &external_occupied,
                 )?
                 else {
                     bail!(
@@ -823,7 +975,13 @@ pub(crate) fn reserve_project_unicode_range(
         let start_hint = clamp_to_pua_start(start_hint);
         let required_span = compute_range_span(required_codepoints, start_hint, locked_codepoints)?;
 
-        let Some((start, end)) = find_first_fit(start_hint, required_span, project_id, &registry)?
+        let Some((start, end)) = find_first_fit(
+            start_hint,
+            required_span,
+            project_id,
+            &registry,
+            &external_occupied,
+        )?
         else {
             bail!(
                 "Unicode range allocation failed: no disjoint supplementary private use range available for project {}",
