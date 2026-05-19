@@ -123,6 +123,13 @@ Important trigger behavior:
 - `.github/workflows/release.yml` runs only on `push` of tags matching `v*`.
 - `.github/workflows/npm-publish.yml` and `.github/workflows/pypi-publish.yml` run only on GitHub Release event `published`.
 
+Automation boundary (critical to understand):
+
+- This pipeline is semi-automated, not fully automatic.
+- Build/publish jobs run automatically after their trigger events.
+- Trigger events and approval gates are human-controlled.
+- If you publish a GitHub Release, you are intentionally starting registry workflows.
+
 ### A. You choose the commit
 
 1. You prepare and merge your release changes to `main`.
@@ -168,6 +175,15 @@ The npm/PyPI workflows do not start until the GitHub Release is in `published` s
 - If you keep the release as draft, registry workflows do not run.
 - Once published, `release: published` event triggers both registry workflows.
 
+This means you have a deliberate manual gate between:
+
+1. “Artifacts built and attached to GitHub Release”
+2. “Registry publishing is allowed to start”
+
+Practical rule:
+
+- Do not click Publish Release until you are ready for npm/TestPyPI/PyPI jobs to execute.
+
 ### D. npm workflow runs (`npm-publish.yml`)
 
 1. Checks out exact tagged commit from release event.
@@ -194,10 +210,28 @@ The npm/PyPI workflows do not start until the GitHub Release is in `published` s
    - verifies release integrity (`gh release verify "$TAG"`),
    - downloads wheels + sdist artifacts,
    - publishes to TestPyPI with OIDC trusted publishing.
-5. PyPI publish job:
+5. After TestPyPI publish succeeds, run manual staging validation before final PyPI approval:
+   - create a clean virtual environment,
+   - install from TestPyPI,
+   - run a minimal runtime check (`petiglyph --help`).
+
+```bash
+python -m venv .venv-testpypi
+. .venv-testpypi/bin/activate
+pip install --index-url https://test.pypi.org/simple/ --extra-index-url https://pypi.org/simple petiglyph
+petiglyph --help
+```
+
+6. If staging validation passes, approve the `pypi` environment gate.
+7. PyPI publish job:
    - depends on successful TestPyPI publish,
    - requires `pypi` environment approval,
    - publishes same artifacts to PyPI with OIDC trusted publishing.
+
+Behavior summary:
+
+- With required reviewers enabled on `testpypi`/`pypi`, publication is staged and requires manual approval.
+- Without required reviewers, publish continues automatically once previous jobs succeed.
 
 ### F. Security controls active during this flow
 
@@ -211,6 +245,39 @@ The npm/PyPI workflows do not start until the GitHub Release is in `published` s
 
 1. AUR publish is not automatic; you still run `scripts/release_prepare_aur.sh` and push AUR repo manually.
 2. Runtime validation on real target machines is not automatic for every target; you still run smoke/runtime checks before announcement.
+
+## 3.2 Explicit Manual vs Automatic Steps
+
+Use this section as the control-plane reference.
+
+### Manual actions (you must do these)
+
+1. Pick release commit on `main`.
+2. Sync/review versions and commit release prep changes.
+3. Create and push signed tag `vX.Y.Z`.
+4. Wait for artifact workflow completion and review results.
+5. Validate release assets/checksums/notes.
+6. Publish GitHub Release (this is the event that starts npm/PyPI workflows).
+7. Approve protected environment gates (`npm`, `testpypi`, `pypi`) when prompted.
+8. Run TestPyPI install validation before approving final PyPI gate.
+9. Perform AUR publish manually.
+
+### Automatic actions (GitHub Actions performs these)
+
+1. Build matrix execution for release artifacts after tag push.
+2. Release asset creation, checksum generation, and attestation generation.
+3. npm workflow execution after release is published.
+4. PyPI workflow execution after release is published.
+5. Trusted-publishing token exchange through OIDC at publish time.
+
+### If you want “more automatic”
+
+You can remove required reviewers on environments, but that reduces safety.
+
+- With required reviewers: staged/manual-approval publishing.
+- Without required reviewers: publish continues automatically after trigger conditions pass.
+
+For this repo, keep required reviewers enabled for `npm`, `testpypi`, and `pypi`.
 
 ## 4. GitHub Release Publishing Flow
 
