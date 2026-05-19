@@ -62,6 +62,7 @@ Animated workflow import input types:
 - `Create animated glyph` / `Create animated grid glyph` accept still images, GIF files, and video files in the popup import area.
 - GIF/video inputs are expanded into deterministic per-frame PNG files in `icons/` and auto-selected as animation frames.
 - Video import requires `ffmpeg` available on `PATH`.
+- On first interactive run, if `ffmpeg` is missing, petiglyph offers a one-time OS-aware install prompt.
 
 ## CLI Commands
 

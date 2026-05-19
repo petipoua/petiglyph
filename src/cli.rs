@@ -1,8 +1,11 @@
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 use serde::Serialize;
-use std::io::{self, IsTerminal};
+use std::fs;
+use std::io::{self, IsTerminal, Write};
 use std::path::{Path, PathBuf};
+use std::process::{Command, Stdio};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::artifact_warning::incompatible_artifact_warning;
 use crate::build::{BuildOptions, BuildSummary, build_outputs_with_options};
@@ -20,6 +23,8 @@ use crate::project::{
 use crate::tui::{tui, tui_workspace};
 
 const CLI_VERSION: &str = env!("CARGO_PKG_VERSION");
+const FFMPEG_SETUP_PROMPT_STATE_FILE_NAME: &str = ".ffmpeg-setup-prompt-v1.json";
+const FFMPEG_SETUP_PROMPT_STATE_VERSION: u32 = 1;
 
 #[derive(Debug, Parser)]
 #[command(
@@ -346,6 +351,7 @@ pub(crate) struct DefaultTuiTarget {
 pub(crate) fn run() {
     let cli = Cli::parse();
     crate::glyph_debug::set_debug_enabled(cli.debug);
+    maybe_offer_first_run_ffmpeg_setup(&cli);
     let exit_code = match run_cli(cli) {
         Ok(()) => 0,
         Err(CliRunError::Plain(error)) => {
@@ -366,6 +372,377 @@ pub(crate) fn run() {
         }
     };
     std::process::exit(exit_code);
+}
+
+#[derive(Debug)]
+struct FfmpegInstallHint {
+    detected_system: String,
+    suggested_command: String,
+    invocation: Option<CommandInvocation>,
+}
+
+#[derive(Debug)]
+struct CommandInvocation {
+    program: String,
+    args: Vec<String>,
+}
+
+fn maybe_offer_first_run_ffmpeg_setup(cli: &Cli) {
+    if !should_offer_first_run_ffmpeg_setup(cli) || ffmpeg_available_on_path() {
+        return;
+    }
+
+    let Some(state_path) = ffmpeg_setup_prompt_state_path() else {
+        return;
+    };
+    if state_path.exists() {
+        return;
+    }
+
+    let hint = ffmpeg_install_hint_for_current_system();
+    println!("FFmpeg was not found.");
+    println!();
+    println!("petiglyph requires FFmpeg for video/animated media processing.");
+    println!();
+    println!("Detected system: {}", hint.detected_system);
+    println!("Suggested command:");
+    println!();
+    println!("  {}", hint.suggested_command);
+    println!();
+    print!("Run this now? [y/N] ");
+    let _ = io::stdout().flush();
+
+    let mut answer = String::new();
+    let outcome = match io::stdin().read_line(&mut answer) {
+        Ok(_) => {
+            if answer.trim().eq_ignore_ascii_case("y") {
+                match run_ffmpeg_install_command(&hint) {
+                    Ok(()) => {
+                        if ffmpeg_available_on_path() {
+                            println!("FFmpeg install completed and is now available on PATH.");
+                            "accepted_success"
+                        } else {
+                            println!(
+                                "FFmpeg install command completed, but `ffmpeg` is still not on PATH."
+                            );
+                            println!("You may need to restart your terminal session.");
+                            "accepted_not_on_path"
+                        }
+                    }
+                    Err(error) => {
+                        eprintln!("FFmpeg install command failed: {error}");
+                        "accepted_failed"
+                    }
+                }
+            } else {
+                println!("Skipped FFmpeg auto-install. You can run the command manually later.");
+                "declined"
+            }
+        }
+        Err(error) => {
+            eprintln!("Could not read prompt input: {error}");
+            "prompt_input_failed"
+        }
+    };
+
+    if let Err(error) = record_ffmpeg_setup_prompt_state(&state_path, outcome, &hint) {
+        eprintln!("warning: failed to persist FFmpeg setup prompt state: {error}");
+    }
+}
+
+fn should_offer_first_run_ffmpeg_setup(cli: &Cli) -> bool {
+    if !io::stdin().is_terminal() || !io::stdout().is_terminal() {
+        return false;
+    }
+
+    if command_emits_json(cli) {
+        return false;
+    }
+
+    matches!(
+        cli.command,
+        None | Some(CliCommand::Create { .. })
+            | Some(CliCommand::Tui { .. })
+            | Some(CliCommand::Build { .. })
+            | Some(CliCommand::Sample { .. })
+            | Some(CliCommand::InstallFont { .. })
+    )
+}
+
+fn command_emits_json(cli: &Cli) -> bool {
+    matches!(
+        cli.command,
+        Some(CliCommand::List { json: true })
+            | Some(CliCommand::Delete { json: true, .. })
+            | Some(CliCommand::SetThreshold { json: true, .. })
+            | Some(CliCommand::ClearThreshold { json: true, .. })
+            | Some(CliCommand::Build { json: true, .. })
+            | Some(CliCommand::Sample { json: true, .. })
+            | Some(CliCommand::InstallFont { json: true, .. })
+            | Some(CliCommand::UninstallFont { json: true, .. })
+            | Some(CliCommand::NukeEverything { json: true })
+            | Some(CliCommand::Doctor { json: true, .. })
+    )
+}
+
+fn ffmpeg_setup_prompt_state_path() -> Option<PathBuf> {
+    crate::install::managed_install_dir()
+        .ok()
+        .map(|dir| dir.join(FFMPEG_SETUP_PROMPT_STATE_FILE_NAME))
+}
+
+fn ffmpeg_available_on_path() -> bool {
+    Command::new("ffmpeg")
+        .arg("-version")
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .is_ok_and(|status| status.success())
+}
+
+fn run_ffmpeg_install_command(hint: &FfmpegInstallHint) -> Result<()> {
+    let Some(invocation) = &hint.invocation else {
+        anyhow::bail!(
+            "no executable install command is available for {}; run the suggested command manually",
+            hint.detected_system
+        );
+    };
+
+    let status = Command::new(&invocation.program)
+        .args(invocation.args.iter())
+        .status()
+        .with_context(|| format!("failed to launch {}", invocation.program))?;
+
+    if status.success() {
+        Ok(())
+    } else {
+        let code = status
+            .code()
+            .map_or_else(|| "signal".to_string(), |c| c.to_string());
+        anyhow::bail!("installer exited with status {code}");
+    }
+}
+
+fn now_unix_ms() -> u128 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis()
+}
+
+fn record_ffmpeg_setup_prompt_state(
+    state_path: &Path,
+    outcome: &str,
+    hint: &FfmpegInstallHint,
+) -> Result<()> {
+    if let Some(parent) = state_path.parent() {
+        fs::create_dir_all(parent)
+            .with_context(|| format!("failed to create {}", parent.display()))?;
+    }
+    let payload = serde_json::json!({
+        "version": FFMPEG_SETUP_PROMPT_STATE_VERSION,
+        "recorded_unix_ms": now_unix_ms(),
+        "recorded_by_cli_version": CLI_VERSION,
+        "outcome": outcome,
+        "suggested_command": hint.suggested_command,
+        "detected_system": hint.detected_system,
+    });
+    let raw = serde_json::to_string_pretty(&payload)
+        .context("failed to serialize ffmpeg prompt state")?;
+    fs::write(state_path, raw).with_context(|| format!("failed to write {}", state_path.display()))
+}
+
+fn ffmpeg_install_hint_for_current_system() -> FfmpegInstallHint {
+    match std::env::consts::OS {
+        "linux" => linux_ffmpeg_install_hint(),
+        "macos" => FfmpegInstallHint {
+            detected_system: "macOS".to_string(),
+            suggested_command: "brew install ffmpeg".to_string(),
+            invocation: Some(CommandInvocation {
+                program: "brew".to_string(),
+                args: vec!["install".to_string(), "ffmpeg".to_string()],
+            }),
+        },
+        "windows" => FfmpegInstallHint {
+            detected_system: "Windows".to_string(),
+            suggested_command: "winget install --id Gyan.FFmpeg --exact --accept-package-agreements --accept-source-agreements".to_string(),
+            invocation: Some(CommandInvocation {
+                program: "winget".to_string(),
+                args: vec![
+                    "install".to_string(),
+                    "--id".to_string(),
+                    "Gyan.FFmpeg".to_string(),
+                    "--exact".to_string(),
+                    "--accept-package-agreements".to_string(),
+                    "--accept-source-agreements".to_string(),
+                ],
+            }),
+        },
+        other => FfmpegInstallHint {
+            detected_system: other.to_string(),
+            suggested_command: "install ffmpeg with your system package manager".to_string(),
+            invocation: None,
+        },
+    }
+}
+
+fn linux_ffmpeg_install_hint() -> FfmpegInstallHint {
+    let (system_name, id, id_like) = linux_os_release_identity();
+    if linux_family_matches(&id, &id_like, &["arch", "manjaro", "endeavouros"]) {
+        return FfmpegInstallHint {
+            detected_system: system_name,
+            suggested_command: "sudo pacman -S --needed ffmpeg".to_string(),
+            invocation: Some(CommandInvocation {
+                program: "sudo".to_string(),
+                args: vec![
+                    "pacman".to_string(),
+                    "-S".to_string(),
+                    "--needed".to_string(),
+                    "ffmpeg".to_string(),
+                ],
+            }),
+        };
+    }
+
+    if linux_family_matches(&id, &id_like, &["debian", "ubuntu"]) {
+        return FfmpegInstallHint {
+            detected_system: system_name,
+            suggested_command: "sudo apt install -y ffmpeg".to_string(),
+            invocation: Some(CommandInvocation {
+                program: "sudo".to_string(),
+                args: vec![
+                    "apt".to_string(),
+                    "install".to_string(),
+                    "-y".to_string(),
+                    "ffmpeg".to_string(),
+                ],
+            }),
+        };
+    }
+
+    if linux_family_matches(&id, &id_like, &["fedora", "rhel", "centos"]) {
+        return FfmpegInstallHint {
+            detected_system: system_name,
+            suggested_command: "sudo dnf install -y ffmpeg".to_string(),
+            invocation: Some(CommandInvocation {
+                program: "sudo".to_string(),
+                args: vec![
+                    "dnf".to_string(),
+                    "install".to_string(),
+                    "-y".to_string(),
+                    "ffmpeg".to_string(),
+                ],
+            }),
+        };
+    }
+
+    if linux_family_matches(&id, &id_like, &["opensuse", "sles", "suse"]) {
+        return FfmpegInstallHint {
+            detected_system: system_name,
+            suggested_command: "sudo zypper install -y ffmpeg".to_string(),
+            invocation: Some(CommandInvocation {
+                program: "sudo".to_string(),
+                args: vec![
+                    "zypper".to_string(),
+                    "install".to_string(),
+                    "-y".to_string(),
+                    "ffmpeg".to_string(),
+                ],
+            }),
+        };
+    }
+
+    if linux_family_matches(&id, &id_like, &["alpine"]) {
+        return FfmpegInstallHint {
+            detected_system: system_name,
+            suggested_command: "sudo apk add ffmpeg".to_string(),
+            invocation: Some(CommandInvocation {
+                program: "sudo".to_string(),
+                args: vec!["apk".to_string(), "add".to_string(), "ffmpeg".to_string()],
+            }),
+        };
+    }
+
+    FfmpegInstallHint {
+        detected_system: if system_name.is_empty() {
+            "Linux".to_string()
+        } else {
+            system_name
+        },
+        suggested_command: "install ffmpeg with your distribution package manager".to_string(),
+        invocation: None,
+    }
+}
+
+fn linux_family_matches(id: &str, id_like: &[String], targets: &[&str]) -> bool {
+    targets
+        .iter()
+        .copied()
+        .any(|target| id == target || id_like.iter().any(|like| like == target))
+}
+
+fn linux_os_release_identity() -> (String, String, Vec<String>) {
+    let mut fields = fs::read_to_string("/etc/os-release")
+        .ok()
+        .as_deref()
+        .map(parse_os_release_fields)
+        .unwrap_or_default();
+
+    if fields.is_empty() {
+        fields = fs::read_to_string("/usr/lib/os-release")
+            .ok()
+            .as_deref()
+            .map(parse_os_release_fields)
+            .unwrap_or_default();
+    }
+
+    let pretty_name = fields.get("PRETTY_NAME").cloned().unwrap_or_default();
+    let id = fields
+        .get("ID")
+        .map(|v| v.to_ascii_lowercase())
+        .unwrap_or_else(|| "linux".to_string());
+    let id_like = fields
+        .get("ID_LIKE")
+        .map(|v| {
+            v.split_whitespace()
+                .map(|part| part.to_ascii_lowercase())
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    let system_name = if pretty_name.is_empty() {
+        format!("Linux ({id})")
+    } else {
+        pretty_name
+    };
+    (system_name, id, id_like)
+}
+
+fn parse_os_release_fields(contents: &str) -> std::collections::BTreeMap<String, String> {
+    let mut fields = std::collections::BTreeMap::new();
+    for line in contents.lines() {
+        let trimmed = line.trim();
+        if trimmed.is_empty() || trimmed.starts_with('#') {
+            continue;
+        }
+        let Some((key, value)) = trimmed.split_once('=') else {
+            continue;
+        };
+        let parsed_value = parse_os_release_value(value.trim());
+        fields.insert(key.trim().to_string(), parsed_value);
+    }
+    fields
+}
+
+fn parse_os_release_value(raw: &str) -> String {
+    let mut value = raw.trim().to_string();
+    if value.starts_with('"') && value.ends_with('"') && value.len() >= 2 {
+        value = value[1..value.len() - 1].to_string();
+    }
+    value
+        .replace("\\\"", "\"")
+        .replace("\\\\", "\\")
+        .replace("\\n", "\n")
 }
 
 pub(crate) fn resolve_default_tui_target_for(current_dir: &Path) -> Result<DefaultTuiTarget> {
