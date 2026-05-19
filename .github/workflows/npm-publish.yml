@@ -20,26 +20,29 @@ jobs:
       id-token: write
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
         with:
           ref: ${{ github.event.release.tag_name }}
 
-      - uses: actions/setup-node@v6
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e
         with:
           node-version: ${{ env.NODE_VERSION }}
           registry-url: https://registry.npmjs.org
 
-      - name: Download release archives
+      - name: Verify release metadata and integrity
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAG: ${{ github.event.release.tag_name }}
         run: |
           set -euo pipefail
+          gh release verify "$TAG"
           mkdir -p dist-release
           gh release download "$TAG" \
             --pattern "petiglyph-v*-*.tar.gz" \
             --pattern "petiglyph-v*-*.zip" \
+            --pattern "SHA256SUMS" \
             --dir dist-release
+          (cd dist-release && sha256sum -c SHA256SUMS)
 
       - name: Verify tag and sync versions
         run: |

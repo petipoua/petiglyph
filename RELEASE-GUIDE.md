@@ -19,14 +19,17 @@ It complements `RELEASE-CHECKLIST.md` and reflects the release automation now in
   - Generates `SHA256SUMS`.
   - Publishes release assets.
   - Generates GitHub artifact attestations.
+  - Uses immutable full-commit SHA pins for all referenced actions.
 - npm publish workflow: `.github/workflows/npm-publish.yml`
   - Trigger: GitHub release `published`.
   - Downloads release archives.
+  - Verifies release integrity (`gh release verify`) and release `SHA256SUMS` before publishing.
   - Stages native binaries into `npm/*` packages.
   - Publishes platform packages, then meta package.
 - PyPI/TestPyPI publish workflow: `.github/workflows/pypi-publish.yml`
   - Trigger: GitHub release `published`.
   - Builds wheels/sdist with maturin.
+  - Verifies release integrity (`gh release verify`) before publishing.
   - Publishes to TestPyPI then PyPI using trusted publishing.
 - Packaging/release helper scripts:
   - `scripts/release_sync_versions.sh`
@@ -126,6 +129,7 @@ Triggered by `v*` tag push:
 2. Publishes archives named `petiglyph-vX.Y.Z-<target>.(tar.gz|zip)`.
 3. Publishes `SHA256SUMS`.
 4. Emits artifact attestations.
+5. Uses immutable action refs pinned to full commit SHAs.
 
 Post-release checks:
 
@@ -179,10 +183,11 @@ The release-published event triggers `.github/workflows/npm-publish.yml`.
 Order used by workflow:
 
 1. Download GitHub release assets.
-2. Stage binaries into `npm/*/bin` using `scripts/release_stage_npm_artifacts.sh`.
-3. Validate `npm pack --dry-run` for each package.
-4. Publish platform packages first.
-5. Publish `petiglyph` meta package last.
+2. Verify release integrity (`gh release verify`) and `SHA256SUMS`.
+3. Stage binaries into `npm/*/bin` using `scripts/release_stage_npm_artifacts.sh`.
+4. Validate `npm pack --dry-run` for each package.
+5. Publish platform packages first.
+6. Publish `petiglyph` meta package last.
 
 Local preflight:
 
@@ -239,9 +244,15 @@ Apply all of these for each release:
 5. Publish checksums and verify them before downstream packaging.
 6. Keep release tags signed and verified.
 7. Keep GitHub Actions permissions minimal (`contents: read` by default, elevate per job only).
-8. Pin third-party actions to a specific commit SHA before production hardening (current workflow still uses major tags).
+8. Pin every workflow action (including `actions/*`) to a full immutable commit SHA.
 9. Keep release job isolated: no unrelated secrets in release environments.
 10. Document rollback path (deprecate npm versions, yank bad PyPI versions, bump AUR `pkgrel`).
+
+Current workflow implementation status:
+
+- Action refs are pinned to immutable SHAs in all release workflows.
+- npm publish flow verifies `gh release verify` and release `SHA256SUMS` before any `npm publish`.
+- PyPI publish flow verifies `gh release verify` before publish.
 
 ## 9. Platform Runtime Validation Before Announcement
 

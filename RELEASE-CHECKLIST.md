@@ -195,6 +195,7 @@ Reasonable default first matrix:
 Checklist:
 
 - [ ] Add GitHub Actions build workflow.
+- [ ] Pin all workflow actions to full commit SHAs (no floating tags).
 - [ ] Install Rust stable with target triple.
 - [ ] Build with `cargo build --release --locked --target {target}`.
 - [ ] Strip binaries where safe and available.
@@ -412,6 +413,8 @@ Checklist:
 
 - [ ] Reserve/verify package names.
 - [ ] Configure npm trusted publisher for each package.
+- [ ] Verify GitHub release integrity in publish workflow (`gh release verify`).
+- [ ] Verify `SHA256SUMS` for downloaded release assets before `npm publish`.
 - [ ] Publish to npm from tag workflow.
 - [ ] Verify provenance is present for published packages when supported.
 - [ ] Install from public npm registry on Linux/macOS/Windows.
@@ -521,6 +524,7 @@ Reasonable default:
 Checklist:
 
 - [ ] Configure Trusted Publisher on TestPyPI.
+- [ ] Verify GitHub release integrity in publish workflow (`gh release verify`) before uploading distributions.
 - [ ] Publish wheels/sdist to TestPyPI.
 - [ ] Install from TestPyPI in a clean venv.
 - [ ] Configure Trusted Publisher on PyPI.
@@ -587,6 +591,8 @@ A release is valid only when all selected channels pass.
 - [ ] GitHub artifact attestations are generated if enabled.
 - [ ] npm provenance appears for packages where trusted publishing supports it.
 - [ ] PyPI publish uses trusted publishing, not long-lived API tokens.
+- [ ] All workflow actions are pinned to immutable full commit SHAs.
+- [ ] No `pull_request_target` workflow executes untrusted fork code with secrets or writable tokens.
 - [ ] Release notes clearly document unsigned macOS and Windows artifacts.
 - [ ] Release notes clearly document `unstable` status for macOS and Windows ARM64 artifacts until runtime-tested.
 
