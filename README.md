@@ -329,6 +329,27 @@ cargo run -- nuke-everything --json
 cargo run -- doctor --manifest ./petiglyph.toml --json
 ```
 
+Cross-OS clipboard/runtime smoke checks after cloning:
+
+```bash
+# Linux/macOS (uses cargo run by default)
+./scripts/clipboard_smoke.sh
+
+# optional: test an already-built binary instead of cargo run
+./scripts/clipboard_smoke.sh --bin ./target/release/petiglyph
+
+# clipboard checks only (skip CLI checks)
+./scripts/clipboard_smoke.sh --skip-cli-checks
+```
+
+```powershell
+# Windows PowerShell / pwsh
+pwsh -File .\scripts\clipboard_smoke.ps1
+
+# optional: test an already-built binary
+pwsh -File .\scripts\clipboard_smoke.ps1 -PetiglyphPath .\target\release\petiglyph.exe
+```
+
 ## TUI E2E with hty
 
 To run process-level TUI E2E journeys (headless PTY automation with optional live watch):

@@ -61,7 +61,8 @@ const WELCOME_SAMPLE_LIMIT: usize = 15;
 const WELCOME_INPUT_WIDTH: usize = 15;
 const SWITCH_NOTICE_MS: u64 = 2500;
 const EVENT_POLL_MS: u64 = 33;
-const TUI_DEBUG_LOG_PATH: &str = "/tmp/petiglyph-tui-debug.log";
+const TUI_DEBUG_LOG_ENV: &str = "PETIGLYPH_TUI_DEBUG_LOG";
+const TUI_DEBUG_LOG_FILE_NAME: &str = "petiglyph-tui-debug.log";
 const TUI_MIN_WIDTH: u16 = 96;
 const TUI_MIN_HEIGHT: u16 = 40;
 const TUI_MAX_WIDTH: u16 = 148;
@@ -1261,11 +1262,9 @@ fn reset_tui_debug_log() {
         return;
     }
 
+    let path = tui_debug_log_path();
     let now = debug_timestamp();
-    let _ = fs::write(
-        TUI_DEBUG_LOG_PATH,
-        format!("[{now}] petiglyph TUI debug log reset\n"),
-    );
+    let _ = fs::write(path, format!("[{now}] petiglyph TUI debug log reset\n"));
 }
 
 fn tui_debug_log(event: &str, details: impl AsRef<str>) {
@@ -1273,11 +1272,8 @@ fn tui_debug_log(event: &str, details: impl AsRef<str>) {
         return;
     }
 
-    let Ok(mut file) = OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(TUI_DEBUG_LOG_PATH)
-    else {
+    let path = tui_debug_log_path();
+    let Ok(mut file) = OpenOptions::new().create(true).append(true).open(path) else {
         return;
     };
 
@@ -1287,6 +1283,16 @@ fn tui_debug_log(event: &str, details: impl AsRef<str>) {
         debug_timestamp(),
         details.as_ref()
     );
+}
+
+fn tui_debug_log_path() -> PathBuf {
+    if let Ok(value) = env::var(TUI_DEBUG_LOG_ENV) {
+        let trimmed = value.trim();
+        if !trimmed.is_empty() {
+            return PathBuf::from(trimmed);
+        }
+    }
+    env::temp_dir().join(TUI_DEBUG_LOG_FILE_NAME)
 }
 
 fn tui_debug_enabled() -> bool {
@@ -1481,25 +1487,124 @@ fn handle_grid_config_key(app: &mut App, config: &mut GridConfig, key: KeyEvent)
     Ok(())
 }
 
-fn copy_to_clipboard(text: String) {
-    let child = if std::env::var("WAYLAND_DISPLAY").is_ok() {
-        std::process::Command::new("wl-copy")
-            .stdin(std::process::Stdio::piped())
-            .spawn()
-    } else {
-        std::process::Command::new("xclip")
-            .arg("-selection")
-            .arg("clipboard")
-            .stdin(std::process::Stdio::piped())
-            .spawn()
-    };
+#[derive(Clone, Copy)]
+struct ClipboardProvider {
+    command: &'static str,
+    args: &'static [&'static str],
+}
 
-    if let Ok(mut child) = child {
-        if let Some(mut stdin) = child.stdin.take() {
-            let _ = stdin.write_all(text.as_bytes());
+const LINUX_WAYLAND_CLIPBOARD_PROVIDERS: [ClipboardProvider; 1] = [ClipboardProvider {
+    command: "wl-copy",
+    args: &[],
+}];
+const LINUX_X11_CLIPBOARD_PROVIDERS: [ClipboardProvider; 2] = [
+    ClipboardProvider {
+        command: "xclip",
+        args: &["-selection", "clipboard"],
+    },
+    ClipboardProvider {
+        command: "wl-copy",
+        args: &[],
+    },
+];
+const MACOS_CLIPBOARD_PROVIDERS: [ClipboardProvider; 1] = [ClipboardProvider {
+    command: "pbcopy",
+    args: &[],
+}];
+const WINDOWS_CLIPBOARD_PROVIDERS: [ClipboardProvider; 2] = [
+    ClipboardProvider {
+        command: "powershell",
+        args: &[
+            "-NoProfile",
+            "-Command",
+            "Set-Clipboard -Value ([Console]::In.ReadToEnd())",
+        ],
+    },
+    ClipboardProvider {
+        command: "clip.exe",
+        args: &[],
+    },
+];
+
+fn clipboard_providers_for_current_platform() -> &'static [ClipboardProvider] {
+    clipboard_providers_for_os(env::consts::OS, env::var_os("WAYLAND_DISPLAY").is_some())
+}
+
+fn clipboard_providers_for_os(
+    os: &str,
+    wayland_display_present: bool,
+) -> &'static [ClipboardProvider] {
+    match os {
+        "windows" => &WINDOWS_CLIPBOARD_PROVIDERS,
+        "macos" => &MACOS_CLIPBOARD_PROVIDERS,
+        "linux" => {
+            if wayland_display_present {
+                &LINUX_WAYLAND_CLIPBOARD_PROVIDERS
+            } else {
+                &LINUX_X11_CLIPBOARD_PROVIDERS
+            }
         }
-        let _ = child.wait();
+        _ => &LINUX_X11_CLIPBOARD_PROVIDERS,
     }
+}
+
+fn execute_clipboard_provider(provider: &ClipboardProvider, text: &str) -> Result<()> {
+    let mut command = std::process::Command::new(provider.command);
+    command
+        .args(provider.args)
+        .stdin(std::process::Stdio::piped());
+    let mut child = command
+        .spawn()
+        .with_context(|| format!("failed to spawn {}", provider.command))?;
+    if let Some(mut stdin) = child.stdin.take() {
+        stdin
+            .write_all(text.as_bytes())
+            .with_context(|| format!("failed to write to {}", provider.command))?;
+    }
+    let status = child
+        .wait()
+        .with_context(|| format!("failed waiting for {}", provider.command))?;
+    if !status.success() {
+        bail!("{} exited with status {status}", provider.command);
+    }
+    Ok(())
+}
+
+fn copy_to_clipboard_with_runner<F>(
+    text: &str,
+    providers: &[ClipboardProvider],
+    mut run: F,
+) -> Result<()>
+where
+    F: FnMut(&ClipboardProvider, &str) -> Result<()>,
+{
+    let mut attempts = Vec::new();
+    let mut errors = Vec::new();
+    for provider in providers {
+        attempts.push(provider.command.to_string());
+        match run(provider, text) {
+            Ok(()) => return Ok(()),
+            Err(err) => {
+                errors.push(format!("{}: {err}", provider.command));
+            }
+        }
+    }
+    if !errors.is_empty() {
+        bail!(
+            "failed to copy to clipboard (tried: {}; errors: {})",
+            attempts.join(", "),
+            errors.join(" | ")
+        );
+    }
+    bail!(
+        "failed to copy to clipboard (tried: {})",
+        attempts.join(", ")
+    );
+}
+
+fn copy_to_clipboard(text: &str) -> Result<()> {
+    let providers = clipboard_providers_for_current_platform();
+    copy_to_clipboard_with_runner(text, providers, execute_clipboard_provider)
 }
 
 fn handle_animation_config_key(
@@ -2441,22 +2546,29 @@ fn handle_welcome_key(app: &mut App, key: KeyEvent) -> Result<()> {
                         };
 
                         if !content.is_empty() {
-                            copy_to_clipboard(content);
-                            let row_id = if app.selected_installed_font_sub_index == 0 {
-                                "path".to_string()
-                            } else {
-                                let sample_count = font.blocks.len();
-                                let sub = app.selected_installed_font_sub_index - 1;
-                                if sub < sample_count {
-                                    format!("sample-{sub}")
-                                } else {
-                                    format!("animation-{}", sub - sample_count)
+                            match copy_to_clipboard(&content) {
+                                Ok(()) => {
+                                    let row_id = if app.selected_installed_font_sub_index == 0 {
+                                        "path".to_string()
+                                    } else {
+                                        let sample_count = font.blocks.len();
+                                        let sub = app.selected_installed_font_sub_index - 1;
+                                        if sub < sample_count {
+                                            format!("sample-{sub}")
+                                        } else {
+                                            format!("animation-{}", sub - sample_count)
+                                        }
+                                    };
+                                    app.last_copy_notification = Some((
+                                        Instant::now(),
+                                        format!("{}-{}", app.selected_installed_font, row_id),
+                                    ));
+                                    app.status = Some("copied to clipboard".to_string());
                                 }
-                            };
-                            app.last_copy_notification = Some((
-                                Instant::now(),
-                                format!("{}-{}", app.selected_installed_font, row_id),
-                            ));
+                                Err(err) => {
+                                    app.status = Some(format!("clipboard copy failed: {err}"));
+                                }
+                            }
                         }
                     }
                 }
@@ -3356,7 +3468,8 @@ fn draw_welcome_view(
                     && app.selected_installed_font_sub_index == sub_idx
                     && app.welcome_focus == WelcomeFocus::InstalledFontList;
 
-                let wrapped_lines = installed_font_block_display_lines(block_str, sample_wrap_width);
+                let wrapped_lines =
+                    installed_font_block_display_lines(block_str, sample_wrap_width);
 
                 if is_focused {
                     selected_font_row_idx = font_rows.len() + wrapped_lines.len().saturating_sub(1);
@@ -9797,6 +9910,7 @@ mod tests {
     };
     use crate::build::{CompositionTileInfo, PreprocessedGlyph};
     use crate::project::{AnimationDef, CompositionDef, Manifest, read_manifest, write_manifest};
+    use anyhow::anyhow;
     use image::{Rgba, RgbaImage};
     use std::collections::BTreeMap;
     use std::fs;
@@ -11308,5 +11422,76 @@ mod tests {
             processing_rendered.iter().all(|line| !line.contains("✓")),
             "placeholder should not show checkmark while processing is active"
         );
+    }
+
+    fn provider_commands(providers: &[super::ClipboardProvider]) -> Vec<&'static str> {
+        providers.iter().map(|provider| provider.command).collect()
+    }
+
+    #[test]
+    fn clipboard_provider_selection_simulates_cross_os_matrix() {
+        assert_eq!(
+            provider_commands(super::clipboard_providers_for_os("linux", true)),
+            vec!["wl-copy"]
+        );
+        assert_eq!(
+            provider_commands(super::clipboard_providers_for_os("linux", false)),
+            vec!["xclip", "wl-copy"]
+        );
+        assert_eq!(
+            provider_commands(super::clipboard_providers_for_os("macos", false)),
+            vec!["pbcopy"]
+        );
+        assert_eq!(
+            provider_commands(super::clipboard_providers_for_os("windows", false)),
+            vec!["powershell", "clip.exe"]
+        );
+        assert_eq!(
+            provider_commands(super::clipboard_providers_for_os("freebsd", false)),
+            vec!["xclip", "wl-copy"]
+        );
+    }
+
+    #[test]
+    fn clipboard_copy_runner_uses_fallback_provider_after_failure() {
+        let providers = super::clipboard_providers_for_os("windows", false);
+        let mut attempts = Vec::new();
+        let mut copied_payloads = Vec::new();
+
+        let result = super::copy_to_clipboard_with_runner("abc123", providers, |provider, text| {
+            attempts.push(provider.command.to_string());
+            copied_payloads.push((provider.command.to_string(), text.to_string()));
+            if provider.command == "powershell" {
+                Err(anyhow!("provider unavailable"))
+            } else {
+                Ok(())
+            }
+        });
+
+        assert!(result.is_ok(), "fallback provider should succeed");
+        assert_eq!(attempts, vec!["powershell", "clip.exe"]);
+        assert_eq!(
+            copied_payloads,
+            vec![
+                ("powershell".to_string(), "abc123".to_string()),
+                ("clip.exe".to_string(), "abc123".to_string())
+            ]
+        );
+    }
+
+    #[test]
+    fn clipboard_copy_runner_reports_aggregate_failures() {
+        let providers = super::clipboard_providers_for_os("linux", false);
+
+        let result = super::copy_to_clipboard_with_runner("payload", providers, |provider, _| {
+            Err(anyhow!("{} missing from PATH", provider.command))
+        });
+
+        let err = result.expect_err("all providers fail in this simulation");
+        let message = err.to_string();
+        assert!(message.contains("failed to copy to clipboard"));
+        assert!(message.contains("tried: xclip, wl-copy"));
+        assert!(message.contains("xclip: xclip missing from PATH"));
+        assert!(message.contains("wl-copy: wl-copy missing from PATH"));
     }
 }
