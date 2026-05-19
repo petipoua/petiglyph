@@ -378,6 +378,7 @@ The release-published event triggers `.github/workflows/pypi-publish.yml`.
 Flow:
 
 1. Build wheels across configured targets.
+   - Linux wheels are built via maturin manylinux container mode (`manylinux: 2014`), including `aarch64-unknown-linux-gnu`, so host cross-linker setup is not required on `ubuntu-latest`.
 2. Build sdist.
 3. Publish to TestPyPI (environment approval).
 4. Publish to PyPI (environment approval).
