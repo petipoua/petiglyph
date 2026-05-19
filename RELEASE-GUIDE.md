@@ -113,6 +113,105 @@ git push origin v0.1.0
 
 5. The tag push triggers `.github/workflows/release.yml`.
 
+## 3.1 Technical Execution Timeline (From Commit To Registries)
+
+This section describes exactly what happens when you decide a specific commit is releasable.
+
+Important trigger behavior:
+
+- No, it does not run on each new commit.
+- `.github/workflows/release.yml` runs only on `push` of tags matching `v*`.
+- `.github/workflows/npm-publish.yml` and `.github/workflows/pypi-publish.yml` run only on GitHub Release event `published`.
+
+### A. You choose the commit
+
+1. You prepare and merge your release changes to `main`.
+2. You ensure versions are synchronized (`Cargo.toml`, npm packages, PKGBUILD, docs) with:
+
+```bash
+./scripts/release_sync_versions.sh X.Y.Z
+```
+
+3. You commit that final release state.
+4. You create and push signed tag `vX.Y.Z` pointing to that commit:
+
+```bash
+git tag -s vX.Y.Z -m "petiglyph vX.Y.Z"
+git push origin vX.Y.Z
+```
+
+At this point, the release-artifacts workflow starts automatically because of the tag push.
+
+### B. GitHub artifacts workflow runs (`release.yml`)
+
+1. Event context is `push` with `refs/tags/vX.Y.Z`.
+2. Build matrix launches parallel jobs for 8 targets.
+3. Each job:
+   - checks out the tagged commit (`actions/checkout` pinned SHA),
+   - builds target with cross toolchain action (pinned SHA),
+   - packages archive containing binary + `README.md` + `LICENSE`,
+   - uploads archive as workflow artifact.
+4. Publish job waits for all matrix jobs to complete.
+5. Publish job:
+   - validates ref context is a tag and tag naming format,
+   - downloads all build artifacts,
+   - computes `SHA256SUMS`,
+   - creates GitHub artifact attestations,
+   - uploads archives + `SHA256SUMS` to GitHub Release assets.
+
+Result: GitHub Release now has canonical binaries + checksum file + attestations.
+
+### C. You publish the GitHub Release
+
+The npm/PyPI workflows do not start until the GitHub Release is in `published` state.
+
+- If you keep the release as draft, registry workflows do not run.
+- Once published, `release: published` event triggers both registry workflows.
+
+### D. npm workflow runs (`npm-publish.yml`)
+
+1. Checks out exact tagged commit from release event.
+2. Uses pinned `setup-node`.
+3. Verifies release integrity:
+   - `gh release verify "$TAG"` (release-level verification),
+   - downloads release assets + `SHA256SUMS`,
+   - verifies downloaded assets with `sha256sum -c SHA256SUMS`.
+4. Verifies tag/version consistency (`Cargo.toml` version must match release tag).
+5. Stages binaries from release archives into platform package directories via:
+   - `scripts/release_stage_npm_artifacts.sh dist-release`
+6. Verifies every expected platform binary exists.
+7. Runs `npm pack --dry-run` for each package.
+8. Publishes platform packages first, then meta package.
+9. npm publish uses OIDC trusted publishing (`id-token: write`) through protected `npm` environment.
+
+### E. PyPI workflow runs (`pypi-publish.yml`)
+
+1. Wheel build jobs check out tag and build wheels with maturin action (pinned SHA).
+2. Sdist job builds source distribution.
+3. Build outputs are uploaded as workflow artifacts.
+4. TestPyPI publish job:
+   - requires `testpypi` environment approval,
+   - verifies release integrity (`gh release verify "$TAG"`),
+   - downloads wheels + sdist artifacts,
+   - publishes to TestPyPI with OIDC trusted publishing.
+5. PyPI publish job:
+   - depends on successful TestPyPI publish,
+   - requires `pypi` environment approval,
+   - publishes same artifacts to PyPI with OIDC trusted publishing.
+
+### F. Security controls active during this flow
+
+1. Actions are pinned to immutable commit SHAs.
+2. Minimal token permissions are set per workflow/job.
+3. Registry publish jobs require environment gates (`npm`, `testpypi`, `pypi`).
+4. Integrity is checked before npm/PyPI publication.
+5. Canonical binaries are produced once (tag workflow) and consumed downstream.
+
+### G. What does not happen automatically
+
+1. AUR publish is not automatic; you still run `scripts/release_prepare_aur.sh` and push AUR repo manually.
+2. Runtime validation on real target machines is not automatic for every target; you still run smoke/runtime checks before announcement.
+
 ## 4. GitHub Release Publishing Flow
 
 Triggered by `v*` tag push:
