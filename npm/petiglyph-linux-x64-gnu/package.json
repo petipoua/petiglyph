@@ -1,0 +1,22 @@
+{
+  "name": "@petiglyph/petiglyph-linux-x64-gnu",
+  "version": "0.1.0",
+  "description": "petiglyph native binary package for linux/x64 (glibc)",
+  "license": "MIT",
+  "homepage": "https://github.com/petipoua/petiglyph",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/petipoua/petiglyph.git"
+  },
+  "files": [
+    "bin/petiglyph",
+    "README.md",
+    "LICENSE"
+  ],
+  "os": ["linux"],
+  "cpu": ["x64"],
+  "libc": ["glibc"],
+  "publishConfig": {
+    "access": "public"
+  }
+}

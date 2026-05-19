@@ -1,0 +1,29 @@
+[build-system]
+requires = ["maturin>=1.0,<2.0"]
+build-backend = "maturin"
+
+[project]
+name = "petiglyph"
+description = "TUI-first Rust CLI for turning image folders into monochrome glyph fonts."
+readme = "README.md"
+requires-python = ">=3.8"
+license = { text = "MIT" }
+keywords = ["font", "glyph", "icons", "tui", "cli"]
+classifiers = [
+  "Programming Language :: Rust",
+  "Environment :: Console",
+  "License :: OSI Approved :: MIT License",
+  "Operating System :: POSIX :: Linux",
+  "Operating System :: MacOS",
+  "Operating System :: Microsoft :: Windows",
+]
+
+[project.urls]
+Homepage = "https://github.com/petipoua/petiglyph"
+Repository = "https://github.com/petipoua/petiglyph"
+Issues = "https://github.com/petipoua/petiglyph/issues"
+
+[tool.maturin]
+bindings = "bin"
+strip = true
+compatibility = "pypi"

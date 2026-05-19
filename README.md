@@ -149,7 +149,7 @@ When `--json` is enabled, stdout is a single machine-readable envelope:
 {
   "ok": true,
   "command": "build",
-  "version": "0.0.1",
+  "version": "0.1.0",
   "data": {}
 }
 ```
@@ -305,6 +305,7 @@ Within `0.x`, command names and JSON top-level envelope fields are treated as st
 - contract changes are called out in release notes
 
 See [docs/release-notes-template.md](docs/release-notes-template.md) for the release checklist and schema-change callouts.
+See [RELEASE-GUIDE.md](RELEASE-GUIDE.md) for GitHub/AUR/npm/PyPI release operations and trusted-publishing setup.
 
 ## Local Cargo Testing
 

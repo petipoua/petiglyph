@@ -51,7 +51,7 @@ pkgdesc='Build icon fonts from project-local assets'
 arch=('x86_64')
 url='$repo_url'
 license=('MIT')
-depends=()
+depends=('ffmpeg')
 makedepends=('cargo')
 source=("\$pkgname-\$pkgver.tar.gz")
 sha256sums=('SKIP')
@@ -65,6 +65,7 @@ package() {
   cd "\$srcdir/petiglyph"
   install -Dm755 target/release/petiglyph "\$pkgdir/usr/bin/petiglyph"
   install -Dm644 README.md "\$pkgdir/usr/share/doc/petiglyph/README.md"
+  install -Dm644 LICENSE "\$pkgdir/usr/share/licenses/petiglyph/LICENSE"
 }
 EOF
 

@@ -1,4 +1,4 @@
-name: release
+name: release-artifacts
 
 on:
   push:
@@ -6,10 +6,15 @@ on:
       - "v*"
 
 permissions:
-  contents: write
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
 
 jobs:
   build:
+    name: build-${{ matrix.target }}
+    runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
@@ -18,7 +23,19 @@ jobs:
             target: x86_64-unknown-linux-gnu
             archive: tar.gz
             bin_ext: ""
-          - os: macos-latest
+          - os: ubuntu-latest
+            target: aarch64-unknown-linux-gnu
+            archive: tar.gz
+            bin_ext: ""
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-musl
+            archive: tar.gz
+            bin_ext: ""
+          - os: ubuntu-latest
+            target: aarch64-unknown-linux-musl
+            archive: tar.gz
+            bin_ext: ""
+          - os: macos-13
             target: x86_64-apple-darwin
             archive: tar.gz
             bin_ext: ""
@@ -30,54 +47,85 @@ jobs:
             target: x86_64-pc-windows-msvc
             archive: zip
             bin_ext: ".exe"
-
-    runs-on: ${{ matrix.os }}
+          - os: windows-latest
+            target: aarch64-pc-windows-msvc
+            archive: zip
+            bin_ext: ".exe"
 
     steps:
       - uses: actions/checkout@v4
 
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: ${{ matrix.target }}
-
       - name: Build
-        run: cargo build --release --target ${{ matrix.target }}
+        uses: houseabsolute/actions-rust-cross@v1
+        with:
+          command: build
+          target: ${{ matrix.target }}
+          args: "--release --locked"
+          strip: true
 
       - name: Package (unix)
         if: matrix.archive == 'tar.gz'
+        shell: bash
         run: |
-          set -eux
-          BIN="target/${{ matrix.target }}/release/petiglyph${{ matrix.bin_ext }}"
-          OUT="petiglyph-${{ github.ref_name }}-${{ matrix.target }}.tar.gz"
-          tar -czf "$OUT" -C "$(dirname "$BIN")" "$(basename "$BIN")"
+          set -euo pipefail
+          base="petiglyph-${{ github.ref_name }}-${{ matrix.target }}"
+          pkgdir="$base"
+          mkdir -p "$pkgdir"
+          cp "target/${{ matrix.target }}/release/petiglyph${{ matrix.bin_ext }}" "$pkgdir/"
+          cp README.md LICENSE "$pkgdir/"
+          tar -czf "$base.tar.gz" "$pkgdir"
 
       - name: Package (windows)
         if: matrix.archive == 'zip'
         shell: pwsh
         run: |
-          $bin = "target/${{ matrix.target }}/release/petiglyph${{ matrix.bin_ext }}"
-          $out = "petiglyph-${{ github.ref_name }}-${{ matrix.target }}.zip"
-          Compress-Archive -Path $bin -DestinationPath $out -Force
+          $base = "petiglyph-${{ github.ref_name }}-${{ matrix.target }}"
+          New-Item -ItemType Directory -Force -Path $base | Out-Null
+          Copy-Item "target/${{ matrix.target }}/release/petiglyph${{ matrix.bin_ext }}" "$base/"
+          Copy-Item README.md "$base/"
+          Copy-Item LICENSE "$base/"
+          Compress-Archive -Path "$base/*" -DestinationPath "$base.zip" -Force
 
-      - name: Upload artifact
+      - name: Upload archive
         uses: actions/upload-artifact@v4
         with:
-          name: petiglyph-${{ matrix.target }}
+          name: release-${{ matrix.target }}
           path: |
             petiglyph-${{ github.ref_name }}-${{ matrix.target }}.tar.gz
             petiglyph-${{ github.ref_name }}-${{ matrix.target }}.zip
-          if-no-files-found: ignore
+          if-no-files-found: error
 
   publish:
-    needs: build
+    name: publish-release
     runs-on: ubuntu-latest
+    needs: build
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
 
     steps:
-      - uses: actions/download-artifact@v4
+      - name: Download archives
+        uses: actions/download-artifact@v4
         with:
-          path: dist-release
+          pattern: release-*
+          merge-multiple: true
+          path: dist
+
+      - name: Generate checksums
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd dist
+          sha256sum petiglyph-* > SHA256SUMS
+
+      - name: Attest build artifacts
+        uses: actions/attest@v4
+        with:
+          subject-path: dist/*
 
       - name: Publish GitHub release assets
         uses: softprops/action-gh-release@v2
         with:
-          files: dist-release/**/*
+          generate_release_notes: true
+          files: dist/*

@@ -1,6 +1,6 @@
 [package]
 name = "petiglyph"
-version = "0.0.1"
+version = "0.1.0"
 edition = "2024"
 description = "TUI-first Rust CLI for turning image folders into monochrome glyph fonts."
 license = "MIT"

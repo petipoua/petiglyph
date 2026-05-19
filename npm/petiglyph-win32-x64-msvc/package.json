@@ -1,0 +1,21 @@
+{
+  "name": "@petiglyph/petiglyph-win32-x64-msvc",
+  "version": "0.1.0",
+  "description": "petiglyph native binary package for win32/x64",
+  "license": "MIT",
+  "homepage": "https://github.com/petipoua/petiglyph",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/petipoua/petiglyph.git"
+  },
+  "files": [
+    "bin/petiglyph.exe",
+    "README.md",
+    "LICENSE"
+  ],
+  "os": ["win32"],
+  "cpu": ["x64"],
+  "publishConfig": {
+    "access": "public"
+  }
+}

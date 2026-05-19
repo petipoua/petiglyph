@@ -1,0 +1,101 @@
+name: publish-npm
+
+on:
+  release:
+    types: [published]
+
+permissions:
+  contents: read
+
+env:
+  NODE_VERSION: "24"
+
+jobs:
+  publish:
+    name: npm-publish
+    runs-on: ubuntu-latest
+    environment: npm
+    permissions:
+      contents: read
+      id-token: write
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.release.tag_name }}
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          registry-url: https://registry.npmjs.org
+
+      - name: Download release archives
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ github.event.release.tag_name }}
+        run: |
+          set -euo pipefail
+          mkdir -p dist-release
+          gh release download "$TAG" \
+            --pattern "petiglyph-v*-*.tar.gz" \
+            --pattern "petiglyph-v*-*.zip" \
+            --dir dist-release
+
+      - name: Verify tag and sync versions
+        run: |
+          set -euo pipefail
+          version="$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -n1)"
+          if [[ "v$version" != "${{ github.event.release.tag_name }}" ]]; then
+            echo "Tag/version mismatch: tag=${{ github.event.release.tag_name }}, Cargo.toml=$version" >&2
+            exit 1
+          fi
+          ./scripts/release_sync_versions.sh
+
+      - name: Stage platform binaries into npm packages
+        run: ./scripts/release_stage_npm_artifacts.sh dist-release
+
+      - name: Verify staged binaries exist
+        run: |
+          set -euo pipefail
+          for bin_path in \
+            npm/petiglyph-linux-x64-gnu/bin/petiglyph \
+            npm/petiglyph-linux-arm64-gnu/bin/petiglyph \
+            npm/petiglyph-linux-x64-musl/bin/petiglyph \
+            npm/petiglyph-linux-arm64-musl/bin/petiglyph \
+            npm/petiglyph-darwin-x64/bin/petiglyph \
+            npm/petiglyph-darwin-arm64/bin/petiglyph \
+            npm/petiglyph-win32-x64-msvc/bin/petiglyph.exe \
+            npm/petiglyph-win32-arm64-msvc/bin/petiglyph.exe
+          do
+            [[ -f "$bin_path" ]] || { echo "Missing staged binary: $bin_path" >&2; exit 1; }
+          done
+
+      - name: npm pack dry-run validation
+        run: |
+          set -euo pipefail
+          for pkg in npm/*; do
+            if [[ -f "$pkg/package.json" ]]; then
+              (cd "$pkg" && npm pack --dry-run >/dev/null)
+            fi
+          done
+
+      - name: Publish platform packages
+        run: |
+          set -euo pipefail
+          for pkg in \
+            npm/petiglyph-linux-x64-gnu \
+            npm/petiglyph-linux-arm64-gnu \
+            npm/petiglyph-linux-x64-musl \
+            npm/petiglyph-linux-arm64-musl \
+            npm/petiglyph-darwin-x64 \
+            npm/petiglyph-darwin-arm64 \
+            npm/petiglyph-win32-x64-msvc \
+            npm/petiglyph-win32-arm64-msvc
+          do
+            (cd "$pkg" && npm publish --access public)
+          done
+
+      - name: Publish meta package
+        run: |
+          set -euo pipefail
+          (cd npm/petiglyph && npm publish --access public)

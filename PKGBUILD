@@ -1,5 +1,5 @@
 pkgname=petiglyph
-pkgver=0.0.1
+pkgver=0.1.0
 pkgrel=1
 pkgdesc='Build icon fonts from project-local assets'
 arch=('x86_64')
@@ -19,4 +19,5 @@ package() {
   cd "$srcdir/petiglyph"
   install -Dm755 target/release/petiglyph "$pkgdir/usr/bin/petiglyph"
   install -Dm644 README.md "$pkgdir/usr/share/doc/petiglyph/README.md"
+  install -Dm644 LICENSE "$pkgdir/usr/share/licenses/petiglyph/LICENSE"
 }
