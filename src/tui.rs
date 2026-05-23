@@ -127,6 +127,19 @@ struct InstalledAnimationSnapshotRecord {
     frame_blocks: Vec<String>,
 }
 
+type InstalledFontSamplePayload = (
+    Vec<String>,
+    Vec<String>,
+    Vec<InstalledFontAnimationPreview>,
+    Vec<String>,
+);
+
+enum InstalledFontMetadataSample {
+    Matched(InstalledFontSamplePayload),
+    MissingSampleForMatchedMetadata,
+    NoMetadataMatch,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum WelcomeFocus {
     VerbosePathsToggle,
@@ -727,28 +740,30 @@ fn scan_installed_petiglyph_fonts(cwd: &Path) -> Result<Vec<InstalledFontSample>
             .unwrap_or("unknown.ttf")
             .to_string();
 
-        let sample_from_manifest = sample_from_installed_font_metadata(&install_dir, &path)
-            .ok()
-            .flatten();
+        let metadata_sample = sample_from_installed_font_metadata(&install_dir, &path).ok();
         let (raw_blocks, animation_rows, animation_previews, animation_exports) =
-            if let Some((blocks, animation_rows, animation_previews, animation_exports)) =
-                sample_from_manifest
-            {
-                (
-                    blocks,
-                    animation_rows,
-                    animation_previews,
-                    animation_exports,
-                )
-            } else {
-                let (sample, truncated) = fs::read(&path)
-                    .ok()
-                    .and_then(|bytes| sample_glyphs_from_ttf_bytes(&bytes, WELCOME_SAMPLE_LIMIT))
-                    .unwrap_or_default();
-                let _ = truncated;
-                (vec![sample], Vec::new(), Vec::new(), Vec::new())
+            match metadata_sample {
+                Some(InstalledFontMetadataSample::Matched(payload)) => payload,
+                Some(InstalledFontMetadataSample::MissingSampleForMatchedMetadata) => {
+                    // Stale installs can linger after temp/test projects are deleted.
+                    // Hide them from the installed-font inventory until reinstalled.
+                    continue;
+                }
+                _ => {
+                    let (sample, truncated) = fs::read(&path)
+                        .ok()
+                        .and_then(|bytes| {
+                            sample_glyphs_from_ttf_bytes(&bytes, WELCOME_SAMPLE_LIMIT)
+                        })
+                        .unwrap_or_default();
+                    let _ = truncated;
+                    (vec![sample], Vec::new(), Vec::new(), Vec::new())
+                }
             };
         let blocks = regroup_installed_sample_blocks(raw_blocks);
+        if blocks.is_empty() && animation_rows.is_empty() {
+            continue;
+        }
 
         samples.push(InstalledFontSample {
             file_name,
@@ -766,16 +781,10 @@ fn scan_installed_petiglyph_fonts(cwd: &Path) -> Result<Vec<InstalledFontSample>
 fn sample_from_installed_font_metadata(
     install_dir: &Path,
     installed_ttf: &Path,
-) -> Result<
-    Option<(
-        Vec<String>,
-        Vec<String>,
-        Vec<InstalledFontAnimationPreview>,
-        Vec<String>,
-    )>,
-> {
+) -> Result<InstalledFontMetadataSample> {
     let installed_canonical = installed_ttf.canonicalize().ok();
     let mut metadata_candidates = Vec::new();
+    let mut matched_metadata = false;
 
     for entry in fs::read_dir(install_dir)
         .with_context(|| format!("failed to read {}", install_dir.display()))?
@@ -816,6 +825,7 @@ fn sample_from_installed_font_metadata(
         if !ttf_matches {
             continue;
         }
+        matched_metadata = true;
         if let Some(mut sample) = sample_from_manifest_path(Path::new(&metadata.manifest_path)) {
             let mut animation_rows = Vec::new();
             let mut animation_previews = Vec::new();
@@ -863,7 +873,7 @@ fn sample_from_installed_font_metadata(
 
             sample = prune_static_sample_blocks(sample, &all_animation_frames);
 
-            return Ok(Some((
+            return Ok(InstalledFontMetadataSample::Matched((
                 sample,
                 animation_rows,
                 animation_previews,
@@ -872,7 +882,11 @@ fn sample_from_installed_font_metadata(
         }
     }
 
-    Ok(None)
+    if matched_metadata {
+        Ok(InstalledFontMetadataSample::MissingSampleForMatchedMetadata)
+    } else {
+        Ok(InstalledFontMetadataSample::NoMetadataMatch)
+    }
 }
 
 fn sample_from_manifest_path(manifest_path: &Path) -> Option<Vec<String>> {
@@ -1158,6 +1172,15 @@ pub(crate) fn sample_glyphs_from_ttf_bytes(bytes: &[u8], limit: usize) -> Option
         subtable.codepoints(|codepoint| {
             if codepoint <= 0x20 || codepoint > 0x10_FFFF || (0xD800..=0xDFFF).contains(&codepoint)
             {
+                return;
+            }
+            let Some(ch) = char::from_u32(codepoint) else {
+                return;
+            };
+            let Some(glyph_id) = face.glyph_index(ch) else {
+                return;
+            };
+            if face.glyph_bounding_box(glyph_id).is_none() {
                 return;
             }
 
