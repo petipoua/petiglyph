@@ -1,29 +1,12 @@
 # RELEASE-CHECKLIST
 
-Purpose: executable release checklist for shipping `petiglyph` across direct GitHub artifacts, AUR, npm, and PyPI.
+Purpose: executable checklist for shipping `petiglyph` through GitHub Releases, AUR, npm, and PyPI/TestPyPI.
 
-This checklist assumes the compatibility direction in `CROSS-COMPATIBILITY-GUIDE.md`:
+This checklist reflects the repository state as of 2026-05-23. Use `Cargo.toml` package version as the source of truth.
 
-- Rust CLI/TUI binary remains the source product.
-- AUR ships a source-built Arch package.
-- npm ships a meta package plus platform-specific optional dependency packages.
-- PyPI ships `maturin` `bin` wheels plus an sdist.
-- Linux direct artifacts ship GNU and musl binaries, with GNU as the default documented Linux download.
-- macOS and Windows artifacts ship unsigned for this release, with explicit release-note warnings.
+## 0. Current Release Surface
 
----
-
-## 0. Release Decisions (Locked)
-
-### 0.1 Release scope
-
-- First cross-platform release version is `0.1.0`.
-- No formal stable/beta/preview labeling is used for releases.
-- GitHub releases are the canonical source of binary artifacts for downstream packaging.
-
-### 0.2 Supported targets
-
-Mandatory targets for the first release:
+Direct GitHub archives build 8 targets:
 
 - `x86_64-unknown-linux-gnu`
 - `aarch64-unknown-linux-gnu`
@@ -34,629 +17,272 @@ Mandatory targets for the first release:
 - `x86_64-pc-windows-msvc`
 - `aarch64-pc-windows-msvc`
 
-macOS distribution policy:
+npm publishes the `petiglyph` meta package plus 8 optional native `@petiglyph/*` packages matching the direct archive targets.
 
-- Ship separate architecture archives only.
-- Do not produce universal2 archives.
+PyPI/TestPyPI publishes Linux GNU manylinux, macOS, and Windows wheels plus an sdist. It does not currently publish musllinux wheels.
 
-Runtime support tier policy for this release:
+AUR is manual: prepare `PKGBUILD`/`.SRCINFO`, validate locally, then push to the AUR package repository.
 
-- Runtime-validated targets: Linux (`x86_64-unknown-linux-gnu`, `aarch64-unknown-linux-gnu`, `x86_64-unknown-linux-musl`, `aarch64-unknown-linux-musl`) and Windows x64 (`x86_64-pc-windows-msvc`).
-- Compile-only/limited-runtime-validation targets: macOS (`x86_64-apple-darwin`, `aarch64-apple-darwin`) and Windows ARM64 (`aarch64-pc-windows-msvc`).
-- Release notes and docs must mark compile-only/limited-runtime-validation targets as `unstable` until direct runtime testing coverage exists.
+Runtime dependency policy:
 
-### 0.3 Runtime dependency policy
+- `ffmpeg` is required for video/animated media import workflows.
+- Arch packaging declares `depends=('ffmpeg')`.
+- Other package channels do not bundle `ffmpeg`; docs and runtime prompt must make that explicit.
 
-- `ffmpeg` is a hard dependency.
-- Package docs must state that media processing depends on `ffmpeg` availability.
+Trust/signing policy:
 
-### 0.4 Image format policy
+- GitHub release assets include checksums and artifact attestations.
+- npm and PyPI use trusted publishing through protected GitHub environments.
+- macOS and Windows artifacts are unsigned unless a release explicitly says otherwise.
+- macOS and Windows ARM64 artifacts should be marked limited-runtime-validation/unstable until directly runtime-tested.
 
-- AVIF support is required for release behavior.
-- AVIF support may be satisfied through `ffmpeg`-based media processing paths.
-- Release documentation must list supported formats and the role of `ffmpeg` in AVIF/media workflows.
+## 1. Version Sync
 
-### 0.5 Signing and trust policy
+1. Choose the release version, for example `0.1.0`.
+2. Sync repo versions:
 
-- macOS artifacts are published unsigned and without notarization.
-- Windows artifacts are published unsigned.
-- Release notes must explicitly state that unsigned binaries can trigger OS trust/security prompts.
-- Release notes must explicitly mark macOS and Windows ARM64 artifacts as `unstable` until runtime validation exists.
-
-### 0.6 Registry ownership
-
-- npm naming policy uses the default model:
-`petiglyph` meta package plus `@petiglyph/*` platform packages (if the scope is available).
-- PyPI project name target is `petiglyph` (if available).
-- AUR publish order is `petiglyph` first; `petiglyph-bin` and `petiglyph-git` can be added later if needed.
-
-### 0.7 Support window
-
-- npm/PyPI support policy is latest-only.
-- No `N-1` maintenance target is planned.
-
----
-
-## 1. Pre-Implementation Cleanup
-
-### 1.1 Align dependency policy
-
-- [ ] Apply hard `ffmpeg` dependency policy from section 0.3.
-- [ ] Update `PKGBUILD` to use `depends=('ffmpeg')`.
-- [ ] Update `scripts/aur.sh` to generate the same dependency policy.
-- [ ] Update README compatibility notes to match.
-- [ ] Update `CROSS-COMPATIBILITY-GUIDE.md` if the owner decision differs from its recommendation.
-
-Acceptance:
-
-```sh
-rg -n "depends=|optdepends|ffmpeg" PKGBUILD scripts/aur.sh README.md CROSS-COMPATIBILITY-GUIDE.md
+```bash
+./scripts/release_sync_versions.sh 0.1.0
 ```
 
-The dependency story should be consistent across all files, with `ffmpeg` declared as required.
+3. Verify synchronized metadata:
 
-### 1.2 Reduce native build risk
-
-- [ ] Apply AVIF policy from section 0.4.
-- [ ] Ensure release docs explain whether AVIF is handled by native image decode, `ffmpeg`, or both.
-- [ ] Add or update README supported input format list.
-- [ ] Confirm `cargo build --release --locked` works on Linux after any feature changes.
-
-Acceptance:
-
-```sh
-cargo build --release --locked
-cargo test --locked
+```bash
+cargo metadata --no-deps --format-version 1 | jq -r '.packages[] | select(.name == "petiglyph") | .version'
+rg -n '^(pkgver=|\s*"version":|version = )' Cargo.toml PKGBUILD npm/*/package.json
+rg -n '"@petiglyph/petiglyph-[^"]+": "0\.1\.0"' npm/petiglyph/package.json
 ```
 
-### 1.3 Runtime portability fixes
+4. Confirm README JSON envelope sample version matches the release version.
 
-- [ ] Replace production hardcoded `/tmp/petiglyph-tui-debug.log` with `std::env::temp_dir()` or an overrideable env var.
-- [ ] Add clipboard providers:
-  - Linux Wayland: `wl-copy`
-  - Linux X11: `xclip -selection clipboard`
-  - macOS: `pbcopy`
-  - Windows: PowerShell `Set-Clipboard`, optionally `clip.exe` fallback
-- [ ] Make clipboard copy status accurately report success/failure.
-- [ ] Review Windows/macOS error messages so they do not refer to Linux-only fontconfig tools.
+## 2. Local Quality Gates
 
-Acceptance:
+Run from repo root:
 
-```sh
-cargo test --locked
+```bash
+cargo fmt --all -- --check
+cargo check
+cargo clippy --all-targets --all-features -- -D warnings
+cargo test
 cargo run -- --help
 cargo run -- tui </dev/null
 ```
 
-Expected: non-TTY TUI launch fails with the documented terminal-required error.
+Expected:
 
----
+- Formatting/check/clippy/test pass.
+- `cargo run -- tui </dev/null` fails cleanly with the terminal-required error.
 
-## 2. Versioning and Release Rules
+Smoke a scratch project before release:
 
-### 2.1 Version source of truth
+```bash
+rm -rf /tmp/petiglyph-release-smoke
+mkdir -p /tmp/petiglyph-release-smoke
+cp -R icons /tmp/petiglyph-release-smoke/icons
+cat > /tmp/petiglyph-release-smoke/petiglyph.toml <<'MANIFEST'
+input_dir = "icons"
+out_dir = "build"
+font_name = "Petiglyph Release Smoke"
+glyph_size = 64
+threshold = 64
+codepoint_start = "U+100000"
+MANIFEST
 
-Reasonable default: `Cargo.toml` is the canonical version source.
-
-- [ ] Set `package.version` in `Cargo.toml`.
-- [ ] Keep `PKGBUILD pkgver` synchronized with `Cargo.toml`.
-- [ ] Keep npm meta/platform package versions synchronized with `Cargo.toml`.
-- [ ] Keep PyPI version synchronized through `maturin` metadata.
-
-Acceptance:
-
-```sh
-cargo metadata --no-deps --format-version 1 | jq -r '.packages[] | select(.name == "petiglyph") | .version'
-rg -n "^(pkgver|version)" PKGBUILD package*.json pyproject.toml 2>/dev/null || true
+cargo run -- build --manifest /tmp/petiglyph-release-smoke/petiglyph.toml --json
+cargo run -- sample --manifest /tmp/petiglyph-release-smoke/petiglyph.toml --json
+cargo run -- install-font --manifest /tmp/petiglyph-release-smoke/petiglyph.toml --json
+cargo run -- uninstall-font --manifest /tmp/petiglyph-release-smoke/petiglyph.toml --json
+cargo run -- doctor --manifest /tmp/petiglyph-release-smoke/petiglyph.toml --json
 ```
 
-### 2.2 Git tagging
+## 3. Runtime/Clipboard Smoke
 
-Reasonable default:
+Linux/macOS:
 
-- Release tags use `v{version}`, for example `v0.1.0`.
-- Do not publish registries from branch pushes.
-- Publish only from protected tags and approved GitHub environments.
-
-Checklist:
-
-- [ ] Create release branch or merge all release changes to `main`.
-- [ ] Confirm working tree is clean.
-- [ ] Create annotated tag `v{version}`.
-- [ ] Push tag.
-
-Commands:
-
-```sh
-git status --short
-git tag -a "vVERSION" -m "petiglyph vVERSION"
-git push origin "vVERSION"
+```bash
+./scripts/clipboard_smoke.sh
+./scripts/clipboard_smoke.sh --bin ./target/release/petiglyph
+./scripts/clipboard_smoke.sh --skip-cli-checks
 ```
 
----
-
-## 3. Direct GitHub Artifacts
-
-### 3.1 Artifact matrix
-
-Reasonable default first matrix:
-
-| Target | Runner/build strategy | Archive |
-| --- | --- | --- |
-| `x86_64-unknown-linux-gnu` | Ubuntu native | `.tar.gz` |
-| `aarch64-unknown-linux-gnu` | `cross` or Linux cross toolchain | `.tar.gz` |
-| `x86_64-unknown-linux-musl` | `cross` or musl toolchain | `.tar.gz` |
-| `aarch64-unknown-linux-musl` | `cross` or musl toolchain | `.tar.gz` |
-| `x86_64-apple-darwin` | macOS runner | `.tar.gz` |
-| `aarch64-apple-darwin` | macOS runner | `.tar.gz` |
-| `x86_64-pc-windows-msvc` | Windows runner | `.zip` |
-| `aarch64-pc-windows-msvc` | Windows runner or cross build with ARM64 validation | `.zip` |
-
-Checklist:
-
-- [ ] Add GitHub Actions build workflow.
-- [ ] Pin all workflow actions to full commit SHAs (no floating tags).
-- [ ] Install Rust stable with target triple.
-- [ ] Build with `cargo build --release --locked --target {target}`.
-- [ ] Strip binaries where safe and available.
-- [ ] Archive binary with README and LICENSE.
-- [ ] Name artifacts as `petiglyph-v{version}-{target}.{tar.gz|zip}`.
-- [ ] Generate `SHA256SUMS`.
-- [ ] Upload artifacts to GitHub release.
-- [ ] Generate GitHub artifact attestations if enabled.
-
-### 3.2 Direct artifact smoke tests
-
-For each produced artifact:
-
-- [ ] Extract archive.
-- [ ] Run `petiglyph --help`.
-- [ ] Run `petiglyph doctor --json`.
-- [ ] Run `petiglyph tui` without TTY and assert clean failure.
-- [ ] Build a fixture project.
-- [ ] If safe on that runner, run install/uninstall in an isolated user profile.
-- [ ] For compile-only targets (macOS, Windows ARM64), if runtime tests are not executed, mark release notes/docs with `unstable` for those target artifacts.
-
-Example Linux/macOS commands:
-
-```sh
-./petiglyph --help
-./petiglyph doctor --json
-./petiglyph tui </dev/null
-```
-
-Example Windows commands:
+Windows:
 
 ```powershell
-.\petiglyph.exe --help
-.\petiglyph.exe doctor --json
+pwsh -File .\scripts\clipboard_smoke.ps1
+pwsh -File .\scripts\clipboard_smoke.ps1 -PetiglyphPath .\target\release\petiglyph.exe
 ```
 
----
+If `ffmpeg` is installed, also smoke one animated media import manually through the TUI. If not installed, verify the missing-`ffmpeg` prompt/error is explicit.
 
-## 4. AUR Release
+## 4. TUI E2E
 
-### 4.1 Package policy
+Run the headless harness:
 
-Reasonable default:
+```bash
+./scripts/tui_e2e_hty.sh
+```
 
-- Stable package name: `petiglyph`.
-- Source-based build from immutable GitHub release tarball.
-- `makedepends=('cargo')`.
-- Runtime dependency uses hard requirement `depends=('ffmpeg')`.
-- `arch=('x86_64')` initially.
+Optional visible debug run:
 
-Checklist:
+```bash
+PETIGLYPH_TUI_DEBUG=1 ./scripts/tui_e2e_hty.sh --watch --step-delay-ms 250
+```
 
-- [ ] Update `PKGBUILD pkgver`.
-- [ ] Set `source` to immutable GitHub release tarball URL.
-- [ ] Replace `sha256sums=('SKIP')` with real checksum before publish.
-- [ ] Ensure `depends=('ffmpeg')` is present and no contradictory `optdepends` policy is documented.
-- [ ] Confirm `package()` installs binary to `/usr/bin/petiglyph`.
-- [ ] Confirm README/license docs install to appropriate `/usr/share/doc` and `/usr/share/licenses` paths.
-- [ ] Generate `.SRCINFO`.
-- [ ] Build with `makepkg` locally.
-- [ ] Validate with `namcap`.
-- [ ] Build in clean chroot.
-- [ ] Publish to AUR.
+Before changing the harness, check local and upstream `hty` behavior:
 
-Commands:
+```bash
+hty --help
+```
 
-```sh
-makepkg --printsrcinfo > .SRCINFO
+References:
+
+- https://github.com/LatentEvals/hty
+- https://hty.sh
+
+## 5. GitHub Release Artifacts
+
+Before tagging:
+
+- [ ] Working tree is clean except intentional release-prep changes.
+- [ ] `README.md`, `AGENTS.md`, `CROSS-COMPATIBILITY-GUIDE.md`, and release docs match current command/package behavior.
+- [ ] Release notes include unsigned macOS/Windows warnings where applicable.
+- [ ] Release notes identify limited-runtime-validation targets.
+
+Tag and push:
+
+```bash
+git status --short
+git tag -s v0.1.0 -m "petiglyph v0.1.0"
+git push origin v0.1.0
+```
+
+The tag push triggers `.github/workflows/release.yml`.
+
+After workflow completion:
+
+```bash
+gh release view v0.1.0 --json assets
+gh release download v0.1.0 -D ./dist-release
+(cd dist-release && sha256sum -c SHA256SUMS)
+gh release verify v0.1.0
+```
+
+Validate at least one extracted archive locally:
+
+```bash
+mkdir -p /tmp/petiglyph-asset-smoke
+cd /tmp/petiglyph-asset-smoke
+tar -xzf /path/to/dist-release/petiglyph-v0.1.0-x86_64-unknown-linux-gnu.tar.gz
+./petiglyph-v0.1.0-x86_64-unknown-linux-gnu/petiglyph --help
+./petiglyph-v0.1.0-x86_64-unknown-linux-gnu/petiglyph doctor --json
+./petiglyph-v0.1.0-x86_64-unknown-linux-gnu/petiglyph tui </dev/null
+```
+
+## 6. AUR
+
+Prepare release package metadata from the signed tag tarball:
+
+```bash
+./scripts/release_prepare_aur.sh 0.1.0
+```
+
+Validate locally on Arch:
+
+```bash
 makepkg -sf
 namcap PKGBUILD
 namcap petiglyph-*.pkg.tar.zst
 ```
 
-Clean chroot command depends on local Arch devtools setup. Recommended default:
+Publish manually from the AUR package repository:
 
-```sh
-pkgctl build
+```bash
+cp /path/to/petiglyph/PKGBUILD .
+cp /path/to/petiglyph/.SRCINFO .
+git add PKGBUILD .SRCINFO
+git commit -m "petiglyph 0.1.0"
+git push
 ```
 
-Fallback for local-only testing:
+For local development packaging, use:
 
-```sh
-extra-x86_64-build
+```bash
+./scripts/aur.sh
+./scripts/aur.sh build
+./scripts/aur.sh install
+./scripts/aur.sh uninstall
 ```
 
-### 4.2 AUR acceptance criteria
+## 7. npm
 
-- [ ] Clean chroot build succeeds.
-- [ ] Installed package exposes `petiglyph` on PATH.
-- [ ] `petiglyph --help` succeeds.
-- [ ] `petiglyph doctor` succeeds or reports actionable non-fatal issues.
-- [ ] `petiglyph build` works in a fixture project.
-- [ ] Video/media workflows function with `ffmpeg` installed from package dependencies.
-- [ ] `.SRCINFO` matches `PKGBUILD`.
+The GitHub Release `published` event triggers `.github/workflows/npm-publish.yml`.
 
----
+Workflow order:
 
-## 5. npm Release
+1. Check out the release tag.
+2. Verify release integrity with `gh release verify` and `SHA256SUMS`.
+3. Verify tag/version consistency.
+4. Stage binaries into `npm/*/bin` with `scripts/release_stage_npm_artifacts.sh`.
+5. Run `npm pack --dry-run` for each package.
+6. Publish platform packages.
+7. Publish the `petiglyph` meta package.
 
-### 5.1 Package layout
+Local preflight after downloading release assets:
 
-Reasonable default:
-
-```text
-npm/
-  petiglyph/
-    package.json
-    bin/petiglyph.js
-  petiglyph-linux-x64-gnu/
-    package.json
-    bin/petiglyph
-  petiglyph-linux-arm64-gnu/
-    package.json
-    bin/petiglyph
-  petiglyph-linux-x64-musl/
-    package.json
-    bin/petiglyph
-  petiglyph-linux-arm64-musl/
-    package.json
-    bin/petiglyph
-  petiglyph-darwin-x64/
-    package.json
-    bin/petiglyph
-  petiglyph-darwin-arm64/
-    package.json
-    bin/petiglyph
-  petiglyph-win32-x64-msvc/
-    package.json
-    bin/petiglyph.exe
-  petiglyph-win32-arm64-msvc/
-    package.json
-    bin/petiglyph.exe
+```bash
+./scripts/release_npm_pack_test.sh dist-release
 ```
 
-If the `@petiglyph` scope is available, platform packages should be scoped:
+Post-publish checks:
 
-- `@petiglyph/petiglyph-linux-x64-gnu`
-- `@petiglyph/petiglyph-linux-arm64-gnu`
-- `@petiglyph/petiglyph-linux-x64-musl`
-- `@petiglyph/petiglyph-linux-arm64-musl`
-- `@petiglyph/petiglyph-darwin-x64`
-- `@petiglyph/petiglyph-darwin-arm64`
-- `@petiglyph/petiglyph-win32-x64-msvc`
-- `@petiglyph/petiglyph-win32-arm64-msvc`
-
-### 5.2 Meta package requirements
-
-- [ ] `name` matches owner decision in section 0.6.
-- [ ] `version` matches `Cargo.toml`.
-- [ ] `bin` exposes `petiglyph`.
-- [ ] `optionalDependencies` references all platform packages at the exact same version.
-- [ ] Launcher resolves current platform package from `process.platform`, `process.arch`, and Linux libc detection.
-- [ ] Launcher forwards args and stdio to native binary.
-- [ ] Launcher exits with the native process status code.
-- [ ] Launcher prints a clear unsupported platform message when no platform package is installed.
-- [ ] `repository` metadata exactly matches the public repo for provenance.
-- [ ] `license`, `description`, and `homepage` are set.
-
-### 5.3 Platform package requirements
-
-For each platform package:
-
-- [ ] `name` matches package naming policy.
-- [ ] `version` matches meta package.
-- [ ] `os` is set: `linux`, `darwin`, or `win32`.
-- [ ] `cpu` is set: `x64` or `arm64`.
-- [ ] Linux packages set `libc` to `glibc` or `musl`.
-- [ ] Non-Linux packages do not set `libc`.
-- [ ] `files` includes only binary, README/license, and minimal metadata.
-- [ ] Binary has executable mode on Unix packages.
-- [ ] Windows package contains `petiglyph.exe`.
-
-### 5.4 npm local tests
-
-For each package:
-
-```sh
-npm pack --dry-run
-npm pack
-```
-
-Install test from packed tarballs:
-
-```sh
-tmpdir="$(mktemp -d)"
-cd "$tmpdir"
-npm init -y
-npm install /path/to/npm/petiglyph/*.tgz /path/to/npm/platform-package/*.tgz
-npx petiglyph --help
-```
-
-Windows equivalent should be run in PowerShell on a Windows runner.
-
-Acceptance:
-
-- [ ] `npm pack --dry-run` includes only expected files.
-- [ ] Local tarball install succeeds on Linux GNU.
-- [ ] Local tarball install succeeds on Linux musl if supported in CI.
-- [ ] Local tarball install succeeds on macOS x64/arm64 where runners are available.
-- [ ] Local tarball install succeeds on Windows x64.
-- [ ] Local tarball install succeeds on Windows ARM64 where runners are available.
-- [ ] `npx petiglyph --help` succeeds.
-- [ ] `npx petiglyph build` succeeds in a fixture project.
-
-### 5.5 npm publish
-
-Reasonable default:
-
-- Use npm trusted publishing from GitHub-hosted runners.
-- Use Node 22.14.0+ and npm 11.5.1+.
-- Publish platform packages first, then meta package.
-- Use protected GitHub environment approval.
-
-Checklist:
-
-- [ ] Reserve/verify package names.
-- [ ] Configure npm trusted publisher for each package.
-- [ ] Verify GitHub release integrity in publish workflow (`gh release verify`).
-- [ ] Verify `SHA256SUMS` for downloaded release assets before `npm publish`.
-- [ ] Publish to npm from tag workflow.
-- [ ] Verify provenance is present for published packages when supported.
-- [ ] Install from public npm registry on Linux/macOS/Windows.
-
-Commands after publish:
-
-```sh
+```bash
 npm view petiglyph version
 npm view petiglyph bin
-npm i -g petiglyph
+npm install -g petiglyph
 petiglyph --help
 ```
 
-Use scoped name if owner chooses a scoped meta package.
+## 8. PyPI/TestPyPI
 
----
+The GitHub Release `published` event triggers `.github/workflows/pypi-publish.yml`.
 
-## 6. PyPI Release
+Workflow order:
 
-### 6.1 `pyproject.toml` baseline
+1. Build wheels for Linux GNU manylinux, macOS, and Windows targets.
+2. Build sdist.
+3. Publish to TestPyPI through the `testpypi` environment.
+4. Publish to PyPI through the `pypi` environment after TestPyPI succeeds.
 
-Reasonable default:
+Local preflight:
 
-```toml
-[build-system]
-requires = ["maturin>=1.0,<2.0"]
-build-backend = "maturin"
-
-[project]
-name = "petiglyph"
-description = "TUI-first Rust CLI for turning image folders into monochrome glyph fonts."
-readme = "README.md"
-requires-python = ">=3.8"
-license = { text = "MIT" }
-keywords = ["font", "glyph", "icons", "tui", "cli"]
-classifiers = [
-  "Programming Language :: Rust",
-  "Environment :: Console",
-  "License :: OSI Approved :: MIT License",
-  "Operating System :: POSIX :: Linux",
-  "Operating System :: MacOS",
-  "Operating System :: Microsoft :: Windows",
-]
-
-[project.urls]
-Homepage = "https://github.com/petipoua/petiglyph"
-Repository = "https://github.com/petipoua/petiglyph"
-Issues = "https://github.com/petipoua/petiglyph/issues"
-
-[tool.maturin]
-bindings = "bin"
-strip = true
-compatibility = "pypi"
-```
-
-Checklist:
-
-- [ ] Add `pyproject.toml`.
-- [ ] Confirm project name availability.
-- [ ] Confirm version is inherited correctly from Cargo or explicitly set once.
-- [ ] Confirm `maturin build --release` produces a wheel containing the `petiglyph` command.
-- [ ] Confirm sdist contains all files required for source build.
-
-### 6.2 Wheel matrix
-
-Reasonable default first matrix:
-
-- Linux x86_64 manylinux
-- Linux aarch64 manylinux
-- macOS x86_64
-- macOS aarch64
-- Windows x86_64
-- Windows ARM64 (if wheel pipeline supports it)
-
-Add musllinux after musl smoke tests pass:
-
-- Linux x86_64 musllinux
-- Linux aarch64 musllinux
-
-Checklist:
-
-- [ ] Build manylinux wheels in compliant containers or maturin action.
-- [ ] Build macOS wheels on macOS runners.
-- [ ] Build Windows wheels on Windows runners.
-- [ ] Build sdist.
-- [ ] Run `twine check` or equivalent metadata validation.
-- [ ] Install each wheel in a clean venv and run `petiglyph --help`.
-- [ ] Install sdist in a Rust-toolchain environment and run `petiglyph --help`.
-- [ ] If Windows ARM64 wheel is not produced, validate `pip install` via sdist fallback on a Windows ARM64 environment.
-
-Example local commands:
-
-```sh
-python -m pip install maturin twine
+```bash
+python -m pip install -U maturin twine
 maturin build --release --compatibility pypi --sdist
 twine check target/wheels/*
 ```
 
-### 6.3 TestPyPI and PyPI publish
+TestPyPI install check:
 
-Reasonable default:
-
-- Publish to TestPyPI before PyPI until at least one successful full release has shipped.
-- Use PyPI trusted publishing from GitHub Actions.
-- Use protected GitHub environment approval.
-
-Checklist:
-
-- [ ] Configure Trusted Publisher on TestPyPI.
-- [ ] Verify GitHub release integrity in publish workflow (`gh release verify`) before uploading distributions.
-- [ ] Publish wheels/sdist to TestPyPI.
-- [ ] Install from TestPyPI in a clean venv.
-- [ ] Configure Trusted Publisher on PyPI.
-- [ ] Publish wheels/sdist to PyPI.
-- [ ] Install from PyPI in a clean venv.
-
-Commands:
-
-```sh
-python -m venv .venv-petiglyph-release-test
-. .venv-petiglyph-release-test/bin/activate
+```bash
+python -m venv .venv-testpypi
+. .venv-testpypi/bin/activate
 pip install --index-url https://test.pypi.org/simple/ --extra-index-url https://pypi.org/simple petiglyph
 petiglyph --help
 ```
 
-After real publish:
+## 9. Manual Approval Gates
 
-```sh
-python -m venv .venv-petiglyph-pypi-test
-. .venv-petiglyph-pypi-test/bin/activate
-pip install petiglyph
-petiglyph --help
-```
+Keep required reviewers enabled for these GitHub environments:
 
-Use Windows PowerShell venv activation on Windows runners.
+- `npm`
+- `testpypi`
+- `pypi`
 
----
+Do not publish the GitHub Release until direct release assets, checksums, notes, and known limitations have been reviewed. Publishing the GitHub Release starts npm and PyPI workflows.
 
-## 7. Cross-Channel Acceptance Criteria
+## 10. Rollback Actions
 
-A release is valid only when all selected channels pass.
-
-### 7.1 Core behavior
-
-- [ ] `petiglyph --help` succeeds from direct artifact.
-- [ ] `petiglyph --help` succeeds from AUR package.
-- [ ] `petiglyph --help` succeeds from npm install.
-- [ ] `petiglyph --help` succeeds from PyPI install.
-- [ ] `petiglyph tui` fails clearly in non-TTY contexts.
-- [ ] `petiglyph build` succeeds in a fixture project.
-- [ ] `petiglyph doctor --json` emits valid JSON.
-- [ ] Runtime validation is required for Linux and Windows x64.
-- [ ] macOS and Windows ARM64 may ship compile-tested only, but must be tagged `unstable` in docs/release notes.
-
-### 7.2 Install/font behavior
-
-- [ ] Linux install writes only under isolated test HOME font paths.
-- [ ] macOS install writes only under isolated/test user font paths where possible.
-- [ ] Windows install writes only under isolated/test LOCALAPPDATA where possible.
-- [ ] `install-font` and `uninstall-font` are idempotent.
-- [ ] `doctor --repair` can repair expected stale metadata cases.
-
-### 7.3 Registry behavior
-
-- [ ] npm package selects correct native binary on each supported OS/arch/libc.
-- [ ] npm package fails clearly on unsupported OS/arch/libc.
-- [ ] PyPI wheel installs without requiring Rust on supported wheel platforms.
-- [ ] PyPI sdist builds with Rust toolchain installed.
-- [ ] AUR package builds in clean chroot.
-
-### 7.4 Security/provenance
-
-- [ ] GitHub release artifacts have checksums.
-- [ ] GitHub artifact attestations are generated if enabled.
-- [ ] npm provenance appears for packages where trusted publishing supports it.
-- [ ] PyPI publish uses trusted publishing, not long-lived API tokens.
-- [ ] All workflow actions are pinned to immutable full commit SHAs.
-- [ ] No `pull_request_target` workflow executes untrusted fork code with secrets or writable tokens.
-- [ ] Release notes clearly document unsigned macOS and Windows artifacts.
-- [ ] Release notes clearly document `unstable` status for macOS and Windows ARM64 artifacts until runtime-tested.
-
----
-
-## 8. Rollback and Failure Handling
-
-### 8.1 Direct GitHub artifacts
-
-If direct artifact validation fails before public announcement:
-
-- [ ] Delete failed draft release or mark as pre-release with failure note.
-- [ ] Delete/move bad artifacts if they were not publicly consumed.
-- [ ] Create a new patch version if artifacts were already public.
-
-### 8.2 AUR
-
-If AUR package is bad:
-
-- [ ] Push corrected `PKGBUILD` with incremented `pkgrel` if upstream version is unchanged.
-- [ ] Regenerate `.SRCINFO`.
-- [ ] Add comment explaining fix if users may have installed the bad package.
-
-### 8.3 npm
-
-If npm package is bad:
-
-- [ ] Prefer publishing a fixed patch version.
-- [ ] Do not rely on unpublish except for immediate, policy-compliant accidents.
-- [ ] Deprecate bad version with a clear message if needed.
-
-Command:
-
-```sh
-npm deprecate petiglyph@BAD_VERSION "Broken release; upgrade to FIXED_VERSION"
-```
-
-### 8.4 PyPI
-
-If PyPI package is bad:
-
-- [ ] Publish a fixed patch version.
-- [ ] Yank the bad version if appropriate.
-- [ ] Do not delete files as the normal rollback strategy.
-
-Command:
-
-```sh
-# Use PyPI UI or trusted workflow/tooling to yank with a reason.
-```
-
----
-
-## 9. First Implementation Work Items
-
-Recommended order:
-
-1. Use section 0 as locked policy for this release.
-2. Fix `ffmpeg` policy mismatch between `PKGBUILD` and `scripts/aur.sh`.
-3. Align AVIF implementation and docs with section 0.4 policy.
-4. Fix hardcoded `/tmp` runtime path.
-5. Add platform-aware clipboard providers.
-6. Add GitHub direct artifact build workflow.
-7. Add AUR release hardening.
-8. Add PyPI `pyproject.toml` and wheel build workflow.
-9. Add npm package layout and local package tests.
-10. Add trusted publishing and provenance only after local/staging package installs pass.
+- GitHub assets: ship a fixed patch release; avoid mutating published assets.
+- AUR: update `PKGBUILD` and increment `pkgrel` if reusing the same upstream version.
+- npm: publish a fixed patch and deprecate the broken version.
+- PyPI: publish a fixed patch and yank the broken release if necessary.

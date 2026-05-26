@@ -24,6 +24,21 @@ my-font/
 
 Deleting the project directory removes project-local assets only.
 
+## Installation
+
+Current distribution channels:
+
+- GitHub Releases: prebuilt archives for Linux GNU/musl, macOS, and Windows.
+- AUR: source-built `petiglyph` package for Arch-style local/AUR testing.
+- npm: `petiglyph` meta package with platform-specific optional native packages under `@petiglyph/*`.
+- PyPI: `maturin` binary wheels plus sdist for Python-based installation flows.
+
+Runtime tools:
+
+- `ffmpeg` is required for video import and animated media expansion.
+- Packaged Arch installs declare `ffmpeg` as a runtime dependency.
+- Interactive runs offer a one-time OS-aware `ffmpeg` install prompt when `ffmpeg` is missing and the command is not running in JSON mode.
+
 ## Quick Start
 
 ```bash
@@ -34,7 +49,7 @@ cd my-font
 petiglyph
 ```
 
-After `create`, place your images in `icons/` and use the TUI to tune thresholds, build, and install.
+After `create`, add source images to `icons/` or drop/paste files into the Home panel creation workflows. Use the TUI to tune thresholds, compose grids, define animations, build, install, and sample the font.
 
 ## Home Panel Creation Workflows
 
@@ -45,12 +60,12 @@ From the Home panel you can launch four guided creation workflows:
 - `Create animated glyph`
 - `Create animated grid glyph`
 
-When a workflow is started, petiglyph shows a centered **Creation Workflow In Progress** popup with step guidance:
+When a workflow is started, petiglyph shows a centered **Creation Workflow In Progress** popup. The popup owns the flow until it is completed or canceled:
 
-1. Import source images (drop/paste/drag into the popup)
-2. Pick source rows in the Glyphs panel
-3. Configure workflow details
-4. Finalize and return
+- `Create glyph`: import images, then continue to the Glyphs panel.
+- `Create grid`: import exactly one image, configure rows/columns/bleed in the popup, then create the composition.
+- `Create animated glyph`: import frame media, optionally adjust selected frames, configure name/FPS, then create the animation.
+- `Create animated grid glyph`: import frame media, configure name/FPS/grid/bleed, then create the animation.
 
 Keyboard controls during the import popup:
 
@@ -60,9 +75,10 @@ Keyboard controls during the import popup:
 Animated workflow import input types:
 
 - `Create animated glyph` / `Create animated grid glyph` accept still images, GIF files, and video files in the popup import area.
-- GIF/video inputs are expanded into deterministic per-frame PNG files in `icons/` and auto-selected as animation frames.
+- GIF/video inputs are expanded into deterministic per-frame PNG files in `icons/` and selected as animation frames.
 - Video import requires `ffmpeg` available on `PATH`.
-- On first interactive run, if `ffmpeg` is missing, petiglyph offers a one-time OS-aware install prompt.
+- Per-media extraction is capped at 1200 frames, and one import is capped at 3000 extracted frames.
+- On first interactive run, if `ffmpeg` is missing, petiglyph offers a one-time OS-aware install prompt and records the outcome in managed user state.
 
 ## CLI Commands
 
@@ -118,14 +134,27 @@ petiglyph doctor --repair
 petiglyph doctor --json
 ```
 
-All non-`create` commands accept `--manifest` to target another project.
+Project-scoped commands accept `--manifest` to target a specific project:
+
+- `delete`
+- `set-threshold`
+- `clear-threshold`
+- `tui`
+- `build`
+- `sample`
+- `install-font`
+- `uninstall-font`
+- `doctor`
+
+`list` is workspace/global-state scoped and does not accept `--manifest`. `nuke-everything` is current-user tool-state cleanup and does not accept `--manifest`.
 
 `petiglyph` (no subcommand) and `petiglyph tui` require an interactive terminal (TTY).
 
-When `--manifest` is omitted, petiglyph checks `./petiglyph.toml` first, then scans one directory below:
+For project-scoped commands, when `--manifest` is omitted, petiglyph checks `./petiglyph.toml` first, then scans one directory below:
 
-- if exactly one project is found, it auto-selects that project while keeping the Home panel available
-- if none or multiple projects are found, `petiglyph` / `petiglyph tui` start on the integrated Home panel where you can create a project folder
+- if exactly one project is found, automation commands use it and the TUI opens it while keeping the Home panel available
+- if none or multiple projects are found, automation commands fail with guidance to pass `--manifest`
+- if none or multiple projects are found, `petiglyph` / `petiglyph tui` start on the integrated Home panel where you can create or select a project folder
 
 `petiglyph uninstall` is intentionally ambiguous and exits with guidance to use either `uninstall-font` or `nuke-everything`.
 
@@ -319,16 +348,28 @@ cargo clippy --all-targets --all-features -- -D warnings
 cargo test
 ```
 
-Quick manual smoke test with the bundled sample manifest:
+Quick manual smoke test with a scratch project:
 
 ```bash
-cargo run -- build --manifest ./petiglyph.toml
-cargo run -- sample --manifest ./petiglyph.toml
-cargo run -- tui --manifest ./petiglyph.toml
-cargo run -- install-font --manifest ./petiglyph.toml --json
-cargo run -- uninstall-font --manifest ./petiglyph.toml --json
+rm -rf /tmp/petiglyph-smoke
+mkdir -p /tmp/petiglyph-smoke
+cp -R icons /tmp/petiglyph-smoke/icons
+cat > /tmp/petiglyph-smoke/petiglyph.toml <<'EOF'
+input_dir = "icons"
+out_dir = "build"
+font_name = "Petiglyph Smoke"
+glyph_size = 64
+threshold = 64
+codepoint_start = "U+100000"
+EOF
+
+cargo run -- build --manifest /tmp/petiglyph-smoke/petiglyph.toml
+cargo run -- sample --manifest /tmp/petiglyph-smoke/petiglyph.toml
+cargo run -- tui --manifest /tmp/petiglyph-smoke/petiglyph.toml
+cargo run -- install-font --manifest /tmp/petiglyph-smoke/petiglyph.toml --json
+cargo run -- uninstall-font --manifest /tmp/petiglyph-smoke/petiglyph.toml --json
 cargo run -- nuke-everything --json
-cargo run -- doctor --manifest ./petiglyph.toml --json
+cargo run -- doctor --manifest /tmp/petiglyph-smoke/petiglyph.toml --json
 ```
 
 Cross-OS clipboard/runtime smoke checks after cloning:
@@ -443,16 +484,19 @@ Legacy manifests may still contain boolean bleed values in compositions (`true`/
 ## TUI Keys
 
 - TUI viewport is centered and capped at `148x46`; terminals smaller than `96x28` show a size warning screen
-- `Tab`: cycle Home -> Glyphs
-- `1` / `2`: switch between Home and Glyphs panels
-- Home shows detected project folders, project creation controls, build/install actions, advanced generator actions (Compose Grid / Animate Glyph), a current-project panel for outputs/sample, and a machine-wide installed petiglyph font inventory with sample glyphs
-- Home navigation: project list uses `↑` / `↓`; the create/build/install/generator controls use stacked rows with `←` / `→` moving within a row and `↑` / `↓` moving between rows; `Enter` opens the selected project or runs the focused Home action (including uninstall for the selected installed-font row)
+- `Tab` / `Shift+Tab`: cycle Home <-> Glyphs
+- `1` / `2`: switch panels outside Home workflow mode; on Home with an active project, `1`-`4` start the four creation workflows
+- `v`: toggle verbose path display
+- Home shows detected project folders, project creation controls, build/install/delete actions, creation workflow launchers, a current-project panel for outputs/sample, and a machine-wide installed petiglyph font inventory with sample glyphs and animation exports
+- Home navigation: project list uses `↑` / `↓`; the create/build/install/delete/workflow controls use stacked rows with `←` / `→` moving within a row and `↑` / `↓` moving between rows; `Enter` opens the selected project, renames the active project from the project list, or runs the focused Home action
+- Installed-font rows: `Enter` copies the selected path/sample/animation export to the clipboard, or runs uninstall when the uninstall button is focused
 - `R`: rescan the workspace project list and the active project's `icons/`
 - Grid creation: `←` / `→` moves focus across the one-line control strip; `↑` / `↓` adjust rows/cols or toggle a focused bleed knob; `Space` also toggles a focused bleed knob; `Enter` creates on the Create button
 - `j` / `k` or `↑` / `↓`: select glyph (Glyphs view)
 - `Enter` / `Space`: expand or collapse a composed parent row in Glyphs view
 - `c`: create a default `2x2` composition for the selected image
 - `C`: remove the selected image composition from `petiglyph.toml`
+- `D`: delete the selected animation or the animation linked to a selected frame row
 - `←` / `→` or `+` / `-`: adjust threshold by 1 for selected glyph (Glyphs view)
 - `PgUp` / `PgDn`: adjust threshold by 10 for selected glyph (Glyphs view)
 - `↑` / `↓` on animation rows can also adjust FPS
@@ -460,7 +504,6 @@ Legacy manifests may still contain boolean bleed values in compositions (`true`/
 - `r`: clear selected glyph override (Glyphs view)
 - `b`: build font outputs directly
 - `i`: install font directly
-- `D`: delete selected animation (or animation linked to selected frame row)
 - `q` / `Esc`: quit
 
 ## Build Outputs
@@ -493,6 +536,8 @@ For each grayscale coverage/bitmap artifact, Petiglyph now writes two PNGs:
 The debug session logs the cell geometry source at startup (for example `terminal-window-size ...` or `fallback:1x2`).
 You can force the debug terminal cell geometry with `PETIGLYPH_DEBUG_CELL=<width>x<height>` (example: `PETIGLYPH_DEBUG_CELL=7x14`).
 For composition grids, `ttf.bleed` log lines show which internal tile edges receive outline expansion in the final TTF, including separate horizontal and vertical units.
+
+The TUI also has a separate event/debug log for interaction troubleshooting. Set `PETIGLYPH_TUI_DEBUG=1` to enable it. By default it writes `petiglyph-tui-debug.log` under the platform temp directory; set `PETIGLYPH_TUI_DEBUG_LOG=/path/to/log` to override the path. Set `PETIGLYPH_TUI_HTY_FULL_REPAINT=1` when diagnosing `hty` repaint behavior.
 
 ## Notes
 

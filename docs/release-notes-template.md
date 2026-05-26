@@ -29,6 +29,8 @@ Commands with JSON support:
 - `sample`
 - `install-font`
 - `uninstall-font`
+- `nuke-everything`
+- `doctor`
 
 Top-level envelope fields (must remain):
 
@@ -59,9 +61,17 @@ Schema changes this release:
 
 Attach prebuilt binaries for:
 
-- Linux (`x86_64-unknown-linux-gnu`)
+- Linux GNU (`x86_64-unknown-linux-gnu`, `aarch64-unknown-linux-gnu`)
+- Linux musl (`x86_64-unknown-linux-musl`, `aarch64-unknown-linux-musl`)
 - macOS (`x86_64-apple-darwin`, `aarch64-apple-darwin`)
-- Windows (`x86_64-pc-windows-msvc`)
+- Windows (`x86_64-pc-windows-msvc`, `aarch64-pc-windows-msvc`)
+
+Distribution callouts:
+
+- AUR package requires `ffmpeg`.
+- npm publishes `petiglyph` plus all `@petiglyph/*` platform packages.
+- PyPI publishes Linux GNU manylinux, macOS, and Windows wheels plus sdist.
+- macOS and Windows artifacts are unsigned unless this release explicitly states otherwise.
 
 ## Verification Checklist
 

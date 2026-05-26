@@ -1,7 +1,20 @@
-# petiglyph (npm meta package)
+# petiglyph (npm)
 
-This package installs the `petiglyph` native binary for the current platform using optional native subpackages.
+This meta package exposes the `petiglyph` CLI by selecting the native optional package for the current platform at runtime.
 
-If your platform is unsupported or optional dependencies are disabled, install a binary directly from GitHub releases:
+Supported npm native packages:
+
+- `@petiglyph/petiglyph-linux-x64-gnu`
+- `@petiglyph/petiglyph-linux-arm64-gnu`
+- `@petiglyph/petiglyph-linux-x64-musl`
+- `@petiglyph/petiglyph-linux-arm64-musl`
+- `@petiglyph/petiglyph-darwin-x64`
+- `@petiglyph/petiglyph-darwin-arm64`
+- `@petiglyph/petiglyph-win32-x64-msvc`
+- `@petiglyph/petiglyph-win32-arm64-msvc`
+
+If optional dependencies are disabled or your platform is unsupported, install from GitHub Releases instead:
 
 - https://github.com/petipoua/petiglyph/releases
+
+`ffmpeg` is still required on `PATH` for video and animated media import workflows.

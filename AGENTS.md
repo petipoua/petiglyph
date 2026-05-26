@@ -42,6 +42,8 @@
   - `input_dir = "icons"`
   - `out_dir = "build"`
   - `codepoint_start = "U+100000"`
+- Manifests may be mutated by normal reads/builds to add a missing `project_id` or normalized animation bleed defaults.
+- `list` and `nuke-everything` are not manifest-scoped. Do not document or test `--manifest` for those commands.
 
 ### Code Layout (Important)
 
@@ -63,11 +65,21 @@
 - Root metadata/docs:
   - [Cargo.toml](/home/peti_poua/Code/petiglyph/Cargo.toml)
   - [README.md](/home/peti_poua/Code/petiglyph/README.md)
-  - [petiglyph.toml](/home/peti_poua/Code/petiglyph/petiglyph.toml) (sample/root manifest)
-  - [PLAN-VIDEO.md](/home/peti_poua/Code/petiglyph/PLAN-VIDEO.md)
+  - [RELEASE-GUIDE.md](/home/peti_poua/Code/petiglyph/RELEASE-GUIDE.md)
+  - [RELEASE-CHECKLIST.md](/home/peti_poua/Code/petiglyph/RELEASE-CHECKLIST.md)
+  - [CROSS-COMPATIBILITY-GUIDE.md](/home/peti_poua/Code/petiglyph/CROSS-COMPATIBILITY-GUIDE.md)
+  - [pyproject.toml](/home/peti_poua/Code/petiglyph/pyproject.toml)
 - Local Arch packaging helpers:
   - [PKGBUILD](/home/peti_poua/Code/petiglyph/PKGBUILD)
   - `scripts/aur.sh`
+  - `scripts/release_prepare_aur.sh`
+- npm packaging lives under `npm/`:
+  - `npm/petiglyph/` is the JavaScript meta package and CLI shim.
+  - `npm/petiglyph-*/` directories are platform packages; their `bin/` binaries are staged from release artifacts and may be absent in a normal checkout.
+- GitHub release automation lives in `.github/workflows/`:
+  - `release.yml` builds and publishes direct GitHub release artifacts.
+  - `npm-publish.yml` publishes npm packages from a published GitHub Release.
+  - `pypi-publish.yml` builds and publishes PyPI/TestPyPI artifacts from a published GitHub Release.
 
 ### Generated/Transient Paths (Do Not Treat as Source of Truth)
 
@@ -75,8 +87,9 @@
 - `.makepkg/build/petiglyph/src/petiglyph/` is extracted packaging source and should not be edited as canonical source.
 - `petiglyph-*.pkg.tar.zst`, `petiglyph-debug-*.pkg.tar.zst`, and `petiglyph-*.tar.gz` are build artifacts.
 - `target/` is Cargo build output.
-- `build/` at repo root is generated output from the sample/root project manifest.
+- `build/` is generated project output when a manifest points there; do not assume a root sample manifest exists.
 - `test-hello/`, `test58914/`, `test_parse*`, and `test_ws*` are local fixtures/scratch artifacts and should not be treated as canonical source.
+- `npm/petiglyph-*/bin/` files are staged native release artifacts, not hand-written source.
 
 ### Recent History You Should Know
 
@@ -88,6 +101,9 @@
 - Managed install now uses immutable artifacts plus metadata, Unicode range registry ownership, and `doctor --repair` recovery paths.
 - `hty` was adopted as the primary TUI E2E runner (replacing legacy `expectrl`-driven tests).
 - Home creation UX now renders an explicit "Creation Workflow In Progress" popup with step-by-step guidance for glyph/grid/animated creation imports.
+- Cross-platform clipboard providers now exist in the TUI (`wl-copy`/`xclip`, `pbcopy`, PowerShell `Set-Clipboard`/`clip.exe`) and report aggregate copy failures in status text.
+- TUI debug logging uses the platform temp directory by default and can be overridden with `PETIGLYPH_TUI_DEBUG_LOG`.
+- npm, PyPI/TestPyPI, and GitHub artifact release workflows are present and action refs are pinned to full SHAs.
 
 ### HTY E2E Guidance (Important)
 
@@ -107,5 +123,6 @@
 - Keep project outputs self-contained; do not introduce system-wide scattered asset storage for user projects.
 - Preserve automation contract semantics (`--json` envelope fields and non-zero exit behavior on failures).
 - For packaging-related work, prefer `scripts/aur.sh` and keep `PKGBUILD` aligned with `Cargo.toml` version.
+- For release-prep work, use `scripts/release_sync_versions.sh`, `scripts/release_prepare_aur.sh`, `scripts/release_stage_npm_artifacts.sh`, and `scripts/release_npm_pack_test.sh` instead of editing generated release state by hand.
 - When checking the codebase, avoid accidentally editing generated files under `.makepkg/`.
 - If touching UX or command semantics, update README examples in the same change.

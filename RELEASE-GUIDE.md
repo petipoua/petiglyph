@@ -1,6 +1,6 @@
 # RELEASE-GUIDE
 
-Last updated: 2026-05-19
+Last updated: 2026-05-23
 
 This guide is the operator runbook for publishing `petiglyph` to:
 
@@ -28,7 +28,8 @@ It complements `RELEASE-CHECKLIST.md` and reflects the release automation now in
   - Publishes platform packages, then meta package.
 - PyPI/TestPyPI publish workflow: `.github/workflows/pypi-publish.yml`
   - Trigger: GitHub release `published`.
-  - Builds wheels/sdist with maturin.
+  - Builds Linux GNU manylinux, macOS, and Windows wheels plus sdist with maturin.
+  - Does not currently build musllinux wheels.
   - Verifies release integrity (`gh release verify`) before publishing.
   - Publishes to TestPyPI then PyPI using trusted publishing.
 - Packaging/release helper scripts:
@@ -39,6 +40,9 @@ It complements `RELEASE-CHECKLIST.md` and reflects the release automation now in
 - PyPI metadata: `pyproject.toml`
 - npm package layout: `npm/` (meta + 8 platform packages)
 - License file: `LICENSE`
+- Runtime media dependency policy:
+  - Arch packaging declares `depends=('ffmpeg')`.
+  - GitHub/npm/PyPI artifacts do not bundle `ffmpeg`; runtime docs and the interactive prompt cover missing `ffmpeg`.
 
 ## 2. One-Time Account And Access Setup
 
@@ -202,7 +206,7 @@ Practical rule:
 
 ### E. PyPI workflow runs (`pypi-publish.yml`)
 
-1. Wheel build jobs check out tag and build wheels with maturin action (pinned SHA).
+1. Wheel build jobs check out tag and build Linux GNU manylinux, macOS, and Windows wheels with maturin action (pinned SHA).
 2. Sdist job builds source distribution.
 3. Build outputs are uploaded as workflow artifacts.
 4. TestPyPI publish job:
@@ -379,6 +383,7 @@ Flow:
 
 1. Build wheels across configured targets.
    - Linux wheels are built via maturin manylinux container mode (`manylinux: 2014`), including `aarch64-unknown-linux-gnu`, so host cross-linker setup is not required on `ubuntu-latest`.
+   - Musllinux wheels are not part of the current workflow.
 2. Build sdist.
 3. Publish to TestPyPI (environment approval).
 4. Publish to PyPI (environment approval).
@@ -419,7 +424,7 @@ Current workflow implementation status:
 
 - Action refs are pinned to immutable SHAs in all release workflows.
 - npm publish flow verifies `gh release verify` and release `SHA256SUMS` before any `npm publish`.
-- PyPI publish flow verifies `gh release verify` before publish.
+- PyPI publish flow verifies `gh release verify` before the TestPyPI publish gate.
 
 ## 9. Platform Runtime Validation Before Announcement
 
@@ -439,7 +444,7 @@ pwsh -File .\scripts\clipboard_smoke.ps1 -PetiglyphPath .\target\release\petigly
 
 Release-note policy for now:
 
-- Mark macOS and Windows ARM64 artifacts as `unstable` until runtime-tested.
+- Mark macOS and Windows ARM64 artifacts as limited-runtime-validation/`unstable` unless this release includes direct runtime testing for them.
 - Explicitly state Windows/macOS binaries are unsigned and can trigger trust prompts.
 
 ## 10. Rollback Quick Actions
