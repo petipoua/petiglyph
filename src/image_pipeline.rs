@@ -9,6 +9,7 @@ use std::path::Path;
 use crate::glyph_debug;
 
 const OPAQUE_CONTENT_EPSILON: u8 = 6;
+const TRANSPARENT_LUMA_SIGNAL_EPSILON: u8 = 12;
 
 #[derive(Debug, Clone)]
 struct SourceCoverage {
@@ -321,8 +322,16 @@ fn coverage_from_rgba(source: &RgbaImage) -> SourceCoverage {
     if has_transparency {
         let mut coverage =
             Vec::with_capacity((source.width() as usize) * (source.height() as usize));
+        let use_luma_shaping = transparent_pixels_have_luma_signal(source);
         for pixel in source.pixels() {
-            coverage.push(pixel[3]);
+            if use_luma_shaping {
+                let luma = luminance_byte(pixel[0], pixel[1], pixel[2]);
+                let darkness = 255u16.saturating_sub(luma as u16);
+                let weighted = (darkness.saturating_mul(pixel[3] as u16) / 255) as u8;
+                coverage.push(weighted);
+            } else {
+                coverage.push(pixel[3]);
+            }
         }
 
         return SourceCoverage {
@@ -345,6 +354,28 @@ fn coverage_from_rgba(source: &RgbaImage) -> SourceCoverage {
         coverage,
         content_min: OPAQUE_CONTENT_EPSILON.saturating_add(1),
     }
+}
+
+fn transparent_pixels_have_luma_signal(source: &RgbaImage) -> bool {
+    let mut min_luma = u8::MAX;
+    let mut max_luma = u8::MIN;
+    let mut seen = false;
+
+    for pixel in source.pixels() {
+        if pixel[3] == 0 {
+            continue;
+        }
+        let luma = luminance_byte(pixel[0], pixel[1], pixel[2]);
+        min_luma = min_luma.min(luma);
+        max_luma = max_luma.max(luma);
+        seen = true;
+    }
+
+    seen && max_luma.saturating_sub(min_luma) >= TRANSPARENT_LUMA_SIGNAL_EPSILON
+}
+
+fn luminance_byte(r: u8, g: u8, b: u8) -> u8 {
+    (((77u16 * r as u16) + (150u16 * g as u16) + (29u16 * b as u16)) >> 8) as u8
 }
 
 pub(crate) fn load_source_rgba(path: &Path, target_hint: u32) -> Result<RgbaImage> {

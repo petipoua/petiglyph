@@ -317,6 +317,7 @@ enum HomeLauncherFocus {
 enum HomeWorkflow {
     Launcher,
     Import(HomeCreationKind),
+    Tweaking(HomeCreationKind),
     ConfigureGrid,
     ConfigureAnimation(AnimationType),
 }
@@ -360,6 +361,7 @@ enum AnimationConfigFocus {
 enum AnimationImportSettingsFocus {
     GrayscaleToggle,
     GrayscaleOptionsButton,
+    Threshold,
     ExportTestImageButton,
     Continue,
 }
@@ -383,6 +385,7 @@ struct AnimationImportSettingsState {
     focus: AnimationImportSettingsFocus,
     grayscale_enabled: bool,
     grayscale_options: animation_media::AnimationGrayscaleOptions,
+    threshold: u8,
     grayscale_editor: Option<GrayscaleOptionsEditor>,
     export_frame_count: u16,
     last_exported_test_image: Option<PathBuf>,
@@ -394,6 +397,7 @@ impl Default for AnimationImportSettingsState {
             focus: AnimationImportSettingsFocus::Continue,
             grayscale_enabled: true,
             grayscale_options: animation_media::AnimationGrayscaleOptions::default(),
+            threshold: 64,
             grayscale_editor: None,
             export_frame_count: 5,
             last_exported_test_image: None,
@@ -2255,25 +2259,28 @@ fn handle_welcome_key(app: &mut App, key: KeyEvent) -> Result<()> {
         }
         KeyCode::Char('1') if !app.welcome_input_editing && app.active_project.is_some() => {
             app.start_home_workflow(HomeCreationKind::Glyph);
-            app.status = Some("create glyph: import images, then Enter to continue".to_string());
+            app.status = Some(
+                "create glyph: import image(s), press Enter for tweaking, then continue"
+                    .to_string(),
+            );
         }
         KeyCode::Char('2') if !app.welcome_input_editing && app.active_project.is_some() => {
             app.start_home_workflow(HomeCreationKind::Grid);
             app.status = Some(
-                "create grid: drop only one image, then Enter to configure the grid".to_string(),
+                "create grid: drop one image, Enter for tweaking, then configure grid".to_string(),
             );
         }
         KeyCode::Char('3') if !app.welcome_input_editing && app.active_project.is_some() => {
             app.start_home_workflow(HomeCreationKind::AnimatedGlyph);
             app.status = Some(
-                "create animated glyph: import frame media, then Enter to configure in popup"
+                "create animated glyph: import frame media, Enter for tweaking, then configure"
                     .to_string(),
             );
         }
         KeyCode::Char('4') if !app.welcome_input_editing && app.active_project.is_some() => {
             app.start_home_workflow(HomeCreationKind::AnimatedGridGlyph);
             app.status = Some(
-                "create animated grid glyph: import frame media, then Enter to configure in popup"
+                "create animated grid glyph: import frame media, Enter for tweaking, then configure"
                     .to_string(),
             );
         }
@@ -2726,6 +2733,33 @@ fn is_animated_home_creation(kind: HomeCreationKind) -> bool {
     )
 }
 
+fn home_import_missing_sources_message(kind: HomeCreationKind) -> &'static str {
+    match kind {
+        HomeCreationKind::Glyph => "drop at least one source image in the popup, then press Enter",
+        HomeCreationKind::Grid => {
+            "create grid: drop exactly one image in the popup, then press Enter"
+        }
+        HomeCreationKind::AnimatedGlyph | HomeCreationKind::AnimatedGridGlyph => {
+            "drop at least one frame media file in the popup, then press Enter"
+        }
+    }
+}
+
+fn home_enter_tweaking_message(kind: HomeCreationKind) -> &'static str {
+    match kind {
+        HomeCreationKind::Glyph => "tweak grayscale/threshold + preview in popup, then Continue",
+        HomeCreationKind::Grid => {
+            "tweak grayscale/threshold + preview in popup, then Continue to grid settings"
+        }
+        HomeCreationKind::AnimatedGlyph => {
+            "tweak grayscale/threshold + preview in popup, then Continue to animation settings"
+        }
+        HomeCreationKind::AnimatedGridGlyph => {
+            "tweak grayscale/threshold + preview in popup, then Continue to animated grid settings"
+        }
+    }
+}
+
 fn animation_import_processing_options(
     settings: &AnimationImportSettingsState,
 ) -> animation_media::AnimationImportProcessingOptions {
@@ -2882,8 +2916,11 @@ fn move_import_settings_focus_left(settings: &mut AnimationImportSettingsState) 
         AnimationImportSettingsFocus::GrayscaleOptionsButton => {
             AnimationImportSettingsFocus::GrayscaleToggle
         }
-        AnimationImportSettingsFocus::ExportTestImageButton => {
+        AnimationImportSettingsFocus::Threshold => {
             AnimationImportSettingsFocus::GrayscaleOptionsButton
+        }
+        AnimationImportSettingsFocus::ExportTestImageButton => {
+            AnimationImportSettingsFocus::Threshold
         }
         AnimationImportSettingsFocus::Continue => {
             AnimationImportSettingsFocus::ExportTestImageButton
@@ -2897,6 +2934,9 @@ fn move_import_settings_focus_right(settings: &mut AnimationImportSettingsState)
             AnimationImportSettingsFocus::GrayscaleOptionsButton
         }
         AnimationImportSettingsFocus::GrayscaleOptionsButton => {
+            AnimationImportSettingsFocus::Threshold
+        }
+        AnimationImportSettingsFocus::Threshold => {
             AnimationImportSettingsFocus::ExportTestImageButton
         }
         AnimationImportSettingsFocus::ExportTestImageButton => {
@@ -3007,12 +3047,34 @@ fn handle_animation_import_settings_key(app: &mut App, key: KeyEvent) -> Result<
                 ));
                 return Ok(true);
             }
+            if app.animation_import_settings.focus == AnimationImportSettingsFocus::Threshold {
+                let step: i8 = if matches!(key.code, KeyCode::Up | KeyCode::Char('k')) {
+                    1
+                } else {
+                    -1
+                };
+                app.animation_import_settings.threshold = app
+                    .animation_import_settings
+                    .threshold
+                    .saturating_add_signed(step);
+                let marker = if app.animation_import_settings.threshold == app.config.base_threshold
+                {
+                    "default"
+                } else {
+                    "custom"
+                };
+                app.status = Some(format!(
+                    "preview threshold set to {} ({marker})",
+                    app.animation_import_settings.threshold
+                ));
+                return Ok(true);
+            }
             if app.animation_import_settings.focus
                 == AnimationImportSettingsFocus::ExportTestImageButton
                 && matches!(
                     app.home_workflow,
-                    HomeWorkflow::Import(HomeCreationKind::AnimatedGlyph)
-                        | HomeWorkflow::Import(HomeCreationKind::AnimatedGridGlyph)
+                    HomeWorkflow::Tweaking(HomeCreationKind::AnimatedGlyph)
+                        | HomeWorkflow::Tweaking(HomeCreationKind::AnimatedGridGlyph)
                 )
             {
                 let step = if matches!(key.code, KeyCode::Up | KeyCode::Char('k')) {
@@ -3060,6 +3122,7 @@ fn handle_animation_import_settings_key(app: &mut App, key: KeyEvent) -> Result<
                 );
                 Ok(true)
             }
+            AnimationImportSettingsFocus::Threshold => Ok(true),
             AnimationImportSettingsFocus::ExportTestImageButton => {
                 app.export_animation_import_test_image()?;
                 Ok(true)
@@ -3072,7 +3135,27 @@ fn handle_animation_import_settings_key(app: &mut App, key: KeyEvent) -> Result<
 
 fn handle_home_creation_key(app: &mut App, key: KeyEvent) -> Result<()> {
     match app.home_workflow {
-        HomeWorkflow::Import(kind) => {
+        HomeWorkflow::Import(kind) => match key.code {
+            KeyCode::Esc => {
+                app.reset_home_workflow();
+                app.status = Some("home creation workflow canceled".to_string());
+            }
+            KeyCode::Enter => {
+                if is_animated_home_creation(kind) && app.animation_import_task.is_some() {
+                    app.status = Some("animation frames are still loading".to_string());
+                    return Ok(());
+                }
+                if !app.has_imported_home_sources(kind) {
+                    app.status = Some(home_import_missing_sources_message(kind).to_string());
+                    return Ok(());
+                }
+                app.home_workflow = HomeWorkflow::Tweaking(kind);
+                app.home_workflow_error = None;
+                app.status = Some(home_enter_tweaking_message(kind).to_string());
+            }
+            _ => {}
+        },
+        HomeWorkflow::Tweaking(kind) => {
             if handle_animation_import_settings_key(app, key)? {
                 return Ok(());
             }
@@ -3081,70 +3164,9 @@ fn handle_home_creation_key(app: &mut App, key: KeyEvent) -> Result<()> {
                     app.reset_home_workflow();
                     app.status = Some("home creation workflow canceled".to_string());
                 }
-                KeyCode::Enter => match kind {
-                    HomeCreationKind::Glyph => {
-                        app.reload_glyphs()?;
-                        app.complete_home_workflow_to_glyphs();
-                    }
-                    HomeCreationKind::Grid => {
-                        let Some(source_key) = app.home_workflow_grid_source_key.clone() else {
-                            app.status = Some(
-                                "create grid: drop exactly one image in the popup, then press Enter"
-                                    .to_string(),
-                            );
-                            return Ok(());
-                        };
-                        app.grid_config = Some(GridConfig {
-                            source_key,
-                            rows: 2,
-                            cols: 2,
-                            horizontal_bleed: BleedLevel::Weak,
-                            vertical_bleed: BleedLevel::Off,
-                            focus: GridConfigFocus::Rows,
-                        });
-                        app.home_workflow = HomeWorkflow::ConfigureGrid;
-                        app.home_workflow_error = None;
-                        app.status = Some(
-                            "configure grid in popup: rows, cols, bleed, then Create Grid"
-                                .to_string(),
-                        );
-                    }
-                    HomeCreationKind::AnimatedGlyph => {
-                        if app.animation_import_task.is_some() {
-                            app.status = Some("animation frames are still loading".to_string());
-                            return Ok(());
-                        }
-                        if app.animation_selection_order.is_empty() {
-                            app.status = Some(
-                                "drop at least one frame media file in the popup, then press Enter"
-                                    .to_string(),
-                            );
-                            return Ok(());
-                        }
-                        app.start_animation_config(AnimationType::Standard);
-                        app.home_workflow =
-                            HomeWorkflow::ConfigureAnimation(AnimationType::Standard);
-                        app.status =
-                            Some("configure animated glyph in popup, then Create".to_string());
-                    }
-                    HomeCreationKind::AnimatedGridGlyph => {
-                        if app.animation_import_task.is_some() {
-                            app.status = Some("animation frames are still loading".to_string());
-                            return Ok(());
-                        }
-                        if app.animation_selection_order.is_empty() {
-                            app.status = Some(
-                                "drop at least one frame media file in the popup, then press Enter"
-                                    .to_string(),
-                            );
-                            return Ok(());
-                        }
-                        app.start_animation_config(AnimationType::Grid);
-                        app.home_workflow = HomeWorkflow::ConfigureAnimation(AnimationType::Grid);
-                        app.status =
-                            Some("configure animated grid glyph in popup, then Create".to_string());
-                    }
-                },
+                KeyCode::Enter => {
+                    continue_home_workflow_after_tweaking(app, kind)?;
+                }
                 _ => {}
             }
         }
@@ -3158,7 +3180,7 @@ fn handle_home_creation_key(app: &mut App, key: KeyEvent) -> Result<()> {
                 };
                 return res;
             }
-            app.home_workflow = HomeWorkflow::Import(HomeCreationKind::Grid);
+            app.home_workflow = HomeWorkflow::Tweaking(HomeCreationKind::Grid);
         }
         HomeWorkflow::ConfigureAnimation(animation_type) => {
             if let GlyphToolMode::ConfigureAnimation(config) = app.glyph_tool_mode.clone() {
@@ -3166,14 +3188,14 @@ fn handle_home_creation_key(app: &mut App, key: KeyEvent) -> Result<()> {
                 if matches!(app.home_workflow, HomeWorkflow::ConfigureAnimation(_))
                     && matches!(app.glyph_tool_mode, GlyphToolMode::None)
                 {
-                    app.home_workflow = HomeWorkflow::Import(match animation_type {
+                    app.home_workflow = HomeWorkflow::Tweaking(match animation_type {
                         AnimationType::Standard => HomeCreationKind::AnimatedGlyph,
                         AnimationType::Grid => HomeCreationKind::AnimatedGridGlyph,
                     });
                 }
                 return Ok(());
             }
-            app.home_workflow = HomeWorkflow::Import(match animation_type {
+            app.home_workflow = HomeWorkflow::Tweaking(match animation_type {
                 AnimationType::Standard => HomeCreationKind::AnimatedGlyph,
                 AnimationType::Grid => HomeCreationKind::AnimatedGridGlyph,
             });
@@ -3189,6 +3211,67 @@ fn handle_home_creation_key(app: &mut App, key: KeyEvent) -> Result<()> {
             {
                 app.complete_home_workflow_to_glyphs();
             }
+        }
+    }
+    Ok(())
+}
+
+fn continue_home_workflow_after_tweaking(app: &mut App, kind: HomeCreationKind) -> Result<()> {
+    match kind {
+        HomeCreationKind::Glyph => {
+            app.reload_glyphs()?;
+            app.complete_home_workflow_to_glyphs();
+        }
+        HomeCreationKind::Grid => {
+            let Some(source_key) = app.home_workflow_grid_source_key.clone() else {
+                app.status = Some(
+                    "create grid: drop exactly one image in the popup, then press Enter"
+                        .to_string(),
+                );
+                return Ok(());
+            };
+            app.grid_config = Some(GridConfig {
+                source_key,
+                rows: 2,
+                cols: 2,
+                horizontal_bleed: BleedLevel::Weak,
+                vertical_bleed: BleedLevel::Off,
+                focus: GridConfigFocus::Rows,
+            });
+            app.home_workflow = HomeWorkflow::ConfigureGrid;
+            app.home_workflow_error = None;
+            app.status =
+                Some("configure grid in popup: rows, cols, bleed, then Create Grid".to_string());
+        }
+        HomeCreationKind::AnimatedGlyph => {
+            if app.animation_import_task.is_some() {
+                app.status = Some("animation frames are still loading".to_string());
+                return Ok(());
+            }
+            if app.animation_selection_order.is_empty() {
+                app.status = Some(
+                    "drop at least one frame media file in the popup, then press Enter".to_string(),
+                );
+                return Ok(());
+            }
+            app.start_animation_config(AnimationType::Standard);
+            app.home_workflow = HomeWorkflow::ConfigureAnimation(AnimationType::Standard);
+            app.status = Some("configure animated glyph in popup, then Create".to_string());
+        }
+        HomeCreationKind::AnimatedGridGlyph => {
+            if app.animation_import_task.is_some() {
+                app.status = Some("animation frames are still loading".to_string());
+                return Ok(());
+            }
+            if app.animation_selection_order.is_empty() {
+                app.status = Some(
+                    "drop at least one frame media file in the popup, then press Enter".to_string(),
+                );
+                return Ok(());
+            }
+            app.start_animation_config(AnimationType::Grid);
+            app.home_workflow = HomeWorkflow::ConfigureAnimation(AnimationType::Grid);
+            app.status = Some("configure animated grid glyph in popup, then Create".to_string());
         }
     }
     Ok(())
@@ -4142,6 +4225,16 @@ fn draw_welcome_view(
 }
 
 impl App {
+    fn has_imported_home_sources(&self, kind: HomeCreationKind) -> bool {
+        match kind {
+            HomeCreationKind::Glyph => self.home_workflow_import_count > 0,
+            HomeCreationKind::Grid => self.home_workflow_grid_source_key.is_some(),
+            HomeCreationKind::AnimatedGlyph | HomeCreationKind::AnimatedGridGlyph => {
+                !self.animation_selection_order.is_empty()
+            }
+        }
+    }
+
     fn start_home_workflow(&mut self, kind: HomeCreationKind) {
         self.home_workflow = HomeWorkflow::Import(kind);
         self.home_workflow_import_count = 0;
@@ -4150,6 +4243,7 @@ impl App {
         self.home_workflow_grid_inline_notice = None;
         self.home_workflow_error = None;
         self.animation_import_settings = AnimationImportSettingsState::default();
+        self.animation_import_settings.threshold = self.config.base_threshold;
         if matches!(
             kind,
             HomeCreationKind::AnimatedGlyph | HomeCreationKind::AnimatedGridGlyph
@@ -5288,13 +5382,18 @@ impl App {
             self.home_workflow,
             HomeWorkflow::Import(HomeCreationKind::AnimatedGlyph)
                 | HomeWorkflow::Import(HomeCreationKind::AnimatedGridGlyph)
+                | HomeWorkflow::Tweaking(HomeCreationKind::AnimatedGlyph)
+                | HomeWorkflow::Tweaking(HomeCreationKind::AnimatedGridGlyph)
         ) || matches!(self.glyph_tool_mode, GlyphToolMode::ImportAnimationFrames)
         {
             self.start_animation_frame_import(payload.to_string())?;
             return Ok(());
         }
 
-        let processing = if matches!(self.home_workflow, HomeWorkflow::Import(_)) {
+        let processing = if matches!(
+            self.home_workflow,
+            HomeWorkflow::Import(_) | HomeWorkflow::Tweaking(_)
+        ) {
             animation_import_processing_options(&self.animation_import_settings)
         } else {
             animation_media::AnimationImportProcessingOptions {
@@ -5313,6 +5412,7 @@ impl App {
         if matches!(
             self.home_workflow,
             HomeWorkflow::Import(HomeCreationKind::Grid)
+                | HomeWorkflow::Tweaking(HomeCreationKind::Grid)
         ) {
             if import.imported_source_keys.len() != 1 {
                 self.home_workflow_grid_inline_notice = None;
@@ -5344,6 +5444,7 @@ impl App {
             if !matches!(
                 self.home_workflow,
                 HomeWorkflow::Import(HomeCreationKind::Grid)
+                    | HomeWorkflow::Tweaking(HomeCreationKind::Grid)
             ) {
                 self.home_workflow_import_count = self
                     .home_workflow_import_count
@@ -5504,6 +5605,8 @@ impl App {
             self.home_workflow,
             HomeWorkflow::Import(HomeCreationKind::AnimatedGlyph)
                 | HomeWorkflow::Import(HomeCreationKind::AnimatedGridGlyph)
+                | HomeWorkflow::Tweaking(HomeCreationKind::AnimatedGlyph)
+                | HomeWorkflow::Tweaking(HomeCreationKind::AnimatedGridGlyph)
         ) {
             let limit = usize::from(self.animation_import_settings.export_frame_count);
             return self
@@ -5516,6 +5619,7 @@ impl App {
         if matches!(
             self.home_workflow,
             HomeWorkflow::Import(HomeCreationKind::Grid)
+                | HomeWorkflow::Tweaking(HomeCreationKind::Grid)
         ) {
             return self
                 .home_workflow_grid_source_key
@@ -5546,10 +5650,7 @@ impl App {
                 })
                 .collect::<Vec<_>>();
             if let Some(image) = render_test_image_from_composition_tiles(rows, cols, &tiles)? {
-                let threshold = tiles
-                    .first()
-                    .map(|glyph| glyph.working_threshold)
-                    .unwrap_or(self.config.base_threshold);
+                let threshold = self.animation_import_settings.threshold;
                 let invert = tiles
                     .first()
                     .map(|glyph| glyph.working_invert)
@@ -5575,12 +5676,7 @@ impl App {
             if !source_path.is_file() || !is_supported_source(&source_path) {
                 return Ok(None);
             }
-            let threshold = self
-                .config
-                .threshold_overrides
-                .get(source_key)
-                .copied()
-                .unwrap_or(self.config.base_threshold);
+            let threshold = self.animation_import_settings.threshold;
             let invert = self
                 .config
                 .invert_overrides
@@ -5607,7 +5703,7 @@ impl App {
         let image = render_test_image_from_single_glyph(active)?;
         Ok(Some((
             image,
-            active.working_threshold,
+            self.animation_import_settings.threshold,
             active.working_invert,
             active.glyph.composition_tile.is_some(),
         )))
@@ -8028,7 +8124,7 @@ fn draw_animation_panel_ui(frame: &mut Frame, app: &App, area: Rect, accent: Col
     );
 }
 
-fn draw_animation_import_workflow_ui(
+fn draw_home_import_drop_ui(
     frame: &mut Frame,
     app: &App,
     area: Rect,
@@ -8037,10 +8133,8 @@ fn draw_animation_import_workflow_ui(
     kind: HomeCreationKind,
 ) {
     let title = match kind {
-        HomeCreationKind::AnimatedGlyph | HomeCreationKind::AnimatedGridGlyph => {
-            " Animation Frame Import "
-        }
-        HomeCreationKind::Glyph | HomeCreationKind::Grid => " Source Image Import ",
+        HomeCreationKind::AnimatedGlyph | HomeCreationKind::AnimatedGridGlyph => " Import Step ",
+        HomeCreationKind::Glyph | HomeCreationKind::Grid => " Import Step ",
     };
     let block = Block::default()
         .borders(Borders::ALL)
@@ -8052,12 +8146,7 @@ fn draw_animation_import_workflow_ui(
 
     let layout = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Length(8),
-            Constraint::Length(3),
-            Constraint::Length(3),
-            Constraint::Min(0),
-        ])
+        .constraints([Constraint::Min(0), Constraint::Length(1)])
         .margin(1)
         .split(inner);
 
@@ -8103,6 +8192,160 @@ fn draw_animation_import_workflow_ui(
         );
     }
 
+    frame.render_widget(
+        Paragraph::new(Line::from(vec![
+            Span::styled(" Enter ", Style::default().fg(accent)),
+            Span::styled(
+                "go to tweaking step after import",
+                Style::default().fg(muted),
+            ),
+        ])),
+        layout[1],
+    );
+}
+
+fn home_workflow_preview_lines(
+    app: &App,
+    kind: HomeCreationKind,
+    max_w: u16,
+    max_h: u16,
+) -> (String, Vec<Line<'static>>) {
+    let source_key = match kind {
+        HomeCreationKind::Glyph => app.home_workflow_recent_imported_source_keys.last(),
+        HomeCreationKind::Grid => app.home_workflow_grid_source_key.as_ref(),
+        HomeCreationKind::AnimatedGlyph | HomeCreationKind::AnimatedGridGlyph => {
+            app.animation_selection_order.first()
+        }
+    };
+    let Some(source_key) = source_key else {
+        return (
+            "No source selected".to_string(),
+            vec![Line::from("    [Import at least one source first]")],
+        );
+    };
+    if let Some(def) = app.config.compositions.get(source_key) {
+        let rows = def.rows;
+        let cols = emitted_composition_cols(def.cols);
+        let tiles = app
+            .glyphs
+            .iter()
+            .filter(|glyph| {
+                glyph.glyph.source_parent_key == *source_key
+                    && glyph.glyph.composition_tile.is_some()
+            })
+            .collect::<Vec<_>>();
+        if !tiles.is_empty() {
+            return (
+                format!("Source: {}", source_display_name(source_key)),
+                composition_preview_lines_stable_frame(
+                    &tiles,
+                    app.animation_import_settings.threshold,
+                    tiles
+                        .first()
+                        .map(|glyph| glyph.working_invert)
+                        .unwrap_or(false),
+                    rows,
+                    cols,
+                    max_w,
+                    max_h,
+                ),
+            );
+        }
+    }
+
+    let glyph = app
+        .glyphs
+        .iter()
+        .find(|glyph| {
+            glyph.glyph.source_parent_key == *source_key && glyph.glyph.composition_tile.is_none()
+        })
+        .or_else(|| {
+            app.glyphs
+                .iter()
+                .find(|glyph| glyph.glyph.source_parent_key == *source_key)
+        });
+    let Some(glyph) = glyph else {
+        return (
+            format!("Source: {}", source_display_name(source_key)),
+            vec![Line::from("    [Preview not available yet]")],
+        );
+    };
+    (
+        format!("Source: {}", source_display_name(source_key)),
+        preview_lines_stable_frame(
+            &glyph.glyph,
+            app.animation_import_settings.threshold,
+            glyph.working_invert,
+            max_w,
+            max_h,
+        ),
+    )
+}
+
+fn draw_animation_import_workflow_ui(
+    frame: &mut Frame,
+    app: &App,
+    area: Rect,
+    accent: Color,
+    muted: Color,
+    kind: HomeCreationKind,
+) {
+    let title = " Tweaking Step ";
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(Style::default().fg(muted))
+        .title(Span::styled(title, Style::default().fg(accent)));
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    let layout = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Min(0),
+            Constraint::Length(3),
+            Constraint::Length(3),
+            Constraint::Length(1),
+        ])
+        .margin(1)
+        .split(inner);
+
+    let preview_block = Block::default()
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(Style::default().fg(muted))
+        .title(Span::styled(" Preview ", Style::default().fg(accent)));
+    let preview_inner = preview_block.inner(layout[0]);
+    frame.render_widget(preview_block, layout[0]);
+    let (preview_title, preview_content) = home_workflow_preview_lines(
+        app,
+        kind,
+        preview_inner.width.saturating_sub(4) / 2,
+        preview_inner.height.saturating_sub(6),
+    );
+    let threshold_marker = if app.animation_import_settings.threshold == app.config.base_threshold {
+        "default"
+    } else {
+        "custom*"
+    };
+    let mut preview_lines = vec![Line::from(vec![
+        Span::styled("  ", Style::default()),
+        Span::styled(preview_title, Style::default().fg(accent)),
+        Span::raw("  "),
+        Span::styled(
+            format!(
+                "Threshold: {} ({threshold_marker})",
+                app.animation_import_settings.threshold
+            ),
+            Style::default().fg(Color::White),
+        ),
+    ])];
+    preview_lines.extend(preview_content);
+    frame.render_widget(
+        Paragraph::new(preview_lines).wrap(Wrap { trim: false }),
+        preview_inner,
+    );
+
     let focused_style = Style::default()
         .fg(Color::Black)
         .bg(Color::Yellow)
@@ -8123,9 +8366,11 @@ fn draw_animation_import_workflow_ui(
     let row = Layout::default()
         .direction(Direction::Horizontal)
         .constraints([
-            Constraint::Length(34),
+            Constraint::Length(28),
             Constraint::Length(2),
-            Constraint::Length(26),
+            Constraint::Length(24),
+            Constraint::Length(2),
+            Constraint::Length(20),
             Constraint::Length(2),
             Constraint::Length(20),
             Constraint::Length(2),
@@ -8182,6 +8427,32 @@ fn draw_animation_import_workflow_ui(
             .style(options_style),
         row[2],
     );
+    let threshold_style = if app.animation_import_settings.focus
+        == AnimationImportSettingsFocus::Threshold
+        && app.animation_import_settings.grayscale_editor.is_none()
+    {
+        focused_style
+    } else {
+        idle_style
+    };
+    let threshold_dirty = if app.animation_import_settings.threshold == app.config.base_threshold {
+        ""
+    } else {
+        " *"
+    };
+    frame.render_widget(
+        Paragraph::new(format!(
+            " Threshold: {}{threshold_dirty} ",
+            app.animation_import_settings.threshold
+        ))
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .border_style(threshold_style),
+        )
+        .style(threshold_style),
+        row[4],
+    );
     let export_style = if app.animation_import_settings.focus
         == AnimationImportSettingsFocus::ExportTestImageButton
         && app.animation_import_settings.grayscale_editor.is_none()
@@ -8198,7 +8469,7 @@ fn draw_animation_import_workflow_ui(
                     .border_style(export_style),
             )
             .style(export_style),
-        row[4],
+        row[6],
     );
     frame.render_widget(
         Paragraph::new(" Continue ")
@@ -8209,7 +8480,7 @@ fn draw_animation_import_workflow_ui(
                     .border_style(continue_style),
             )
             .style(continue_style),
-        row[6],
+        row[8],
     );
 
     let options_line = if let Some(editor) = &app.animation_import_settings.grayscale_editor {
@@ -8318,7 +8589,7 @@ fn draw_animation_import_workflow_ui(
                 Span::raw("")
             },
             Span::styled(
-                "Left/Right focus, Enter toggle/open/export/continue.",
+                "Left/Right focus, Up/Down changes toggle/threshold/frames, Enter toggle/open/export/continue.",
                 Style::default().fg(muted),
             ),
         ])
@@ -8398,20 +8669,29 @@ fn draw_home_creation_area(frame: &mut Frame, app: &App, area: Rect, accent: Col
 }
 
 fn draw_home_creation_popup(frame: &mut Frame, app: &App, area: Rect, accent: Color, muted: Color) {
-    let (kind, configuring_grid, configuring_animation) = match app.home_workflow {
-        HomeWorkflow::Import(kind) => (kind, false, false),
-        HomeWorkflow::ConfigureGrid => (HomeCreationKind::Grid, true, false),
-        HomeWorkflow::ConfigureAnimation(animation_type) => (
-            match animation_type {
-                AnimationType::Standard => HomeCreationKind::AnimatedGlyph,
-                AnimationType::Grid => HomeCreationKind::AnimatedGridGlyph,
-            },
-            false,
-            true,
-        ),
-        _ => return,
+    let (kind, importing, tweaking, configuring_grid, configuring_animation) =
+        match app.home_workflow {
+            HomeWorkflow::Import(kind) => (kind, true, false, false, false),
+            HomeWorkflow::Tweaking(kind) => (kind, false, true, false, false),
+            HomeWorkflow::ConfigureGrid => (HomeCreationKind::Grid, false, false, true, false),
+            HomeWorkflow::ConfigureAnimation(animation_type) => (
+                match animation_type {
+                    AnimationType::Standard => HomeCreationKind::AnimatedGlyph,
+                    AnimationType::Grid => HomeCreationKind::AnimatedGridGlyph,
+                },
+                false,
+                false,
+                false,
+                true,
+            ),
+            _ => return,
+        };
+    let popup_height = if tweaking {
+        area.height.saturating_sub(2)
+    } else {
+        27
     };
-    let popup = centered_popup_rect(area, 122, 27);
+    let popup = centered_popup_rect(area, 122, popup_height);
     frame.render_widget(Clear, popup);
     let block = Block::default()
         .borders(Borders::ALL)
@@ -8435,19 +8715,68 @@ fn draw_home_creation_popup(frame: &mut Frame, app: &App, area: Rect, accent: Co
     ) {
         vec![
             Line::from(vec![
-                Span::styled(" 1 ", Style::default().fg(Color::Black).bg(accent)),
-                Span::styled(" Import frame media ", Style::default().fg(Color::White)),
                 Span::styled(
-                    if configuring_animation {
-                        "< done"
+                    " 1 ",
+                    Style::default().fg(Color::Black).bg(if importing {
+                        accent
                     } else {
+                        Color::DarkGray
+                    }),
+                ),
+                Span::styled(
+                    " Import frame media ",
+                    if importing {
+                        Style::default().fg(Color::White)
+                    } else {
+                        Style::default().fg(muted)
+                    },
+                ),
+                Span::styled(
+                    if importing { "< current" } else { "< done" },
+                    Style::default().fg(Color::Yellow),
+                ),
+            ]),
+            Line::from(vec![
+                Span::styled(
+                    " 2 ",
+                    Style::default().fg(Color::Black).bg(if tweaking {
+                        accent
+                    } else {
+                        Color::DarkGray
+                    }),
+                ),
+                Span::styled(
+                    " Tweak grayscale / threshold / preview ",
+                    if tweaking {
+                        Style::default().fg(Color::White)
+                    } else if importing {
+                        Style::default().fg(muted)
+                    } else {
+                        Style::default().fg(Color::White)
+                    },
+                ),
+                Span::styled(
+                    if tweaking {
                         "< current"
+                    } else if importing {
+                        ""
+                    } else {
+                        "< done"
                     },
                     Style::default().fg(Color::Yellow),
                 ),
             ]),
             Line::from(vec![
-                Span::styled(" 2 ", Style::default().fg(Color::Black).bg(Color::DarkGray)),
+                Span::styled(
+                    " 3 ",
+                    Style::default()
+                        .fg(Color::Black)
+                        .bg(if configuring_animation {
+                            accent
+                        } else {
+                            Color::DarkGray
+                        }),
+                ),
                 Span::styled(
                     " Configure name/FPS/grid options in popup ",
                     if configuring_animation {
@@ -8459,39 +8788,85 @@ fn draw_home_creation_popup(frame: &mut Frame, app: &App, area: Rect, accent: Co
                 Span::styled(
                     if configuring_animation {
                         "< current"
-                    } else {
+                    } else if importing || tweaking {
                         ""
+                    } else {
+                        "< done"
                     },
                     Style::default().fg(Color::Yellow),
                 ),
             ]),
             Line::from(vec![
-                Span::styled(" 3 ", Style::default().fg(Color::Black).bg(Color::DarkGray)),
+                Span::styled(" 4 ", Style::default().fg(Color::Black).bg(Color::DarkGray)),
                 Span::styled(
                     " Create animation and switch to Glyphs ",
                     Style::default().fg(muted),
                 ),
             ]),
         ]
-    } else {
+    } else if matches!(kind, HomeCreationKind::Grid) {
         vec![
             Line::from(vec![
-                Span::styled(" 1 ", Style::default().fg(Color::Black).bg(accent)),
                 Span::styled(
-                    " Import source images (ONE image for grid) ",
-                    Style::default().fg(Color::White),
+                    " 1 ",
+                    Style::default().fg(Color::Black).bg(if importing {
+                        accent
+                    } else {
+                        Color::DarkGray
+                    }),
                 ),
                 Span::styled(
-                    if configuring_grid {
-                        "< done"
+                    " Import source image ",
+                    if importing {
+                        Style::default().fg(Color::White)
                     } else {
+                        Style::default().fg(muted)
+                    },
+                ),
+                Span::styled(
+                    if importing { "< current" } else { "< done" },
+                    Style::default().fg(Color::Yellow),
+                ),
+            ]),
+            Line::from(vec![
+                Span::styled(
+                    " 2 ",
+                    Style::default().fg(Color::Black).bg(if tweaking {
+                        accent
+                    } else {
+                        Color::DarkGray
+                    }),
+                ),
+                Span::styled(
+                    " Tweak grayscale / threshold / preview ",
+                    if tweaking {
+                        Style::default().fg(Color::White)
+                    } else if importing {
+                        Style::default().fg(muted)
+                    } else {
+                        Style::default().fg(Color::White)
+                    },
+                ),
+                Span::styled(
+                    if tweaking {
                         "< current"
+                    } else if importing {
+                        ""
+                    } else {
+                        "< done"
                     },
                     Style::default().fg(Color::Yellow),
                 ),
             ]),
             Line::from(vec![
-                Span::styled(" 2 ", Style::default().fg(Color::Black).bg(Color::DarkGray)),
+                Span::styled(
+                    " 3 ",
+                    Style::default().fg(Color::Black).bg(if configuring_grid {
+                        accent
+                    } else {
+                        Color::DarkGray
+                    }),
+                ),
                 Span::styled(
                     " Configure rows, columns, bleed in popup ",
                     if configuring_grid {
@@ -8501,16 +8876,81 @@ fn draw_home_creation_popup(frame: &mut Frame, app: &App, area: Rect, accent: Co
                     },
                 ),
                 Span::styled(
-                    if configuring_grid { "< current" } else { "" },
+                    if configuring_grid {
+                        "< current"
+                    } else if importing || tweaking {
+                        ""
+                    } else {
+                        "< done"
+                    },
+                    Style::default().fg(Color::Yellow),
+                ),
+            ]),
+            Line::from(vec![
+                Span::styled(" 4 ", Style::default().fg(Color::Black).bg(Color::DarkGray)),
+                Span::styled(
+                    " Create grid and switch to Glyphs ",
+                    Style::default().fg(muted),
+                ),
+            ]),
+        ]
+    } else {
+        vec![
+            Line::from(vec![
+                Span::styled(
+                    " 1 ",
+                    Style::default().fg(Color::Black).bg(if importing {
+                        accent
+                    } else {
+                        Color::DarkGray
+                    }),
+                ),
+                Span::styled(
+                    " Import source images ",
+                    if importing {
+                        Style::default().fg(Color::White)
+                    } else {
+                        Style::default().fg(muted)
+                    },
+                ),
+                Span::styled(
+                    if importing { "< current" } else { "< done" },
+                    Style::default().fg(Color::Yellow),
+                ),
+            ]),
+            Line::from(vec![
+                Span::styled(
+                    " 2 ",
+                    Style::default().fg(Color::Black).bg(if tweaking {
+                        accent
+                    } else {
+                        Color::DarkGray
+                    }),
+                ),
+                Span::styled(
+                    " Tweak grayscale / threshold / preview ",
+                    if tweaking {
+                        Style::default().fg(Color::White)
+                    } else if importing {
+                        Style::default().fg(muted)
+                    } else {
+                        Style::default().fg(Color::White)
+                    },
+                ),
+                Span::styled(
+                    if tweaking {
+                        "< current"
+                    } else if importing {
+                        ""
+                    } else {
+                        "< done"
+                    },
                     Style::default().fg(Color::Yellow),
                 ),
             ]),
             Line::from(vec![
                 Span::styled(" 3 ", Style::default().fg(Color::Black).bg(Color::DarkGray)),
-                Span::styled(
-                    " Create grid and switch to Glyphs ",
-                    Style::default().fg(muted),
-                ),
+                Span::styled(" Continue to Glyphs panel ", Style::default().fg(muted)),
             ]),
         ]
     };
@@ -8533,6 +8973,8 @@ fn draw_home_creation_popup(frame: &mut Frame, app: &App, area: Rect, accent: Co
                         .to_string()
                 } else if configuring_animation {
                     format!("{workflow_name}: configure in this popup, then create.")
+                } else if tweaking {
+                    format!("{workflow_name}: tweak grayscale/threshold with live preview.")
                 } else {
                     let import_hint = if matches!(
                         kind,
@@ -8586,8 +9028,10 @@ fn draw_home_creation_popup(frame: &mut Frame, app: &App, area: Rect, accent: Co
         } else {
             draw_animation_panel_ui(frame, app, layout[3], accent, muted);
         }
-    } else {
+    } else if tweaking {
         draw_animation_import_workflow_ui(frame, app, layout[3], accent, muted, kind);
+    } else {
+        draw_home_import_drop_ui(frame, app, layout[3], accent, muted, kind);
     }
     frame.render_widget(
         Paragraph::new(Line::from(vec![
@@ -8601,8 +9045,10 @@ fn draw_home_creation_popup(frame: &mut Frame, app: &App, area: Rect, accent: Co
                     " continue / create grid    "
                 } else if configuring_animation {
                     " continue / create animation    "
-                } else {
+                } else if tweaking {
                     " continue to next step    "
+                } else {
+                    " continue to tweaking step    "
                 },
                 Style::default().fg(muted),
             ),
@@ -11008,15 +11454,14 @@ mod tests {
         GlyphPreviewControl, HomeCreationKind, HomeWorkflow, InteractiveGlyph, KeyCode,
         RuntimeConfig, VisibleGlyphRow, animation_frame_source_for_preview,
         animation_has_non_uniform_frame_invert, animation_has_non_uniform_frame_thresholds,
-        collect_dropped_paths,
-        composition_preview_lines_stable_frame, default_animation_name_from_frames,
-        drag_images_here_lines, emitted_composition_cols, glyph_matches_animation_frame_source,
-        grayscale_options_are_default, handle_key, handle_paste_event_for_test,
-        import_image_files_to_input, installed_animation_blocks_for_definition,
-        installed_animation_frame_index, installed_animation_source_block,
-        persist_composition_definition, preview_leftmost_control, preview_lines,
-        prune_static_sample_blocks, scrollbar_thumb_geometry, selected_threshold_sources,
-        step_animation_preview, visible_window_bounds,
+        collect_dropped_paths, composition_preview_lines_stable_frame,
+        default_animation_name_from_frames, drag_images_here_lines, emitted_composition_cols,
+        glyph_matches_animation_frame_source, grayscale_options_are_default, handle_key,
+        handle_paste_event_for_test, import_image_files_to_input,
+        installed_animation_blocks_for_definition, installed_animation_frame_index,
+        installed_animation_source_block, persist_composition_definition, preview_leftmost_control,
+        preview_lines, prune_static_sample_blocks, scrollbar_thumb_geometry,
+        selected_threshold_sources, step_animation_preview, visible_window_bounds,
     };
     use crate::animation_media;
     use crate::build::{CompositionTileInfo, PreprocessedGlyph};
@@ -12020,6 +12465,9 @@ mod tests {
         };
         let mut app = App::new(manifest_path, config);
         app.start_home_workflow(HomeCreationKind::AnimatedGlyph);
+        app.home_workflow = HomeWorkflow::Tweaking(HomeCreationKind::AnimatedGlyph);
+        app.home_workflow = HomeWorkflow::Tweaking(HomeCreationKind::AnimatedGlyph);
+        app.home_workflow = HomeWorkflow::Tweaking(HomeCreationKind::AnimatedGlyph);
         let output = AnimationImportTaskOutput {
             import: DropImportResult {
                 imported: 0,
@@ -12049,6 +12497,73 @@ mod tests {
     }
 
     #[test]
+    fn home_workflow_enter_advances_import_to_tweaking_when_sources_exist() {
+        let project_dir = make_temp_dir("home-workflow-enter-to-tweaking");
+        let manifest_path = project_dir.join("petiglyph.toml");
+        write_manifest(&manifest_path, &Manifest::default()).expect("manifest is written");
+        let config = RuntimeConfig {
+            project_dir: project_dir.clone(),
+            project_id: "test-home-workflow-enter-to-tweaking".to_string(),
+            input_dir: project_dir.join("icons"),
+            out_dir: project_dir.join("build"),
+            font_name: "Petiglyph".to_string(),
+            glyph_size: 8,
+            base_threshold: 64,
+            threshold_overrides: BTreeMap::new(),
+            invert_overrides: BTreeMap::new(),
+            compositions: BTreeMap::new(),
+            animations: Vec::new(),
+            codepoint_start: 0x10_0000,
+        };
+        let mut app = App::new(manifest_path, config);
+        app.start_home_workflow(HomeCreationKind::AnimatedGlyph);
+        app.animation_selection_order = vec!["frame.png".to_string()];
+
+        handle_key(&mut app, KeyCode::Enter).expect("enter should advance to tweaking");
+        assert!(matches!(
+            app.home_workflow,
+            HomeWorkflow::Tweaking(HomeCreationKind::AnimatedGlyph)
+        ));
+    }
+
+    #[test]
+    fn animated_home_workflow_threshold_knob_adjusts_in_tweaking_step() {
+        let project_dir = make_temp_dir("animated-home-threshold-knob");
+        let manifest_path = project_dir.join("petiglyph.toml");
+        write_manifest(&manifest_path, &Manifest::default()).expect("manifest is written");
+        let config = RuntimeConfig {
+            project_dir: project_dir.clone(),
+            project_id: "test-animated-home-threshold-knob".to_string(),
+            input_dir: project_dir.join("icons"),
+            out_dir: project_dir.join("build"),
+            font_name: "Petiglyph".to_string(),
+            glyph_size: 8,
+            base_threshold: 64,
+            threshold_overrides: BTreeMap::new(),
+            invert_overrides: BTreeMap::new(),
+            compositions: BTreeMap::new(),
+            animations: Vec::new(),
+            codepoint_start: 0x10_0000,
+        };
+        let mut app = App::new(manifest_path, config);
+        app.start_home_workflow(HomeCreationKind::AnimatedGlyph);
+        app.home_workflow = HomeWorkflow::Tweaking(HomeCreationKind::AnimatedGlyph);
+        app.home_workflow = HomeWorkflow::Tweaking(HomeCreationKind::AnimatedGlyph);
+
+        assert_eq!(app.animation_import_settings.threshold, 64);
+        handle_key(&mut app, KeyCode::Left).expect("left focuses export from continue");
+        handle_key(&mut app, KeyCode::Left).expect("left focuses threshold from export");
+        assert_eq!(
+            app.animation_import_settings.focus,
+            super::AnimationImportSettingsFocus::Threshold
+        );
+        handle_key(&mut app, KeyCode::Up).expect("up increases threshold");
+        assert_eq!(app.animation_import_settings.threshold, 65);
+        handle_key(&mut app, KeyCode::Down).expect("down decreases threshold");
+        assert_eq!(app.animation_import_settings.threshold, 64);
+    }
+
+    #[test]
     fn animated_home_workflow_grayscale_toggle_is_on_by_default_and_toggles_with_keys() {
         let project_dir = make_temp_dir("animated-home-grayscale-toggle");
         let manifest_path = project_dir.join("petiglyph.toml");
@@ -12070,6 +12585,7 @@ mod tests {
         };
         let mut app = App::new(manifest_path, config);
         app.start_home_workflow(HomeCreationKind::AnimatedGlyph);
+        app.home_workflow = HomeWorkflow::Tweaking(HomeCreationKind::AnimatedGlyph);
 
         assert!(
             app.animation_import_settings.grayscale_enabled,
@@ -12077,7 +12593,8 @@ mod tests {
         );
 
         handle_key(&mut app, KeyCode::Left).expect("left moves focus from Continue to export");
-        handle_key(&mut app, KeyCode::Left).expect("left moves focus from export to options");
+        handle_key(&mut app, KeyCode::Left).expect("left moves focus from export to threshold");
+        handle_key(&mut app, KeyCode::Left).expect("left moves focus from threshold to options");
         handle_key(&mut app, KeyCode::Left).expect("left moves focus from options to toggle");
         handle_key(&mut app, KeyCode::Enter).expect("enter toggles grayscale");
         assert!(
@@ -12087,9 +12604,9 @@ mod tests {
         assert!(
             matches!(
                 app.home_workflow,
-                HomeWorkflow::Import(HomeCreationKind::AnimatedGlyph)
+                HomeWorkflow::Tweaking(HomeCreationKind::AnimatedGlyph)
             ),
-            "toggling grayscale should not leave the import step"
+            "toggling grayscale should not leave the tweaking step"
         );
 
         handle_key(&mut app, KeyCode::Down).expect("up/down also toggles grayscale");
@@ -12121,9 +12638,11 @@ mod tests {
         };
         let mut app = App::new(manifest_path, config);
         app.start_home_workflow(HomeCreationKind::AnimatedGlyph);
+        app.home_workflow = HomeWorkflow::Tweaking(HomeCreationKind::AnimatedGlyph);
 
         handle_key(&mut app, KeyCode::Left).expect("left moves focus from Continue to export");
-        handle_key(&mut app, KeyCode::Left).expect("left moves focus from export to options");
+        handle_key(&mut app, KeyCode::Left).expect("left moves focus from export to threshold");
+        handle_key(&mut app, KeyCode::Left).expect("left moves focus from threshold to options");
         handle_key(&mut app, KeyCode::Enter).expect("enter opens grayscale options editor");
         assert!(
             app.animation_import_settings.grayscale_editor.is_some(),
@@ -12146,7 +12665,7 @@ mod tests {
         assert!(
             matches!(
                 app.home_workflow,
-                HomeWorkflow::Import(HomeCreationKind::AnimatedGlyph)
+                HomeWorkflow::Tweaking(HomeCreationKind::AnimatedGlyph)
             ),
             "esc in editor should not cancel the workflow"
         );
@@ -12191,6 +12710,7 @@ mod tests {
         };
         let mut app = App::new(manifest_path, config);
         app.start_home_workflow(HomeCreationKind::AnimatedGlyph);
+        app.home_workflow = HomeWorkflow::Tweaking(HomeCreationKind::AnimatedGlyph);
         app.animation_selection_order = vec!["runner_01.png".to_string()];
         app.glyphs = vec![InteractiveGlyph {
             glyph: PreprocessedGlyph {
@@ -12262,6 +12782,7 @@ mod tests {
         };
         let mut app = App::new(manifest_path, config);
         app.start_home_workflow(HomeCreationKind::AnimatedGlyph);
+        app.home_workflow = HomeWorkflow::Tweaking(HomeCreationKind::AnimatedGlyph);
 
         assert_eq!(app.animation_import_settings.export_frame_count, 5);
         handle_key(&mut app, KeyCode::Left).expect("left focuses export from continue");
@@ -12296,6 +12817,7 @@ mod tests {
         };
         let mut app = App::new(manifest_path, config);
         app.start_home_workflow(HomeCreationKind::AnimatedGlyph);
+        app.home_workflow = HomeWorkflow::Tweaking(HomeCreationKind::AnimatedGlyph);
         app.animation_import_settings.focus =
             super::AnimationImportSettingsFocus::ExportTestImageButton;
         app.animation_selection_order = (1..=6).map(|idx| format!("f{idx}.png")).collect();
@@ -12364,6 +12886,7 @@ mod tests {
         app.start_home_workflow(HomeCreationKind::Grid);
         handle_paste_event_for_test(&mut app, &dropped.display().to_string())
             .expect("grid import should succeed");
+        app.home_workflow = HomeWorkflow::Tweaking(HomeCreationKind::Grid);
         app.animation_import_settings.focus =
             super::AnimationImportSettingsFocus::ExportTestImageButton;
 
@@ -12404,6 +12927,7 @@ mod tests {
         };
         let mut app = App::new(manifest_path, config);
         app.start_home_workflow(HomeCreationKind::Grid);
+        app.home_workflow = HomeWorkflow::Tweaking(HomeCreationKind::Grid);
         app.home_workflow_grid_source_key = Some("grid_source.png".to_string());
         app.home_workflow_import_count = 1;
         app.glyphs.clear();
@@ -13032,11 +13556,7 @@ mod tests {
         fs::write(&first, b"a").expect("first file is written");
         fs::write(&second, b"b").expect("second file is written");
 
-        let payload = format!(
-            "file://{}file://{}",
-            first.display(),
-            second.display()
-        );
+        let payload = format!("file://{}file://{}", first.display(), second.display());
         let paths = collect_dropped_paths(&payload);
         assert_eq!(paths.len(), 2, "payload should split both file URIs");
         assert!(paths.contains(&first));
@@ -13056,10 +13576,10 @@ mod tests {
         fs::write(
             &gif_path,
             [
-                0x47, 0x49, 0x46, 0x38, 0x39, 0x61, 0x01, 0x00, 0x01, 0x00, 0x80, 0x00, 0x00,
-                0x00, 0x00, 0x00, 0xff, 0xff, 0xff, 0x21, 0xf9, 0x04, 0x01, 0x00, 0x00, 0x00,
-                0x00, 0x2c, 0x00, 0x00, 0x00, 0x00, 0x01, 0x00, 0x01, 0x00, 0x00, 0x02, 0x02,
-                0x44, 0x01, 0x00, 0x3b,
+                0x47, 0x49, 0x46, 0x38, 0x39, 0x61, 0x01, 0x00, 0x01, 0x00, 0x80, 0x00, 0x00, 0x00,
+                0x00, 0x00, 0xff, 0xff, 0xff, 0x21, 0xf9, 0x04, 0x01, 0x00, 0x00, 0x00, 0x00, 0x2c,
+                0x00, 0x00, 0x00, 0x00, 0x01, 0x00, 0x01, 0x00, 0x00, 0x02, 0x02, 0x44, 0x01, 0x00,
+                0x3b,
             ],
         )
         .expect("gif file is written");

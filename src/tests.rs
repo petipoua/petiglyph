@@ -1397,6 +1397,27 @@ fn coverage_map_uses_alpha_for_transparent_sources() {
 }
 
 #[test]
+fn coverage_map_uses_luma_for_transparent_sources_with_color_signal() {
+    let mut image = RgbaImage::from_pixel(2, 2, Rgba([255, 255, 255, 0]));
+    image.put_pixel(0, 0, Rgba([255, 255, 255, 255]));
+    image.put_pixel(1, 0, Rgba([10, 10, 10, 255]));
+    image.put_pixel(0, 1, Rgba([128, 128, 128, 255]));
+    image.put_pixel(1, 1, Rgba([255, 255, 255, 0]));
+
+    let coverage = coverage_map(&image, 2).expect("coverage map succeeds");
+
+    assert_eq!(
+        coverage[0], 0,
+        "bright pixels should map to low coverage in luma-aware transparent mode"
+    );
+    assert!(
+        coverage[1] > coverage[2],
+        "darker pixels should map to higher coverage than mid-gray pixels"
+    );
+    assert_eq!(coverage[3], 0, "fully transparent pixels remain zero");
+}
+
+#[test]
 fn coverage_map_detects_foreground_on_opaque_background() {
     let mut image = RgbaImage::from_pixel(3, 3, Rgba([255, 255, 255, 255]));
     for i in 0..3 {
