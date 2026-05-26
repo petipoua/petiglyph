@@ -22,6 +22,38 @@ pub(crate) struct AnimationMediaImportResult {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct AnimationGrayscaleOptions {
+    pub(crate) brightness: i16,
+    pub(crate) contrast: i16,
+    pub(crate) gamma_percent: u16,
+}
+
+impl Default for AnimationGrayscaleOptions {
+    fn default() -> Self {
+        Self {
+            brightness: 0,
+            contrast: 0,
+            gamma_percent: 100,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct AnimationImportProcessingOptions {
+    pub(crate) grayscale_enabled: bool,
+    pub(crate) grayscale: AnimationGrayscaleOptions,
+}
+
+impl Default for AnimationImportProcessingOptions {
+    fn default() -> Self {
+        Self {
+            grayscale_enabled: true,
+            grayscale: AnimationGrayscaleOptions::default(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum ExistingImportPolicy {
     ReuseIdentical,
 }
@@ -65,6 +97,7 @@ pub(crate) fn import_animation_media_to_input(
     input_dir: &Path,
     payload: &str,
     existing_policy: ExistingImportPolicy,
+    processing: AnimationImportProcessingOptions,
 ) -> Result<AnimationMediaImportResult> {
     fs::create_dir_all(input_dir)
         .with_context(|| format!("failed to create {}", input_dir.display()))?;
@@ -114,6 +147,7 @@ pub(crate) fn import_animation_media_to_input(
                     &source,
                     &temp_paths,
                     existing_policy,
+                    processing,
                     &mut result,
                 )?;
             }
@@ -133,6 +167,7 @@ pub(crate) fn import_animation_media_to_input(
                     &source,
                     &temp_paths,
                     existing_policy,
+                    processing,
                     &mut result,
                 )?;
             }
@@ -147,6 +182,7 @@ fn import_expanded_frames(
     source_media_path: &Path,
     temp_frame_paths: &[PathBuf],
     existing_policy: ExistingImportPolicy,
+    processing: AnimationImportProcessingOptions,
     result: &mut AnimationMediaImportResult,
 ) -> Result<()> {
     if temp_frame_paths.is_empty() {
@@ -165,6 +201,9 @@ fn import_expanded_frames(
                 "drop exceeded total extracted frame limit ({MAX_TOTAL_EXTRACTED_FRAMES_PER_IMPORT})"
             );
         }
+        if processing.grayscale_enabled {
+            apply_grayscale_processing_in_place(frame_path, processing.grayscale)?;
+        }
 
         let deterministic_name = format!("{stem}--pgf-{media_hash}-f{:06}.png", idx + 1);
         import_one_file(
@@ -179,6 +218,44 @@ fn import_expanded_frames(
     }
 
     Ok(())
+}
+
+fn apply_grayscale_processing_in_place(
+    frame_path: &Path,
+    options: AnimationGrayscaleOptions,
+) -> Result<()> {
+    let mut image = image::open(frame_path)
+        .with_context(|| format!("failed to decode extracted frame {}", frame_path.display()))?
+        .to_rgba8();
+
+    for pixel in image.pixels_mut() {
+        let luma = luminance_byte(pixel[0], pixel[1], pixel[2]);
+        let adjusted = apply_grayscale_adjustments(luma, options);
+        pixel[0] = adjusted;
+        pixel[1] = adjusted;
+        pixel[2] = adjusted;
+    }
+
+    image
+        .save(frame_path)
+        .with_context(|| format!("failed to rewrite extracted frame {}", frame_path.display()))?;
+    Ok(())
+}
+
+fn luminance_byte(r: u8, g: u8, b: u8) -> u8 {
+    // Integer approximation of BT.601 luma.
+    (((77u16 * r as u16) + (150u16 * g as u16) + (29u16 * b as u16)) >> 8) as u8
+}
+
+fn apply_grayscale_adjustments(value: u8, options: AnimationGrayscaleOptions) -> u8 {
+    let gamma = (options.gamma_percent as f32 / 100.0).clamp(0.50, 2.00);
+    let mut pixel = (value as f32 / 255.0).powf(1.0 / gamma) * 255.0;
+
+    let contrast_factor = 1.0 + (options.contrast as f32 / 100.0);
+    pixel = ((pixel - 128.0) * contrast_factor) + 128.0;
+    pixel += options.brightness as f32;
+
+    pixel.round().clamp(0.0, 255.0) as u8
 }
 
 fn import_one_file(
@@ -623,6 +700,7 @@ fn source_key_from_input_path(input_dir: &Path, source_path: &Path) -> String {
 
 #[cfg(test)]
 mod tests {
+    use super::AnimationImportProcessingOptions;
     use super::classify_input_kind;
     use super::media_identity_hash_hex8;
     use super::slug_stem;
@@ -701,6 +779,7 @@ mod tests {
             &input_dir,
             &payload,
             ExistingImportPolicy::ReuseIdentical,
+            AnimationImportProcessingOptions::default(),
         )
         .expect("first import");
         assert_eq!(first.imported, 1);
@@ -709,6 +788,7 @@ mod tests {
             &input_dir,
             &payload,
             ExistingImportPolicy::ReuseIdentical,
+            AnimationImportProcessingOptions::default(),
         )
         .expect("second import");
         assert_eq!(second.imported, 0);

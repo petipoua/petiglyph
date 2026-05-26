@@ -77,6 +77,12 @@ const GLYPH_SOURCE_COUNT_REFRESH_MS: u64 = 300;
 const INSTALL_METADATA_PREFIX: &str = ".petiglyph-install-";
 const INSTALL_METADATA_SUFFIX: &str = ".json";
 const DEBUG_LOG_VISIBLE_LINES: usize = 6;
+const GRAYSCALE_BRIGHTNESS_MIN: i16 = -80;
+const GRAYSCALE_BRIGHTNESS_MAX: i16 = 80;
+const GRAYSCALE_CONTRAST_MIN: i16 = -80;
+const GRAYSCALE_CONTRAST_MAX: i16 = 80;
+const GRAYSCALE_GAMMA_MIN: u16 = 50;
+const GRAYSCALE_GAMMA_MAX: u16 = 200;
 static HTY_FULL_REPAINT_ENABLED: OnceLock<bool> = OnceLock::new();
 
 #[derive(Debug, Clone, Default)]
@@ -340,6 +346,46 @@ enum AnimationConfigFocus {
     Create,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AnimationImportSettingsFocus {
+    GrayscaleToggle,
+    GrayscaleOptionsButton,
+    Continue,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum GrayscaleKnobFocus {
+    Brightness,
+    Contrast,
+    Gamma,
+}
+
+#[derive(Debug, Clone)]
+struct GrayscaleOptionsEditor {
+    original: animation_media::AnimationGrayscaleOptions,
+    draft: animation_media::AnimationGrayscaleOptions,
+    focus: GrayscaleKnobFocus,
+}
+
+#[derive(Debug, Clone)]
+struct AnimationImportSettingsState {
+    focus: AnimationImportSettingsFocus,
+    grayscale_enabled: bool,
+    grayscale_options: animation_media::AnimationGrayscaleOptions,
+    grayscale_editor: Option<GrayscaleOptionsEditor>,
+}
+
+impl Default for AnimationImportSettingsState {
+    fn default() -> Self {
+        Self {
+            focus: AnimationImportSettingsFocus::Continue,
+            grayscale_enabled: true,
+            grayscale_options: animation_media::AnimationGrayscaleOptions::default(),
+            grayscale_editor: None,
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 struct AnimationConfig {
     selected_frames: Vec<String>,
@@ -417,6 +463,7 @@ pub(crate) struct App {
     home_launcher_focus: HomeLauncherFocus,
     home_workflow: HomeWorkflow,
     home_workflow_import_count: usize,
+    animation_import_settings: AnimationImportSettingsState,
     home_workflow_grid_source_key: Option<String>,
     home_workflow_grid_inline_notice: Option<String>,
     home_workflow_error: Option<String>,
@@ -2647,76 +2694,266 @@ fn handle_delete_project_confirmation_key(app: &mut App, code: KeyCode) -> Resul
     Ok(())
 }
 
+fn is_animated_home_creation(kind: HomeCreationKind) -> bool {
+    matches!(
+        kind,
+        HomeCreationKind::AnimatedGlyph | HomeCreationKind::AnimatedGridGlyph
+    )
+}
+
+fn animation_import_processing_options(
+    settings: &AnimationImportSettingsState,
+) -> animation_media::AnimationImportProcessingOptions {
+    animation_media::AnimationImportProcessingOptions {
+        grayscale_enabled: settings.grayscale_enabled,
+        grayscale: settings.grayscale_options,
+    }
+}
+
+fn grayscale_options_are_default(options: animation_media::AnimationGrayscaleOptions) -> bool {
+    options == animation_media::AnimationGrayscaleOptions::default()
+}
+
+fn move_import_settings_focus_left(settings: &mut AnimationImportSettingsState) {
+    settings.focus = match settings.focus {
+        AnimationImportSettingsFocus::GrayscaleToggle => {
+            AnimationImportSettingsFocus::GrayscaleToggle
+        }
+        AnimationImportSettingsFocus::GrayscaleOptionsButton => {
+            AnimationImportSettingsFocus::GrayscaleToggle
+        }
+        AnimationImportSettingsFocus::Continue => {
+            AnimationImportSettingsFocus::GrayscaleOptionsButton
+        }
+    };
+}
+
+fn move_import_settings_focus_right(settings: &mut AnimationImportSettingsState) {
+    settings.focus = match settings.focus {
+        AnimationImportSettingsFocus::GrayscaleToggle => {
+            AnimationImportSettingsFocus::GrayscaleOptionsButton
+        }
+        AnimationImportSettingsFocus::GrayscaleOptionsButton => {
+            AnimationImportSettingsFocus::Continue
+        }
+        AnimationImportSettingsFocus::Continue => AnimationImportSettingsFocus::Continue,
+    };
+}
+
+fn rotate_grayscale_knob_left(editor: &mut GrayscaleOptionsEditor) {
+    editor.focus = match editor.focus {
+        GrayscaleKnobFocus::Brightness => GrayscaleKnobFocus::Brightness,
+        GrayscaleKnobFocus::Contrast => GrayscaleKnobFocus::Brightness,
+        GrayscaleKnobFocus::Gamma => GrayscaleKnobFocus::Contrast,
+    };
+}
+
+fn rotate_grayscale_knob_right(editor: &mut GrayscaleOptionsEditor) {
+    editor.focus = match editor.focus {
+        GrayscaleKnobFocus::Brightness => GrayscaleKnobFocus::Contrast,
+        GrayscaleKnobFocus::Contrast => GrayscaleKnobFocus::Gamma,
+        GrayscaleKnobFocus::Gamma => GrayscaleKnobFocus::Gamma,
+    };
+}
+
+fn adjust_grayscale_editor(editor: &mut GrayscaleOptionsEditor, direction: i16) {
+    match editor.focus {
+        GrayscaleKnobFocus::Brightness => {
+            let next = editor.draft.brightness.saturating_add(direction);
+            editor.draft.brightness =
+                next.clamp(GRAYSCALE_BRIGHTNESS_MIN, GRAYSCALE_BRIGHTNESS_MAX);
+        }
+        GrayscaleKnobFocus::Contrast => {
+            let next = editor.draft.contrast.saturating_add(direction);
+            editor.draft.contrast = next.clamp(GRAYSCALE_CONTRAST_MIN, GRAYSCALE_CONTRAST_MAX);
+        }
+        GrayscaleKnobFocus::Gamma => {
+            let step = i32::from(direction) * 5;
+            let next = i32::from(editor.draft.gamma_percent) + step;
+            editor.draft.gamma_percent = next.clamp(
+                i32::from(GRAYSCALE_GAMMA_MIN),
+                i32::from(GRAYSCALE_GAMMA_MAX),
+            ) as u16;
+        }
+    }
+}
+
+fn handle_animation_import_settings_key(app: &mut App, key: KeyEvent) -> Result<bool> {
+    if app.animation_create_in_progress() {
+        return Ok(true);
+    }
+
+    if let Some(editor) = app.animation_import_settings.grayscale_editor.as_mut() {
+        match key.code {
+            KeyCode::Esc => {
+                app.animation_import_settings.grayscale_options = editor.original;
+                app.animation_import_settings.grayscale_editor = None;
+                app.status = Some("grayscale options edit canceled".to_string());
+                return Ok(true);
+            }
+            KeyCode::Enter => {
+                app.animation_import_settings.grayscale_options = editor.draft;
+                app.animation_import_settings.grayscale_editor = None;
+                app.status = Some("grayscale options updated".to_string());
+                return Ok(true);
+            }
+            KeyCode::Left | KeyCode::Char('h') => {
+                rotate_grayscale_knob_left(editor);
+                return Ok(true);
+            }
+            KeyCode::Right | KeyCode::Char('l') => {
+                rotate_grayscale_knob_right(editor);
+                return Ok(true);
+            }
+            KeyCode::Up | KeyCode::Char('k') => {
+                adjust_grayscale_editor(editor, 1);
+                return Ok(true);
+            }
+            KeyCode::Down | KeyCode::Char('j') => {
+                adjust_grayscale_editor(editor, -1);
+                return Ok(true);
+            }
+            _ => return Ok(false),
+        }
+    }
+
+    match key.code {
+        KeyCode::Left | KeyCode::Char('h') => {
+            move_import_settings_focus_left(&mut app.animation_import_settings);
+            Ok(true)
+        }
+        KeyCode::Right | KeyCode::Char('l') => {
+            move_import_settings_focus_right(&mut app.animation_import_settings);
+            Ok(true)
+        }
+        KeyCode::Up | KeyCode::Char('k') | KeyCode::Down | KeyCode::Char('j') => {
+            if app.animation_import_settings.focus == AnimationImportSettingsFocus::GrayscaleToggle
+            {
+                app.animation_import_settings.grayscale_enabled =
+                    !app.animation_import_settings.grayscale_enabled;
+                app.status = Some(format!(
+                    "grayscale {} for imported GIF/video frames",
+                    if app.animation_import_settings.grayscale_enabled {
+                        "enabled"
+                    } else {
+                        "disabled"
+                    }
+                ));
+                return Ok(true);
+            }
+            Ok(true)
+        }
+        KeyCode::Enter => match app.animation_import_settings.focus {
+            AnimationImportSettingsFocus::GrayscaleToggle => {
+                app.animation_import_settings.grayscale_enabled =
+                    !app.animation_import_settings.grayscale_enabled;
+                app.status = Some(format!(
+                    "grayscale {} for imported GIF/video frames",
+                    if app.animation_import_settings.grayscale_enabled {
+                        "enabled"
+                    } else {
+                        "disabled"
+                    }
+                ));
+                Ok(true)
+            }
+            AnimationImportSettingsFocus::GrayscaleOptionsButton => {
+                let current = app.animation_import_settings.grayscale_options;
+                app.animation_import_settings.grayscale_editor = Some(GrayscaleOptionsEditor {
+                    original: current,
+                    draft: current,
+                    focus: GrayscaleKnobFocus::Brightness,
+                });
+                app.status = Some(
+                    "editing grayscale options: \u{2190}/\u{2192} choose knob, \u{2191}/\u{2193} change, Enter apply, Esc cancel"
+                        .to_string(),
+                );
+                Ok(true)
+            }
+            AnimationImportSettingsFocus::Continue => Ok(false),
+        },
+        _ => Ok(false),
+    }
+}
+
 fn handle_home_creation_key(app: &mut App, key: KeyEvent) -> Result<()> {
     match app.home_workflow {
-        HomeWorkflow::Import(kind) => match key.code {
-            KeyCode::Esc => {
-                app.reset_home_workflow();
-                app.status = Some("home creation workflow canceled".to_string());
+        HomeWorkflow::Import(kind) => {
+            if is_animated_home_creation(kind) && handle_animation_import_settings_key(app, key)? {
+                return Ok(());
             }
-            KeyCode::Enter => match kind {
-                HomeCreationKind::Glyph => {
-                    app.reload_glyphs()?;
-                    app.complete_home_workflow_to_glyphs();
+            match key.code {
+                KeyCode::Esc => {
+                    app.reset_home_workflow();
+                    app.status = Some("home creation workflow canceled".to_string());
                 }
-                HomeCreationKind::Grid => {
-                    let Some(source_key) = app.home_workflow_grid_source_key.clone() else {
+                KeyCode::Enter => match kind {
+                    HomeCreationKind::Glyph => {
+                        app.reload_glyphs()?;
+                        app.complete_home_workflow_to_glyphs();
+                    }
+                    HomeCreationKind::Grid => {
+                        let Some(source_key) = app.home_workflow_grid_source_key.clone() else {
+                            app.status = Some(
+                                "create grid: drop exactly one image in the popup, then press Enter"
+                                    .to_string(),
+                            );
+                            return Ok(());
+                        };
+                        app.grid_config = Some(GridConfig {
+                            source_key,
+                            rows: 2,
+                            cols: 2,
+                            horizontal_bleed: BleedLevel::Weak,
+                            vertical_bleed: BleedLevel::Off,
+                            focus: GridConfigFocus::Rows,
+                        });
+                        app.home_workflow = HomeWorkflow::ConfigureGrid;
+                        app.home_workflow_error = None;
                         app.status = Some(
-                            "create grid: drop exactly one image in the popup, then press Enter"
+                            "configure grid in popup: rows, cols, bleed, then Create Grid"
                                 .to_string(),
                         );
-                        return Ok(());
-                    };
-                    app.grid_config = Some(GridConfig {
-                        source_key,
-                        rows: 2,
-                        cols: 2,
-                        horizontal_bleed: BleedLevel::Weak,
-                        vertical_bleed: BleedLevel::Off,
-                        focus: GridConfigFocus::Rows,
-                    });
-                    app.home_workflow = HomeWorkflow::ConfigureGrid;
-                    app.home_workflow_error = None;
-                    app.status = Some(
-                        "configure grid in popup: rows, cols, bleed, then Create Grid".to_string(),
-                    );
-                }
-                HomeCreationKind::AnimatedGlyph => {
-                    if app.animation_import_task.is_some() {
-                        app.status = Some("animation frames are still loading".to_string());
-                        return Ok(());
                     }
-                    if app.animation_selection_order.is_empty() {
-                        app.status = Some(
-                            "drop at least one frame media file in the popup, then press Enter"
-                                .to_string(),
-                        );
-                        return Ok(());
+                    HomeCreationKind::AnimatedGlyph => {
+                        if app.animation_import_task.is_some() {
+                            app.status = Some("animation frames are still loading".to_string());
+                            return Ok(());
+                        }
+                        if app.animation_selection_order.is_empty() {
+                            app.status = Some(
+                                "drop at least one frame media file in the popup, then press Enter"
+                                    .to_string(),
+                            );
+                            return Ok(());
+                        }
+                        app.start_animation_config(AnimationType::Standard);
+                        app.home_workflow =
+                            HomeWorkflow::ConfigureAnimation(AnimationType::Standard);
+                        app.status =
+                            Some("configure animated glyph in popup, then Create".to_string());
                     }
-                    app.start_animation_config(AnimationType::Standard);
-                    app.home_workflow = HomeWorkflow::ConfigureAnimation(AnimationType::Standard);
-                    app.status = Some("configure animated glyph in popup, then Create".to_string());
-                }
-                HomeCreationKind::AnimatedGridGlyph => {
-                    if app.animation_import_task.is_some() {
-                        app.status = Some("animation frames are still loading".to_string());
-                        return Ok(());
+                    HomeCreationKind::AnimatedGridGlyph => {
+                        if app.animation_import_task.is_some() {
+                            app.status = Some("animation frames are still loading".to_string());
+                            return Ok(());
+                        }
+                        if app.animation_selection_order.is_empty() {
+                            app.status = Some(
+                                "drop at least one frame media file in the popup, then press Enter"
+                                    .to_string(),
+                            );
+                            return Ok(());
+                        }
+                        app.start_animation_config(AnimationType::Grid);
+                        app.home_workflow = HomeWorkflow::ConfigureAnimation(AnimationType::Grid);
+                        app.status =
+                            Some("configure animated grid glyph in popup, then Create".to_string());
                     }
-                    if app.animation_selection_order.is_empty() {
-                        app.status = Some(
-                            "drop at least one frame media file in the popup, then press Enter"
-                                .to_string(),
-                        );
-                        return Ok(());
-                    }
-                    app.start_animation_config(AnimationType::Grid);
-                    app.home_workflow = HomeWorkflow::ConfigureAnimation(AnimationType::Grid);
-                    app.status =
-                        Some("configure animated grid glyph in popup, then Create".to_string());
-                }
-            },
-            _ => {}
-        },
+                },
+                _ => {}
+            }
+        }
         HomeWorkflow::ConfigureGrid => {
             if let Some(mut config) = app.grid_config.clone() {
                 let res = handle_grid_config_key(app, &mut config, key);
@@ -3722,6 +3959,7 @@ impl App {
             HomeCreationKind::AnimatedGlyph | HomeCreationKind::AnimatedGridGlyph
         ) {
             self.clear_animation_draft();
+            self.animation_import_settings = AnimationImportSettingsState::default();
             self.glyph_tool_mode = GlyphToolMode::ImportAnimationFrames;
             self.selecting_for_animation_frames = true;
         }
@@ -3730,6 +3968,7 @@ impl App {
     fn reset_home_workflow(&mut self) {
         self.home_workflow = HomeWorkflow::Launcher;
         self.home_workflow_import_count = 0;
+        self.animation_import_settings = AnimationImportSettingsState::default();
         self.home_workflow_grid_source_key = None;
         self.home_workflow_grid_inline_notice = None;
         self.home_workflow_error = None;
@@ -3749,6 +3988,7 @@ impl App {
         self.animation_selection_order.clear();
         self.animation_selection_set.clear();
         self.animation_imported_set.clear();
+        self.animation_import_settings.grayscale_editor = None;
         self.selecting_for_animation_frames = false;
         self.animation_create_pending = None;
         self.animation_create_started_at = None;
@@ -4017,6 +4257,7 @@ impl App {
             home_launcher_focus: HomeLauncherFocus::CreateGlyph,
             home_workflow: HomeWorkflow::Launcher,
             home_workflow_import_count: 0,
+            animation_import_settings: AnimationImportSettingsState::default(),
             home_workflow_grid_source_key: None,
             home_workflow_grid_inline_notice: None,
             home_workflow_error: None,
@@ -4099,6 +4340,7 @@ impl App {
             home_launcher_focus: HomeLauncherFocus::CreateGlyph,
             home_workflow: HomeWorkflow::Launcher,
             home_workflow_import_count: 0,
+            animation_import_settings: AnimationImportSettingsState::default(),
             home_workflow_grid_source_key: None,
             home_workflow_grid_inline_notice: None,
             home_workflow_error: None,
@@ -4863,8 +5105,10 @@ impl App {
                 self.home_workflow_grid_inline_notice = None;
                 self.home_workflow_error =
                     Some("drop only ONE IMAGE for the grid (selection unchanged)".to_string());
-                self.status =
-                    Some("create grid: drop only one image at a time (kept current selection)".to_string());
+                self.status = Some(
+                    "create grid: drop only one image at a time (kept current selection)"
+                        .to_string(),
+                );
                 return Ok(());
             }
             let next_source_key = import.imported_source_keys.first().cloned();
@@ -4874,9 +5118,8 @@ impl App {
             self.home_workflow_error = None;
             if let (Some(previous), Some(next)) = (previous_source_key, next_source_key) {
                 if previous != next {
-                    self.home_workflow_grid_inline_notice = Some(format!(
-                        "Replaced image: {previous} -> {next}"
-                    ));
+                    self.home_workflow_grid_inline_notice =
+                        Some(format!("Replaced image: {previous} -> {next}"));
                 }
             } else {
                 self.home_workflow_grid_inline_notice =
@@ -4918,6 +5161,7 @@ impl App {
         }
 
         let config = self.config.clone();
+        let processing = animation_import_processing_options(&self.animation_import_settings);
         let (sender, receiver) = mpsc::channel();
         thread::spawn(move || {
             let result = (|| -> Result<AnimationImportTaskOutput> {
@@ -4925,6 +5169,7 @@ impl App {
                     &config.input_dir,
                     &payload,
                     animation_media::ExistingImportPolicy::ReuseIdentical,
+                    processing,
                 )?;
                 let import = DropImportResult {
                     imported: media_import.imported,
@@ -7316,6 +7561,237 @@ fn draw_animation_panel_ui(frame: &mut Frame, app: &App, area: Rect, accent: Col
     );
 }
 
+fn draw_animation_import_workflow_ui(
+    frame: &mut Frame,
+    app: &App,
+    area: Rect,
+    accent: Color,
+    muted: Color,
+) {
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(Style::default().fg(muted))
+        .title(Span::styled(
+            " Animation Frame Import ",
+            Style::default().fg(accent),
+        ));
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    let layout = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(5),
+            Constraint::Length(3),
+            Constraint::Length(3),
+            Constraint::Min(0),
+        ])
+        .margin(1)
+        .split(inner);
+
+    let mut import_lines = vec![
+        Line::from(""),
+        Line::from("  Drop, paste, or drag media files here."),
+    ];
+    if let Some(spinner) = app.animation_import_spinner_frame() {
+        import_lines.push(Line::from(format!(
+            "  {spinner} Loading animation frames..."
+        )));
+    } else {
+        import_lines.push(Line::from(format!(
+            "  Current draft frames: {}",
+            app.animation_selection_order.len()
+        )));
+    }
+    frame.render_widget(
+        Paragraph::new(import_lines).block(
+            Block::default()
+                .borders(Borders::ALL)
+                .border_style(Style::default().fg(muted)),
+        ),
+        layout[0],
+    );
+
+    let focused_style = Style::default()
+        .fg(Color::Black)
+        .bg(Color::Yellow)
+        .add_modifier(Modifier::BOLD);
+    let idle_style = Style::default().fg(Color::White).bg(Color::DarkGray);
+    let continue_style = if app.animation_import_settings.focus
+        == AnimationImportSettingsFocus::Continue
+        && app.animation_import_settings.grayscale_editor.is_none()
+    {
+        focused_style
+    } else {
+        Style::default()
+            .fg(Color::Black)
+            .bg(Color::Blue)
+            .add_modifier(Modifier::BOLD)
+    };
+
+    let row = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([
+            Constraint::Length(34),
+            Constraint::Length(2),
+            Constraint::Length(26),
+            Constraint::Length(2),
+            Constraint::Length(13),
+            Constraint::Min(0),
+        ])
+        .split(layout[1]);
+
+    let grayscale_style = if app.animation_import_settings.focus
+        == AnimationImportSettingsFocus::GrayscaleToggle
+        && app.animation_import_settings.grayscale_editor.is_none()
+    {
+        focused_style
+    } else {
+        idle_style
+    };
+    let grayscale_label = if app.animation_import_settings.grayscale_enabled {
+        " Grayscale: ON (Recommended) "
+    } else {
+        " Grayscale: OFF "
+    };
+    frame.render_widget(
+        Paragraph::new(grayscale_label)
+            .block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .border_style(grayscale_style),
+            )
+            .style(grayscale_style),
+        row[0],
+    );
+
+    let options_style = if app.animation_import_settings.focus
+        == AnimationImportSettingsFocus::GrayscaleOptionsButton
+        || app.animation_import_settings.grayscale_editor.is_some()
+    {
+        focused_style
+    } else {
+        idle_style
+    };
+    let options_dirty =
+        if grayscale_options_are_default(app.animation_import_settings.grayscale_options) {
+            ""
+        } else {
+            " *"
+        };
+    frame.render_widget(
+        Paragraph::new(format!(" Grayscale Options{options_dirty} "))
+            .block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .border_style(options_style),
+            )
+            .style(options_style),
+        row[2],
+    );
+    frame.render_widget(
+        Paragraph::new(" Continue ")
+            .alignment(Alignment::Center)
+            .block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .border_style(continue_style),
+            )
+            .style(continue_style),
+        row[4],
+    );
+
+    let options_line = if let Some(editor) = &app.animation_import_settings.grayscale_editor {
+        let knobs = Layout::default()
+            .direction(Direction::Horizontal)
+            .constraints([
+                Constraint::Length(20),
+                Constraint::Length(2),
+                Constraint::Length(20),
+                Constraint::Length(2),
+                Constraint::Length(20),
+                Constraint::Min(0),
+            ])
+            .split(layout[2]);
+        let knob_style = |target: GrayscaleKnobFocus| {
+            if editor.focus == target {
+                focused_style
+            } else {
+                idle_style
+            }
+        };
+        frame.render_widget(
+            Paragraph::new(format!(" Brightness: {:+} ", editor.draft.brightness))
+                .block(
+                    Block::default()
+                        .borders(Borders::ALL)
+                        .border_style(knob_style(GrayscaleKnobFocus::Brightness)),
+                )
+                .style(knob_style(GrayscaleKnobFocus::Brightness)),
+            knobs[0],
+        );
+        frame.render_widget(
+            Paragraph::new(format!(" Contrast: {:+} ", editor.draft.contrast))
+                .block(
+                    Block::default()
+                        .borders(Borders::ALL)
+                        .border_style(knob_style(GrayscaleKnobFocus::Contrast)),
+                )
+                .style(knob_style(GrayscaleKnobFocus::Contrast)),
+            knobs[2],
+        );
+        frame.render_widget(
+            Paragraph::new(format!(
+                " Gamma: {:.2} ",
+                editor.draft.gamma_percent as f32 / 100.0
+            ))
+            .block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .border_style(knob_style(GrayscaleKnobFocus::Gamma)),
+            )
+            .style(knob_style(GrayscaleKnobFocus::Gamma)),
+            knobs[4],
+        );
+        Line::from(vec![
+            Span::styled(" Captive edit: ", Style::default().fg(accent)),
+            Span::styled(
+                "Left/Right choose knob, Up/Down adjust, Enter apply, Esc cancel",
+                Style::default().fg(muted),
+            ),
+        ])
+    } else {
+        let summary = app.animation_import_settings.grayscale_options;
+        let marker = if grayscale_options_are_default(summary) {
+            "default"
+        } else {
+            "modified*"
+        };
+        Line::from(vec![
+            Span::styled(" Grayscale profile: ", Style::default().fg(accent)),
+            Span::styled(
+                format!(
+                    "B {:+}, C {:+}, G {:.2} ({marker})",
+                    summary.brightness,
+                    summary.contrast,
+                    summary.gamma_percent as f32 / 100.0
+                ),
+                Style::default().fg(Color::White),
+            ),
+            Span::raw("  "),
+            Span::styled(
+                "Left/Right focus, Enter to toggle/open/continue, Up/Down toggles grayscale.",
+                Style::default().fg(muted),
+            ),
+        ])
+    };
+    frame.render_widget(
+        Paragraph::new(options_line).wrap(Wrap { trim: true }),
+        layout[3],
+    );
+}
+
 fn draw_home_creation_area(frame: &mut Frame, app: &App, area: Rect, accent: Color, muted: Color) {
     match app.home_workflow {
         HomeWorkflow::Launcher => {
@@ -7574,22 +8050,23 @@ fn draw_home_creation_popup(frame: &mut Frame, app: &App, area: Rect, accent: Co
             draw_animation_panel_ui(frame, app, layout[3], accent, muted);
         }
     } else {
-        let drag_lines = drag_images_here_lines(
-            layout[3].width,
-            layout[3].height,
-            accent,
-            app.home_workflow_import_count,
-            matches!(
-                kind,
-                HomeCreationKind::AnimatedGlyph | HomeCreationKind::AnimatedGridGlyph
-            ),
-            app.animation_import_spinner_frame(),
-            app.home_workflow_grid_inline_notice.as_deref(),
-        );
-        frame.render_widget(
-            Paragraph::new(drag_lines).wrap(Wrap { trim: false }),
-            layout[3],
-        );
+        if is_animated_home_creation(kind) {
+            draw_animation_import_workflow_ui(frame, app, layout[3], accent, muted);
+        } else {
+            let drag_lines = drag_images_here_lines(
+                layout[3].width,
+                layout[3].height,
+                accent,
+                app.home_workflow_import_count,
+                false,
+                app.animation_import_spinner_frame(),
+                app.home_workflow_grid_inline_notice.as_deref(),
+            );
+            frame.render_widget(
+                Paragraph::new(drag_lines).wrap(Wrap { trim: false }),
+                layout[3],
+            );
+        }
     }
     frame.render_widget(
         Paragraph::new(Line::from(vec![
@@ -9963,12 +10440,14 @@ mod tests {
         animation_has_non_uniform_frame_invert, animation_has_non_uniform_frame_thresholds,
         composition_preview_lines_stable_frame, default_animation_name_from_frames,
         drag_images_here_lines, emitted_composition_cols, glyph_matches_animation_frame_source,
-        handle_key, handle_paste_event_for_test, import_image_files_to_input,
-        installed_animation_blocks_for_definition, installed_animation_frame_index,
-        installed_animation_source_block, persist_composition_definition, preview_leftmost_control,
-        preview_lines, prune_static_sample_blocks, scrollbar_thumb_geometry,
-        selected_threshold_sources, step_animation_preview, visible_window_bounds,
+        grayscale_options_are_default, handle_key, handle_paste_event_for_test,
+        import_image_files_to_input, installed_animation_blocks_for_definition,
+        installed_animation_frame_index, installed_animation_source_block,
+        persist_composition_definition, preview_leftmost_control, preview_lines,
+        prune_static_sample_blocks, scrollbar_thumb_geometry, selected_threshold_sources,
+        step_animation_preview, visible_window_bounds,
     };
+    use crate::animation_media;
     use crate::build::{CompositionTileInfo, PreprocessedGlyph};
     use crate::project::{AnimationDef, CompositionDef, Manifest, read_manifest, write_manifest};
     use anyhow::anyhow;
@@ -10989,6 +11468,125 @@ mod tests {
     }
 
     #[test]
+    fn animated_home_workflow_grayscale_toggle_is_on_by_default_and_toggles_with_keys() {
+        let project_dir = make_temp_dir("animated-home-grayscale-toggle");
+        let manifest_path = project_dir.join("petiglyph.toml");
+        write_manifest(&manifest_path, &Manifest::default()).expect("manifest is written");
+
+        let config = RuntimeConfig {
+            project_dir: project_dir.clone(),
+            project_id: "test-animated-home-grayscale-toggle".to_string(),
+            input_dir: project_dir.join("icons"),
+            out_dir: project_dir.join("build"),
+            font_name: "Petiglyph".to_string(),
+            glyph_size: 8,
+            base_threshold: 64,
+            threshold_overrides: BTreeMap::new(),
+            invert_overrides: BTreeMap::new(),
+            compositions: BTreeMap::new(),
+            animations: Vec::new(),
+            codepoint_start: 0x10_0000,
+        };
+        let mut app = App::new(manifest_path, config);
+        app.start_home_workflow(HomeCreationKind::AnimatedGlyph);
+
+        assert!(
+            app.animation_import_settings.grayscale_enabled,
+            "grayscale should default to enabled for animated imports"
+        );
+
+        handle_key(&mut app, KeyCode::Left).expect("left moves focus from Continue to options");
+        handle_key(&mut app, KeyCode::Left).expect("left moves focus from options to toggle");
+        handle_key(&mut app, KeyCode::Enter).expect("enter toggles grayscale");
+        assert!(
+            !app.animation_import_settings.grayscale_enabled,
+            "enter on grayscale toggle should disable grayscale"
+        );
+        assert!(
+            matches!(
+                app.home_workflow,
+                HomeWorkflow::Import(HomeCreationKind::AnimatedGlyph)
+            ),
+            "toggling grayscale should not leave the import step"
+        );
+
+        handle_key(&mut app, KeyCode::Down).expect("up/down also toggles grayscale");
+        assert!(
+            app.animation_import_settings.grayscale_enabled,
+            "down on grayscale toggle should re-enable grayscale"
+        );
+    }
+
+    #[test]
+    fn animated_home_workflow_grayscale_options_editor_commits_and_cancels() {
+        let project_dir = make_temp_dir("animated-home-grayscale-options");
+        let manifest_path = project_dir.join("petiglyph.toml");
+        write_manifest(&manifest_path, &Manifest::default()).expect("manifest is written");
+
+        let config = RuntimeConfig {
+            project_dir: project_dir.clone(),
+            project_id: "test-animated-home-grayscale-options".to_string(),
+            input_dir: project_dir.join("icons"),
+            out_dir: project_dir.join("build"),
+            font_name: "Petiglyph".to_string(),
+            glyph_size: 8,
+            base_threshold: 64,
+            threshold_overrides: BTreeMap::new(),
+            invert_overrides: BTreeMap::new(),
+            compositions: BTreeMap::new(),
+            animations: Vec::new(),
+            codepoint_start: 0x10_0000,
+        };
+        let mut app = App::new(manifest_path, config);
+        app.start_home_workflow(HomeCreationKind::AnimatedGlyph);
+
+        handle_key(&mut app, KeyCode::Left).expect("left focuses options");
+        handle_key(&mut app, KeyCode::Enter).expect("enter opens grayscale options editor");
+        assert!(
+            app.animation_import_settings.grayscale_editor.is_some(),
+            "options editor should be opened"
+        );
+
+        handle_key(&mut app, KeyCode::Up).expect("up adjusts brightness");
+        handle_key(&mut app, KeyCode::Right).expect("right focuses contrast");
+        handle_key(&mut app, KeyCode::Up).expect("up adjusts contrast");
+        handle_key(&mut app, KeyCode::Esc).expect("esc cancels options edit");
+        assert!(
+            app.animation_import_settings.grayscale_editor.is_none(),
+            "editor should close on esc"
+        );
+        assert_eq!(
+            app.animation_import_settings.grayscale_options,
+            animation_media::AnimationGrayscaleOptions::default(),
+            "esc should restore prior grayscale options"
+        );
+        assert!(
+            matches!(
+                app.home_workflow,
+                HomeWorkflow::Import(HomeCreationKind::AnimatedGlyph)
+            ),
+            "esc in editor should not cancel the workflow"
+        );
+
+        handle_key(&mut app, KeyCode::Enter).expect("enter reopens grayscale options editor");
+        handle_key(&mut app, KeyCode::Up).expect("up adjusts brightness");
+        handle_key(&mut app, KeyCode::Right).expect("right focuses contrast");
+        handle_key(&mut app, KeyCode::Up).expect("up adjusts contrast");
+        handle_key(&mut app, KeyCode::Right).expect("right focuses gamma");
+        handle_key(&mut app, KeyCode::Up).expect("up adjusts gamma");
+        handle_key(&mut app, KeyCode::Enter).expect("enter commits edited grayscale options");
+
+        let options = app.animation_import_settings.grayscale_options;
+        assert_eq!(options.brightness, 1);
+        assert_eq!(options.contrast, 1);
+        assert_eq!(options.gamma_percent, 105);
+        assert!(
+            !grayscale_options_are_default(options),
+            "committed knobs should mark options as non-default"
+        );
+    }
+
+    #[test]
     fn create_grid_animation_sorts_frames_naturally_before_persisting() {
         let project_dir = make_temp_dir("animation-frame-natural-sort");
         let manifest_path = project_dir.join("petiglyph.toml");
@@ -11456,7 +12054,8 @@ mod tests {
             "very small regions should skip drag placeholder rendering"
         );
 
-        let lines = drag_images_here_lines(40, 7, ratatui::style::Color::Cyan, 3, false, None, None);
+        let lines =
+            drag_images_here_lines(40, 7, ratatui::style::Color::Cyan, 3, false, None, None);
         assert_eq!(lines.len(), 7, "placeholder should fill requested height");
         let rendered = lines
             .iter()
