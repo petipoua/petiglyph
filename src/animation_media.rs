@@ -202,7 +202,7 @@ fn import_expanded_frames(
             );
         }
         if processing.grayscale_enabled {
-            apply_grayscale_processing_in_place(frame_path, processing.grayscale)?;
+            apply_grayscale_processing_to_image_file(frame_path, processing.grayscale)?;
         }
 
         let deterministic_name = format!("{stem}--pgf-{media_hash}-f{:06}.png", idx + 1);
@@ -220,7 +220,7 @@ fn import_expanded_frames(
     Ok(())
 }
 
-fn apply_grayscale_processing_in_place(
+pub(crate) fn apply_grayscale_processing_to_image_file(
     frame_path: &Path,
     options: AnimationGrayscaleOptions,
 ) -> Result<()> {

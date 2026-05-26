@@ -8,6 +8,7 @@ use crossterm::event::{
 use crossterm::terminal::{
     EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode,
 };
+use image::{Rgba, RgbaImage};
 use ratatui::backend::CrosstermBackend;
 use ratatui::layout::{Alignment, Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
@@ -39,6 +40,7 @@ use crate::build::{
     preprocess_sources_with_compositions_and_standard_sources,
 };
 use crate::glyph_debug;
+use crate::image_pipeline::preprocess_standard_source;
 use crate::install::{
     DEFAULT_INSTALL_NAME_MODE, FontInstallNameMode, effective_font_name,
     expected_install_ttf_path_for_mode, install_built_font, install_dir_for_manifest,
@@ -83,6 +85,8 @@ const GRAYSCALE_CONTRAST_MIN: i16 = -80;
 const GRAYSCALE_CONTRAST_MAX: i16 = 80;
 const GRAYSCALE_GAMMA_MIN: u16 = 50;
 const GRAYSCALE_GAMMA_MAX: u16 = 200;
+const EXPORT_TEST_FRAMES_MIN: u16 = 1;
+const EXPORT_TEST_FRAMES_MAX: u16 = 120;
 static HTY_FULL_REPAINT_ENABLED: OnceLock<bool> = OnceLock::new();
 
 #[derive(Debug, Clone, Default)]
@@ -356,6 +360,7 @@ enum AnimationConfigFocus {
 enum AnimationImportSettingsFocus {
     GrayscaleToggle,
     GrayscaleOptionsButton,
+    ExportTestImageButton,
     Continue,
 }
 
@@ -379,6 +384,8 @@ struct AnimationImportSettingsState {
     grayscale_enabled: bool,
     grayscale_options: animation_media::AnimationGrayscaleOptions,
     grayscale_editor: Option<GrayscaleOptionsEditor>,
+    export_frame_count: u16,
+    last_exported_test_image: Option<PathBuf>,
 }
 
 impl Default for AnimationImportSettingsState {
@@ -388,6 +395,8 @@ impl Default for AnimationImportSettingsState {
             grayscale_enabled: true,
             grayscale_options: animation_media::AnimationGrayscaleOptions::default(),
             grayscale_editor: None,
+            export_frame_count: 5,
+            last_exported_test_image: None,
         }
     }
 }
@@ -471,6 +480,7 @@ pub(crate) struct App {
     home_workflow: HomeWorkflow,
     home_workflow_import_count: usize,
     animation_import_settings: AnimationImportSettingsState,
+    home_workflow_recent_imported_source_keys: Vec<String>,
     home_workflow_grid_source_key: Option<String>,
     home_workflow_grid_inline_notice: Option<String>,
     home_workflow_error: Option<String>,
@@ -2729,6 +2739,141 @@ fn grayscale_options_are_default(options: animation_media::AnimationGrayscaleOpt
     options == animation_media::AnimationGrayscaleOptions::default()
 }
 
+fn signed_filename_value(value: i16) -> String {
+    if value < 0 {
+        format!("m{}", i32::from(value).unsigned_abs())
+    } else {
+        format!("p{}", value)
+    }
+}
+
+fn render_test_image_from_single_glyph(glyph: &InteractiveGlyph) -> Result<RgbaImage> {
+    render_test_image_from_coverage(
+        &glyph.glyph.coverage,
+        glyph.glyph.width,
+        glyph.glyph.height,
+        glyph.working_threshold,
+        glyph.working_invert,
+        &glyph.glyph.source_parent_key,
+    )
+}
+
+fn render_test_image_from_composition_tiles(
+    rows: usize,
+    cols: usize,
+    tiles: &[&InteractiveGlyph],
+) -> Result<Option<RgbaImage>> {
+    let Some(first_tile) = tiles.first() else {
+        return Ok(None);
+    };
+    if rows == 0 || cols == 0 {
+        return Ok(None);
+    }
+
+    let tile_w = usize::try_from(first_tile.glyph.width).context("tile width overflow")?;
+    let tile_h = usize::try_from(first_tile.glyph.height).context("tile height overflow")?;
+    let out_w = tile_w
+        .checked_mul(cols)
+        .ok_or_else(|| anyhow::anyhow!("composition width overflow"))?;
+    let out_h = tile_h
+        .checked_mul(rows)
+        .ok_or_else(|| anyhow::anyhow!("composition height overflow"))?;
+
+    let mut image = RgbaImage::from_pixel(out_w as u32, out_h as u32, Rgba([255, 255, 255, 0]));
+    let mut wrote_pixels = false;
+
+    for tile in tiles {
+        let Some(tile_info) = tile.glyph.composition_tile else {
+            continue;
+        };
+        if tile_info.row >= rows || tile_info.col >= cols {
+            continue;
+        }
+        let width = usize::try_from(tile.glyph.width).context("tile width overflow")?;
+        let height = usize::try_from(tile.glyph.height).context("tile height overflow")?;
+        let expected = width
+            .checked_mul(height)
+            .ok_or_else(|| anyhow::anyhow!("tile pixel count overflow"))?;
+        if tile.glyph.coverage.len() != expected {
+            bail!(
+                "tile coverage mismatch for {} (expected {}, got {})",
+                tile.glyph.source_key,
+                expected,
+                tile.glyph.coverage.len()
+            );
+        }
+        let x_offset = tile_info
+            .col
+            .checked_mul(tile_w)
+            .ok_or_else(|| anyhow::anyhow!("tile x offset overflow"))?;
+        let y_offset = tile_info
+            .row
+            .checked_mul(tile_h)
+            .ok_or_else(|| anyhow::anyhow!("tile y offset overflow"))?;
+
+        for y in 0..height {
+            for x in 0..width {
+                let idx = y
+                    .checked_mul(width)
+                    .and_then(|v| v.checked_add(x))
+                    .ok_or_else(|| anyhow::anyhow!("tile raster index overflow"))?;
+                let on = (tile.glyph.coverage[idx] >= tile.working_threshold) ^ tile.working_invert;
+                if on {
+                    image.put_pixel(
+                        (x_offset + x) as u32,
+                        (y_offset + y) as u32,
+                        Rgba([0, 0, 0, 255]),
+                    );
+                    wrote_pixels = true;
+                }
+            }
+        }
+    }
+    if wrote_pixels {
+        Ok(Some(image))
+    } else {
+        Ok(None)
+    }
+}
+
+fn render_test_image_from_coverage(
+    coverage: &[u8],
+    width_u32: u32,
+    height_u32: u32,
+    threshold: u8,
+    invert: bool,
+    context_key: &str,
+) -> Result<RgbaImage> {
+    let width = usize::try_from(width_u32).context("glyph width overflow")?;
+    let height = usize::try_from(height_u32).context("glyph height overflow")?;
+    let expected = width
+        .checked_mul(height)
+        .ok_or_else(|| anyhow::anyhow!("glyph pixel count overflow"))?;
+    if coverage.len() != expected {
+        bail!(
+            "glyph coverage mismatch for {} (expected {}, got {})",
+            context_key,
+            expected,
+            coverage.len()
+        );
+    }
+
+    let mut image = RgbaImage::from_pixel(width_u32, height_u32, Rgba([255, 255, 255, 0]));
+    for y in 0..height {
+        for x in 0..width {
+            let idx = y
+                .checked_mul(width)
+                .and_then(|v| v.checked_add(x))
+                .ok_or_else(|| anyhow::anyhow!("glyph raster index overflow"))?;
+            let on = (coverage[idx] >= threshold) ^ invert;
+            if on {
+                image.put_pixel(x as u32, y as u32, Rgba([0, 0, 0, 255]));
+            }
+        }
+    }
+    Ok(image)
+}
+
 fn move_import_settings_focus_left(settings: &mut AnimationImportSettingsState) {
     settings.focus = match settings.focus {
         AnimationImportSettingsFocus::GrayscaleToggle => {
@@ -2737,8 +2882,11 @@ fn move_import_settings_focus_left(settings: &mut AnimationImportSettingsState) 
         AnimationImportSettingsFocus::GrayscaleOptionsButton => {
             AnimationImportSettingsFocus::GrayscaleToggle
         }
-        AnimationImportSettingsFocus::Continue => {
+        AnimationImportSettingsFocus::ExportTestImageButton => {
             AnimationImportSettingsFocus::GrayscaleOptionsButton
+        }
+        AnimationImportSettingsFocus::Continue => {
+            AnimationImportSettingsFocus::ExportTestImageButton
         }
     };
 }
@@ -2749,6 +2897,9 @@ fn move_import_settings_focus_right(settings: &mut AnimationImportSettingsState)
             AnimationImportSettingsFocus::GrayscaleOptionsButton
         }
         AnimationImportSettingsFocus::GrayscaleOptionsButton => {
+            AnimationImportSettingsFocus::ExportTestImageButton
+        }
+        AnimationImportSettingsFocus::ExportTestImageButton => {
             AnimationImportSettingsFocus::Continue
         }
         AnimationImportSettingsFocus::Continue => AnimationImportSettingsFocus::Continue,
@@ -2856,6 +3007,30 @@ fn handle_animation_import_settings_key(app: &mut App, key: KeyEvent) -> Result<
                 ));
                 return Ok(true);
             }
+            if app.animation_import_settings.focus
+                == AnimationImportSettingsFocus::ExportTestImageButton
+                && matches!(
+                    app.home_workflow,
+                    HomeWorkflow::Import(HomeCreationKind::AnimatedGlyph)
+                        | HomeWorkflow::Import(HomeCreationKind::AnimatedGridGlyph)
+                )
+            {
+                let step = if matches!(key.code, KeyCode::Up | KeyCode::Char('k')) {
+                    1
+                } else {
+                    -1
+                };
+                let next = i32::from(app.animation_import_settings.export_frame_count) + step;
+                app.animation_import_settings.export_frame_count = next.clamp(
+                    i32::from(EXPORT_TEST_FRAMES_MIN),
+                    i32::from(EXPORT_TEST_FRAMES_MAX),
+                ) as u16;
+                app.status = Some(format!(
+                    "test-image export frame count set to {}",
+                    app.animation_import_settings.export_frame_count
+                ));
+                return Ok(true);
+            }
             Ok(true)
         }
         KeyCode::Enter => match app.animation_import_settings.focus {
@@ -2885,6 +3060,10 @@ fn handle_animation_import_settings_key(app: &mut App, key: KeyEvent) -> Result<
                 );
                 Ok(true)
             }
+            AnimationImportSettingsFocus::ExportTestImageButton => {
+                app.export_animation_import_test_image()?;
+                Ok(true)
+            }
             AnimationImportSettingsFocus::Continue => Ok(false),
         },
         _ => Ok(false),
@@ -2894,7 +3073,7 @@ fn handle_animation_import_settings_key(app: &mut App, key: KeyEvent) -> Result<
 fn handle_home_creation_key(app: &mut App, key: KeyEvent) -> Result<()> {
     match app.home_workflow {
         HomeWorkflow::Import(kind) => {
-            if is_animated_home_creation(kind) && handle_animation_import_settings_key(app, key)? {
+            if handle_animation_import_settings_key(app, key)? {
                 return Ok(());
             }
             match key.code {
@@ -3966,15 +4145,16 @@ impl App {
     fn start_home_workflow(&mut self, kind: HomeCreationKind) {
         self.home_workflow = HomeWorkflow::Import(kind);
         self.home_workflow_import_count = 0;
+        self.home_workflow_recent_imported_source_keys.clear();
         self.home_workflow_grid_source_key = None;
         self.home_workflow_grid_inline_notice = None;
         self.home_workflow_error = None;
+        self.animation_import_settings = AnimationImportSettingsState::default();
         if matches!(
             kind,
             HomeCreationKind::AnimatedGlyph | HomeCreationKind::AnimatedGridGlyph
         ) {
             self.clear_animation_draft();
-            self.animation_import_settings = AnimationImportSettingsState::default();
             self.glyph_tool_mode = GlyphToolMode::ImportAnimationFrames;
             self.selecting_for_animation_frames = true;
         }
@@ -3983,6 +4163,7 @@ impl App {
     fn reset_home_workflow(&mut self) {
         self.home_workflow = HomeWorkflow::Launcher;
         self.home_workflow_import_count = 0;
+        self.home_workflow_recent_imported_source_keys.clear();
         self.animation_import_settings = AnimationImportSettingsState::default();
         self.home_workflow_grid_source_key = None;
         self.home_workflow_grid_inline_notice = None;
@@ -4278,6 +4459,7 @@ impl App {
             home_workflow: HomeWorkflow::Launcher,
             home_workflow_import_count: 0,
             animation_import_settings: AnimationImportSettingsState::default(),
+            home_workflow_recent_imported_source_keys: Vec::new(),
             home_workflow_grid_source_key: None,
             home_workflow_grid_inline_notice: None,
             home_workflow_error: None,
@@ -4361,6 +4543,7 @@ impl App {
             home_workflow: HomeWorkflow::Launcher,
             home_workflow_import_count: 0,
             animation_import_settings: AnimationImportSettingsState::default(),
+            home_workflow_recent_imported_source_keys: Vec::new(),
             home_workflow_grid_source_key: None,
             home_workflow_grid_inline_notice: None,
             home_workflow_error: None,
@@ -5111,11 +5294,21 @@ impl App {
             return Ok(());
         }
 
+        let processing = if matches!(self.home_workflow, HomeWorkflow::Import(_)) {
+            animation_import_processing_options(&self.animation_import_settings)
+        } else {
+            animation_media::AnimationImportProcessingOptions {
+                grayscale_enabled: false,
+                ..Default::default()
+            }
+        };
         let import = import_image_files_to_input(
             &self.config.input_dir,
             payload,
             ExistingImportPolicy::Rename,
+            processing,
         )?;
+        self.home_workflow_recent_imported_source_keys = import.imported_source_keys.clone();
 
         if matches!(
             self.home_workflow,
@@ -5230,6 +5423,194 @@ impl App {
         });
         self.status = Some("loading animation frames...".to_string());
         Ok(())
+    }
+
+    fn export_animation_import_test_image(&mut self) -> Result<()> {
+        if self.animation_import_task.is_some() {
+            self.status = Some("wait for frame import to finish before exporting".to_string());
+            return Ok(());
+        }
+        let source_keys = self.test_image_export_source_keys();
+        if source_keys.is_empty() {
+            self.status = Some("import at least one source image first".to_string());
+            return Ok(());
+        }
+
+        let test_images_dir = self.config.project_dir.join("test-images");
+        fs::create_dir_all(&test_images_dir)
+            .with_context(|| format!("failed to create {}", test_images_dir.display()))?;
+        let now_ms = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system clock should be after unix epoch")
+            .as_millis();
+        let grayscale_enabled = self.animation_import_settings.grayscale_enabled;
+        let grayscale_options = self.animation_import_settings.grayscale_options;
+        let mut first_out_path: Option<PathBuf> = None;
+        let mut exported = 0usize;
+
+        for (index, source_key) in source_keys.iter().enumerate() {
+            let Some((image, threshold, invert, is_composed)) =
+                self.render_test_image_for_source(source_key)?
+            else {
+                continue;
+            };
+            let source_slug = slugify(source_key).trim_matches('_').to_string();
+            let source_label = if source_slug.is_empty() {
+                "frame".to_string()
+            } else {
+                source_slug
+            };
+            let filename = format!(
+                "import_test_{}_{}_gray_{}_b{}_c{}_g{}_th{:03}_inv{}_{}_f{:03}.png",
+                if is_composed { "composition" } else { "source" },
+                source_label,
+                if grayscale_enabled { "on" } else { "off" },
+                signed_filename_value(grayscale_options.brightness),
+                signed_filename_value(grayscale_options.contrast),
+                grayscale_options.gamma_percent,
+                threshold,
+                if invert { 1 } else { 0 },
+                now_ms,
+                index + 1
+            );
+            let out_path = test_images_dir.join(filename);
+            image
+                .save(&out_path)
+                .with_context(|| format!("failed to save {}", out_path.display()))?;
+            if first_out_path.is_none() {
+                first_out_path = Some(out_path.clone());
+            }
+            exported += 1;
+        }
+
+        if exported == 0 {
+            self.status = Some("no matching glyph coverage found for exported sources".to_string());
+            return Ok(());
+        }
+
+        if let Some(first_out_path) = first_out_path {
+            self.animation_import_settings.last_exported_test_image = Some(first_out_path.clone());
+            self.status = Some(format!(
+                "exported {} test image(s) to {}",
+                exported,
+                test_images_dir.display()
+            ));
+        }
+        Ok(())
+    }
+
+    fn test_image_export_source_keys(&self) -> Vec<String> {
+        if matches!(
+            self.home_workflow,
+            HomeWorkflow::Import(HomeCreationKind::AnimatedGlyph)
+                | HomeWorkflow::Import(HomeCreationKind::AnimatedGridGlyph)
+        ) {
+            let limit = usize::from(self.animation_import_settings.export_frame_count);
+            return self
+                .animation_selection_order
+                .iter()
+                .take(limit)
+                .cloned()
+                .collect();
+        }
+        if matches!(
+            self.home_workflow,
+            HomeWorkflow::Import(HomeCreationKind::Grid)
+        ) {
+            return self
+                .home_workflow_grid_source_key
+                .iter()
+                .cloned()
+                .collect::<Vec<_>>();
+        }
+        self.home_workflow_recent_imported_source_keys
+            .last()
+            .cloned()
+            .into_iter()
+            .collect()
+    }
+
+    fn render_test_image_for_source(
+        &self,
+        source_key: &str,
+    ) -> Result<Option<(RgbaImage, u8, bool, bool)>> {
+        if let Some(def) = self.config.compositions.get(source_key) {
+            let rows = def.rows;
+            let cols = emitted_composition_cols(def.cols);
+            let tiles = self
+                .glyphs
+                .iter()
+                .filter(|glyph| {
+                    glyph.glyph.source_parent_key == source_key
+                        && glyph.glyph.composition_tile.is_some()
+                })
+                .collect::<Vec<_>>();
+            if let Some(image) = render_test_image_from_composition_tiles(rows, cols, &tiles)? {
+                let threshold = tiles
+                    .first()
+                    .map(|glyph| glyph.working_threshold)
+                    .unwrap_or(self.config.base_threshold);
+                let invert = tiles
+                    .first()
+                    .map(|glyph| glyph.working_invert)
+                    .unwrap_or(false);
+                return Ok(Some((image, threshold, invert, true)));
+            }
+        }
+
+        let Some(active) = self
+            .glyphs
+            .iter()
+            .find(|glyph| {
+                glyph.glyph.source_parent_key == source_key
+                    && glyph.glyph.composition_tile.is_none()
+            })
+            .or_else(|| {
+                self.glyphs
+                    .iter()
+                    .find(|glyph| glyph.glyph.source_parent_key == source_key)
+            })
+        else {
+            let source_path = self.config.input_dir.join(source_key);
+            if !source_path.is_file() || !is_supported_source(&source_path) {
+                return Ok(None);
+            }
+            let threshold = self
+                .config
+                .threshold_overrides
+                .get(source_key)
+                .copied()
+                .unwrap_or(self.config.base_threshold);
+            let invert = self
+                .config
+                .invert_overrides
+                .get(source_key)
+                .copied()
+                .unwrap_or(false);
+            let coverage = preprocess_standard_source(
+                &source_path,
+                self.config.glyph_size,
+                self.config.glyph_size,
+                source_key,
+            )?;
+            let image = render_test_image_from_coverage(
+                &coverage,
+                self.config.glyph_size,
+                self.config.glyph_size,
+                threshold,
+                invert,
+                source_key,
+            )?;
+            return Ok(Some((image, threshold, invert, false)));
+        };
+
+        let image = render_test_image_from_single_glyph(active)?;
+        Ok(Some((
+            image,
+            active.working_threshold,
+            active.working_invert,
+            active.glyph.composition_tile.is_some(),
+        )))
     }
 
     fn start_build_project(&mut self) -> Result<()> {
@@ -7653,22 +8034,26 @@ fn draw_animation_import_workflow_ui(
     area: Rect,
     accent: Color,
     muted: Color,
+    kind: HomeCreationKind,
 ) {
+    let title = match kind {
+        HomeCreationKind::AnimatedGlyph | HomeCreationKind::AnimatedGridGlyph => {
+            " Animation Frame Import "
+        }
+        HomeCreationKind::Glyph | HomeCreationKind::Grid => " Source Image Import ",
+    };
     let block = Block::default()
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
         .border_style(Style::default().fg(muted))
-        .title(Span::styled(
-            " Animation Frame Import ",
-            Style::default().fg(accent),
-        ));
+        .title(Span::styled(title, Style::default().fg(accent)));
     let inner = block.inner(area);
     frame.render_widget(block, area);
 
     let layout = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(5),
+            Constraint::Length(8),
             Constraint::Length(3),
             Constraint::Length(3),
             Constraint::Min(0),
@@ -7676,28 +8061,47 @@ fn draw_animation_import_workflow_ui(
         .margin(1)
         .split(inner);
 
-    let mut import_lines = vec![
-        Line::from(""),
-        Line::from("  Drop, paste, or drag media files here."),
-    ];
-    if let Some(spinner) = app.animation_import_spinner_frame() {
-        import_lines.push(Line::from(format!(
-            "  {spinner} Loading animation frames..."
-        )));
-    } else {
-        import_lines.push(Line::from(format!(
-            "  Current draft frames: {}",
-            app.animation_selection_order.len()
-        )));
-    }
-    frame.render_widget(
-        Paragraph::new(import_lines).block(
-            Block::default()
-                .borders(Borders::ALL)
-                .border_style(Style::default().fg(muted)),
-        ),
-        layout[0],
+    let animation_media_mode = matches!(
+        kind,
+        HomeCreationKind::AnimatedGlyph | HomeCreationKind::AnimatedGridGlyph
     );
+    let imported_count = if animation_media_mode {
+        app.animation_selection_order.len()
+    } else {
+        app.home_workflow_import_count
+    };
+    let processing_spinner = if animation_media_mode {
+        app.animation_import_spinner_frame()
+    } else {
+        None
+    };
+    let inline_notice = if matches!(kind, HomeCreationKind::Grid) {
+        app.home_workflow_grid_inline_notice.as_deref()
+    } else {
+        None
+    };
+    let drag_lines = drag_images_here_lines(
+        layout[0].width,
+        layout[0].height,
+        accent,
+        imported_count,
+        animation_media_mode,
+        processing_spinner,
+        inline_notice,
+    );
+    if drag_lines.is_empty() {
+        let fallback = if animation_media_mode {
+            " Drop, paste, or drag media files here."
+        } else {
+            " Drop, paste, or drag image files here."
+        };
+        frame.render_widget(Paragraph::new(fallback), layout[0]);
+    } else {
+        frame.render_widget(
+            Paragraph::new(drag_lines).wrap(Wrap { trim: false }),
+            layout[0],
+        );
+    }
 
     let focused_style = Style::default()
         .fg(Color::Black)
@@ -7722,6 +8126,8 @@ fn draw_animation_import_workflow_ui(
             Constraint::Length(34),
             Constraint::Length(2),
             Constraint::Length(26),
+            Constraint::Length(2),
+            Constraint::Length(20),
             Constraint::Length(2),
             Constraint::Length(13),
             Constraint::Min(0),
@@ -7776,6 +8182,24 @@ fn draw_animation_import_workflow_ui(
             .style(options_style),
         row[2],
     );
+    let export_style = if app.animation_import_settings.focus
+        == AnimationImportSettingsFocus::ExportTestImageButton
+        && app.animation_import_settings.grayscale_editor.is_none()
+    {
+        focused_style
+    } else {
+        idle_style
+    };
+    frame.render_widget(
+        Paragraph::new(" Export Test Image ")
+            .block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .border_style(export_style),
+            )
+            .style(export_style),
+        row[4],
+    );
     frame.render_widget(
         Paragraph::new(" Continue ")
             .alignment(Alignment::Center)
@@ -7785,7 +8209,7 @@ fn draw_animation_import_workflow_ui(
                     .border_style(continue_style),
             )
             .style(continue_style),
-        row[4],
+        row[6],
     );
 
     let options_line = if let Some(editor) = &app.animation_import_settings.grayscale_editor {
@@ -7848,6 +8272,19 @@ fn draw_animation_import_workflow_ui(
             ),
         ])
     } else {
+        if let Some(path) = &app.animation_import_settings.last_exported_test_image {
+            frame.render_widget(
+                Paragraph::new(Line::from(vec![
+                    Span::styled(" Last export: ", Style::default().fg(accent)),
+                    Span::styled(
+                        path.display().to_string(),
+                        Style::default().fg(Color::White),
+                    ),
+                ]))
+                .wrap(Wrap { trim: true }),
+                layout[2],
+            );
+        }
         let summary = app.animation_import_settings.grayscale_options;
         let marker = if grayscale_options_are_default(summary) {
             "default"
@@ -7866,8 +8303,22 @@ fn draw_animation_import_workflow_ui(
                 Style::default().fg(Color::White),
             ),
             Span::raw("  "),
+            if matches!(
+                kind,
+                HomeCreationKind::AnimatedGlyph | HomeCreationKind::AnimatedGridGlyph
+            ) {
+                Span::styled(
+                    format!(
+                        "Frames: {} (focus Export + Up/Down)  ",
+                        app.animation_import_settings.export_frame_count
+                    ),
+                    Style::default().fg(accent),
+                )
+            } else {
+                Span::raw("")
+            },
             Span::styled(
-                "Left/Right focus, Enter to toggle/open/continue, Up/Down toggles grayscale.",
+                "Left/Right focus, Enter toggle/open/export/continue.",
                 Style::default().fg(muted),
             ),
         ])
@@ -8136,23 +8587,7 @@ fn draw_home_creation_popup(frame: &mut Frame, app: &App, area: Rect, accent: Co
             draw_animation_panel_ui(frame, app, layout[3], accent, muted);
         }
     } else {
-        if is_animated_home_creation(kind) {
-            draw_animation_import_workflow_ui(frame, app, layout[3], accent, muted);
-        } else {
-            let drag_lines = drag_images_here_lines(
-                layout[3].width,
-                layout[3].height,
-                accent,
-                app.home_workflow_import_count,
-                false,
-                app.animation_import_spinner_frame(),
-                app.home_workflow_grid_inline_notice.as_deref(),
-            );
-            frame.render_widget(
-                Paragraph::new(drag_lines).wrap(Wrap { trim: false }),
-                layout[3],
-            );
-        }
+        draw_animation_import_workflow_ui(frame, app, layout[3], accent, muted, kind);
     }
     frame.render_widget(
         Paragraph::new(Line::from(vec![
@@ -9811,12 +10246,11 @@ fn glyph_source_fingerprint(input_dir: &Path) -> Result<u64> {
 }
 
 fn collect_dropped_paths(payload: &str) -> Vec<PathBuf> {
-    let normalized = payload.replace("\r\n", "\n").replace('\r', "\n");
-    let mut fragments = Vec::new();
-    let trimmed = normalized.trim();
-    if !trimmed.is_empty() {
-        fragments.push(trimmed.to_string());
+    let mut normalized = payload.replace("\r\n", "\n").replace('\r', "\n");
+    if normalized.contains("file://") {
+        normalized = normalized.replace("file://", "\nfile://");
     }
+    let mut fragments = Vec::new();
     for line in normalized.lines() {
         let line = line.trim();
         if !line.is_empty() {
@@ -9843,6 +10277,17 @@ fn collect_dropped_paths(payload: &str) -> Vec<PathBuf> {
     }
 
     out
+}
+
+fn should_apply_static_import_grayscale(path: &Path) -> bool {
+    path.extension()
+        .and_then(|ext| ext.to_str())
+        .is_some_and(|ext| {
+            matches!(
+                ext.to_ascii_lowercase().as_str(),
+                "png" | "jpg" | "jpeg" | "bmp"
+            )
+        })
 }
 
 fn split_shell_like_tokens(input: &str) -> Vec<String> {
@@ -10072,6 +10517,7 @@ fn import_image_files_to_input(
     input_dir: &Path,
     payload: &str,
     existing_policy: ExistingImportPolicy,
+    processing: animation_media::AnimationImportProcessingOptions,
 ) -> Result<DropImportResult> {
     fs::create_dir_all(input_dir)
         .with_context(|| format!("failed to create {}", input_dir.display()))?;
@@ -10134,6 +10580,12 @@ fn import_image_files_to_input(
                 destination.display()
             )
         })?;
+        if processing.grayscale_enabled && should_apply_static_import_grayscale(&destination) {
+            let _ = animation_media::apply_grayscale_processing_to_image_file(
+                &destination,
+                processing.grayscale,
+            );
+        }
 
         imported_source_keys.push(source_key_from_input_path(input_dir, &destination));
         imported += 1;
@@ -10556,6 +11008,7 @@ mod tests {
         GlyphPreviewControl, HomeCreationKind, HomeWorkflow, InteractiveGlyph, KeyCode,
         RuntimeConfig, VisibleGlyphRow, animation_frame_source_for_preview,
         animation_has_non_uniform_frame_invert, animation_has_non_uniform_frame_thresholds,
+        collect_dropped_paths,
         composition_preview_lines_stable_frame, default_animation_name_from_frames,
         drag_images_here_lines, emitted_composition_cols, glyph_matches_animation_frame_source,
         grayscale_options_are_default, handle_key, handle_paste_event_for_test,
@@ -11410,6 +11863,10 @@ mod tests {
             &input_dir,
             &external_dir.join("frame.png").display().to_string(),
             ExistingImportPolicy::ReuseIdentical,
+            animation_media::AnimationImportProcessingOptions {
+                grayscale_enabled: false,
+                ..Default::default()
+            },
         )
         .expect("import should succeed");
 
@@ -11619,7 +12076,8 @@ mod tests {
             "grayscale should default to enabled for animated imports"
         );
 
-        handle_key(&mut app, KeyCode::Left).expect("left moves focus from Continue to options");
+        handle_key(&mut app, KeyCode::Left).expect("left moves focus from Continue to export");
+        handle_key(&mut app, KeyCode::Left).expect("left moves focus from export to options");
         handle_key(&mut app, KeyCode::Left).expect("left moves focus from options to toggle");
         handle_key(&mut app, KeyCode::Enter).expect("enter toggles grayscale");
         assert!(
@@ -11664,7 +12122,8 @@ mod tests {
         let mut app = App::new(manifest_path, config);
         app.start_home_workflow(HomeCreationKind::AnimatedGlyph);
 
-        handle_key(&mut app, KeyCode::Left).expect("left focuses options");
+        handle_key(&mut app, KeyCode::Left).expect("left moves focus from Continue to export");
+        handle_key(&mut app, KeyCode::Left).expect("left moves focus from export to options");
         handle_key(&mut app, KeyCode::Enter).expect("enter opens grayscale options editor");
         assert!(
             app.animation_import_settings.grayscale_editor.is_some(),
@@ -11707,6 +12166,261 @@ mod tests {
         assert!(
             !grayscale_options_are_default(options),
             "committed knobs should mark options as non-default"
+        );
+    }
+
+    #[test]
+    fn animated_home_workflow_can_export_test_image_into_project_test_images() {
+        let project_dir = make_temp_dir("animated-home-export-test-image");
+        let manifest_path = project_dir.join("petiglyph.toml");
+        write_manifest(&manifest_path, &Manifest::default()).expect("manifest is written");
+
+        let config = RuntimeConfig {
+            project_dir: project_dir.clone(),
+            project_id: "test-animated-home-export-test-image".to_string(),
+            input_dir: project_dir.join("icons"),
+            out_dir: project_dir.join("build"),
+            font_name: "Petiglyph".to_string(),
+            glyph_size: 8,
+            base_threshold: 64,
+            threshold_overrides: BTreeMap::new(),
+            invert_overrides: BTreeMap::new(),
+            compositions: BTreeMap::new(),
+            animations: Vec::new(),
+            codepoint_start: 0x10_0000,
+        };
+        let mut app = App::new(manifest_path, config);
+        app.start_home_workflow(HomeCreationKind::AnimatedGlyph);
+        app.animation_selection_order = vec!["runner_01.png".to_string()];
+        app.glyphs = vec![InteractiveGlyph {
+            glyph: PreprocessedGlyph {
+                source_path: PathBuf::from("icons/runner_01.png"),
+                source_key: "runner_01.png".to_string(),
+                source_parent_key: "runner_01.png".to_string(),
+                glyph_name: "runner_01".to_string(),
+                width: 2,
+                height: 2,
+                coverage: vec![255, 0, 0, 255],
+                image_fingerprint: "fnv1a64:test-runner".to_string(),
+                composition_tile: None,
+            },
+            working_threshold: 64,
+            saved_threshold: None,
+            saved_invert: false,
+            working_invert: false,
+        }];
+        app.animation_import_settings.focus =
+            super::AnimationImportSettingsFocus::ExportTestImageButton;
+
+        handle_key(&mut app, KeyCode::Enter).expect("enter exports test image from import step");
+
+        let test_images_dir = project_dir.join("test-images");
+        let entries = fs::read_dir(&test_images_dir)
+            .expect("test-images dir exists")
+            .collect::<Result<Vec<_>, _>>()
+            .expect("test-images entries are readable");
+        assert_eq!(entries.len(), 1, "one preview file should be exported");
+        let file_name = entries[0]
+            .file_name()
+            .into_string()
+            .expect("filename should be valid unicode");
+        assert!(
+            file_name.contains("import_test_source_runner_01_png"),
+            "filename should include source key slug"
+        );
+        assert!(
+            file_name.contains("gray_on_bp0_cp0_g100_th064"),
+            "filename should include grayscale and threshold parameters"
+        );
+        assert!(
+            app.animation_import_settings
+                .last_exported_test_image
+                .as_ref()
+                .is_some_and(|path| path.starts_with(&test_images_dir)),
+            "import settings should retain last exported test image path"
+        );
+    }
+
+    #[test]
+    fn animated_home_workflow_export_frame_count_knob_adjusts_on_export_focus() {
+        let project_dir = make_temp_dir("animated-home-export-frame-count");
+        let manifest_path = project_dir.join("petiglyph.toml");
+        write_manifest(&manifest_path, &Manifest::default()).expect("manifest is written");
+        let config = RuntimeConfig {
+            project_dir: project_dir.clone(),
+            project_id: "test-animated-home-export-frame-count".to_string(),
+            input_dir: project_dir.join("icons"),
+            out_dir: project_dir.join("build"),
+            font_name: "Petiglyph".to_string(),
+            glyph_size: 8,
+            base_threshold: 64,
+            threshold_overrides: BTreeMap::new(),
+            invert_overrides: BTreeMap::new(),
+            compositions: BTreeMap::new(),
+            animations: Vec::new(),
+            codepoint_start: 0x10_0000,
+        };
+        let mut app = App::new(manifest_path, config);
+        app.start_home_workflow(HomeCreationKind::AnimatedGlyph);
+
+        assert_eq!(app.animation_import_settings.export_frame_count, 5);
+        handle_key(&mut app, KeyCode::Left).expect("left focuses export from continue");
+        assert_eq!(
+            app.animation_import_settings.focus,
+            super::AnimationImportSettingsFocus::ExportTestImageButton
+        );
+        handle_key(&mut app, KeyCode::Up).expect("up increases frame export count");
+        assert_eq!(app.animation_import_settings.export_frame_count, 6);
+        handle_key(&mut app, KeyCode::Down).expect("down decreases frame export count");
+        assert_eq!(app.animation_import_settings.export_frame_count, 5);
+    }
+
+    #[test]
+    fn animated_home_workflow_export_uses_first_five_frames_by_default() {
+        let project_dir = make_temp_dir("animated-home-export-default-five");
+        let manifest_path = project_dir.join("petiglyph.toml");
+        write_manifest(&manifest_path, &Manifest::default()).expect("manifest is written");
+        let config = RuntimeConfig {
+            project_dir: project_dir.clone(),
+            project_id: "test-animated-home-export-default-five".to_string(),
+            input_dir: project_dir.join("icons"),
+            out_dir: project_dir.join("build"),
+            font_name: "Petiglyph".to_string(),
+            glyph_size: 8,
+            base_threshold: 64,
+            threshold_overrides: BTreeMap::new(),
+            invert_overrides: BTreeMap::new(),
+            compositions: BTreeMap::new(),
+            animations: Vec::new(),
+            codepoint_start: 0x10_0000,
+        };
+        let mut app = App::new(manifest_path, config);
+        app.start_home_workflow(HomeCreationKind::AnimatedGlyph);
+        app.animation_import_settings.focus =
+            super::AnimationImportSettingsFocus::ExportTestImageButton;
+        app.animation_selection_order = (1..=6).map(|idx| format!("f{idx}.png")).collect();
+        app.glyphs = (1..=6)
+            .map(|idx| InteractiveGlyph {
+                glyph: PreprocessedGlyph {
+                    source_path: PathBuf::from(format!("icons/f{idx}.png")),
+                    source_key: format!("f{idx}.png"),
+                    source_parent_key: format!("f{idx}.png"),
+                    glyph_name: format!("f{idx}"),
+                    width: 1,
+                    height: 1,
+                    coverage: vec![255],
+                    image_fingerprint: format!("fnv1a64:test-f{idx}"),
+                    composition_tile: None,
+                },
+                working_threshold: 64,
+                saved_threshold: None,
+                saved_invert: false,
+                working_invert: false,
+            })
+            .collect();
+
+        handle_key(&mut app, KeyCode::Enter).expect("enter exports first default frame batch");
+
+        let test_images_dir = project_dir.join("test-images");
+        let entries = fs::read_dir(&test_images_dir)
+            .expect("test-images dir exists")
+            .collect::<Result<Vec<_>, _>>()
+            .expect("test-images entries are readable");
+        assert_eq!(
+            entries.len(),
+            5,
+            "default animated export should include first five frames"
+        );
+    }
+
+    #[test]
+    fn grid_home_workflow_can_export_test_image() {
+        let project_dir = make_temp_dir("grid-home-export-test-image");
+        let manifest_path = project_dir.join("petiglyph.toml");
+        write_manifest(&manifest_path, &Manifest::default()).expect("manifest is written");
+
+        let icons_dir = project_dir.join("icons");
+        fs::create_dir_all(&icons_dir).expect("icons dir is created");
+        let external_dir = project_dir.join("external");
+        fs::create_dir_all(&external_dir).expect("external dir is created");
+        let dropped = external_dir.join("grid_source.png");
+        write_test_png(&dropped);
+
+        let config = RuntimeConfig {
+            project_dir: project_dir.clone(),
+            project_id: "test-grid-home-export-test-image".to_string(),
+            input_dir: icons_dir,
+            out_dir: project_dir.join("build"),
+            font_name: "Petiglyph".to_string(),
+            glyph_size: 8,
+            base_threshold: 64,
+            threshold_overrides: BTreeMap::new(),
+            invert_overrides: BTreeMap::new(),
+            compositions: BTreeMap::new(),
+            animations: Vec::new(),
+            codepoint_start: 0x10_0000,
+        };
+        let mut app = App::new(manifest_path, config);
+        app.start_home_workflow(HomeCreationKind::Grid);
+        handle_paste_event_for_test(&mut app, &dropped.display().to_string())
+            .expect("grid import should succeed");
+        app.animation_import_settings.focus =
+            super::AnimationImportSettingsFocus::ExportTestImageButton;
+
+        handle_key(&mut app, KeyCode::Enter).expect("enter exports grid test image");
+
+        let test_images_dir = project_dir.join("test-images");
+        let entries = fs::read_dir(&test_images_dir)
+            .expect("test-images dir exists")
+            .collect::<Result<Vec<_>, _>>()
+            .expect("test-images entries are readable");
+        assert_eq!(entries.len(), 1, "one grid export file should be produced");
+    }
+
+    #[test]
+    fn grid_home_workflow_export_falls_back_to_source_file_when_glyph_cache_is_empty() {
+        let project_dir = make_temp_dir("grid-home-export-fallback-source");
+        let manifest_path = project_dir.join("petiglyph.toml");
+        write_manifest(&manifest_path, &Manifest::default()).expect("manifest is written");
+
+        let icons_dir = project_dir.join("icons");
+        fs::create_dir_all(&icons_dir).expect("icons dir is created");
+        let source_path = icons_dir.join("grid_source.png");
+        write_test_png(&source_path);
+
+        let config = RuntimeConfig {
+            project_dir: project_dir.clone(),
+            project_id: "test-grid-home-export-fallback-source".to_string(),
+            input_dir: icons_dir,
+            out_dir: project_dir.join("build"),
+            font_name: "Petiglyph".to_string(),
+            glyph_size: 8,
+            base_threshold: 64,
+            threshold_overrides: BTreeMap::new(),
+            invert_overrides: BTreeMap::new(),
+            compositions: BTreeMap::new(),
+            animations: Vec::new(),
+            codepoint_start: 0x10_0000,
+        };
+        let mut app = App::new(manifest_path, config);
+        app.start_home_workflow(HomeCreationKind::Grid);
+        app.home_workflow_grid_source_key = Some("grid_source.png".to_string());
+        app.home_workflow_import_count = 1;
+        app.glyphs.clear();
+        app.animation_import_settings.focus =
+            super::AnimationImportSettingsFocus::ExportTestImageButton;
+
+        handle_key(&mut app, KeyCode::Enter).expect("enter exports grid test image via fallback");
+
+        let test_images_dir = project_dir.join("test-images");
+        let entries = fs::read_dir(&test_images_dir)
+            .expect("test-images dir exists")
+            .collect::<Result<Vec<_>, _>>()
+            .expect("test-images entries are readable");
+        assert_eq!(
+            entries.len(),
+            1,
+            "fallback should still produce one grid export file"
         );
     }
 
@@ -12308,6 +13022,60 @@ mod tests {
                 .any(|line| line.contains("Replaced image: grid_1.png -> grid_2.png")),
             "placeholder should show inline replacement notice when provided"
         );
+    }
+
+    #[test]
+    fn collect_dropped_paths_splits_concatenated_file_uris() {
+        let project_dir = make_temp_dir("collect-dropped-paths-file-uri");
+        let first = project_dir.join("a.png");
+        let second = project_dir.join("b.png");
+        fs::write(&first, b"a").expect("first file is written");
+        fs::write(&second, b"b").expect("second file is written");
+
+        let payload = format!(
+            "file://{}file://{}",
+            first.display(),
+            second.display()
+        );
+        let paths = collect_dropped_paths(&payload);
+        assert_eq!(paths.len(), 2, "payload should split both file URIs");
+        assert!(paths.contains(&first));
+        assert!(paths.contains(&second));
+
+        fs::remove_dir_all(project_dir).expect("temp dir is removed");
+    }
+
+    #[test]
+    fn static_import_does_not_fail_when_grayscale_skips_non_rewritten_formats() {
+        let project_dir = make_temp_dir("static-import-grayscale-gif");
+        let input_dir = project_dir.join("icons");
+        let external_dir = project_dir.join("external");
+        fs::create_dir_all(&input_dir).expect("input dir is created");
+        fs::create_dir_all(&external_dir).expect("external dir is created");
+        let gif_path = external_dir.join("frame.gif");
+        fs::write(
+            &gif_path,
+            [
+                0x47, 0x49, 0x46, 0x38, 0x39, 0x61, 0x01, 0x00, 0x01, 0x00, 0x80, 0x00, 0x00,
+                0x00, 0x00, 0x00, 0xff, 0xff, 0xff, 0x21, 0xf9, 0x04, 0x01, 0x00, 0x00, 0x00,
+                0x00, 0x2c, 0x00, 0x00, 0x00, 0x00, 0x01, 0x00, 0x01, 0x00, 0x00, 0x02, 0x02,
+                0x44, 0x01, 0x00, 0x3b,
+            ],
+        )
+        .expect("gif file is written");
+
+        let result = import_image_files_to_input(
+            &input_dir,
+            &gif_path.display().to_string(),
+            ExistingImportPolicy::Rename,
+            animation_media::AnimationImportProcessingOptions::default(),
+        )
+        .expect("import should succeed");
+
+        assert_eq!(result.imported, 1);
+        assert!(input_dir.join("frame.gif").is_file());
+
+        fs::remove_dir_all(project_dir).expect("temp dir is removed");
     }
 
     fn provider_commands(providers: &[super::ClipboardProvider]) -> Vec<&'static str> {
