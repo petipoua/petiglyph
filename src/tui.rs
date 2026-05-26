@@ -418,6 +418,7 @@ pub(crate) struct App {
     home_workflow: HomeWorkflow,
     home_workflow_import_count: usize,
     home_workflow_grid_source_key: Option<String>,
+    home_workflow_grid_inline_notice: Option<String>,
     home_workflow_error: Option<String>,
     pub(crate) last_build: Option<BuildSummary>,
     pub(crate) last_sample: Option<String>,
@@ -3714,6 +3715,7 @@ impl App {
         self.home_workflow = HomeWorkflow::Import(kind);
         self.home_workflow_import_count = 0;
         self.home_workflow_grid_source_key = None;
+        self.home_workflow_grid_inline_notice = None;
         self.home_workflow_error = None;
         if matches!(
             kind,
@@ -3729,6 +3731,7 @@ impl App {
         self.home_workflow = HomeWorkflow::Launcher;
         self.home_workflow_import_count = 0;
         self.home_workflow_grid_source_key = None;
+        self.home_workflow_grid_inline_notice = None;
         self.home_workflow_error = None;
         self.grid_config = None;
         self.selecting_for_grid = false;
@@ -4015,6 +4018,7 @@ impl App {
             home_workflow: HomeWorkflow::Launcher,
             home_workflow_import_count: 0,
             home_workflow_grid_source_key: None,
+            home_workflow_grid_inline_notice: None,
             home_workflow_error: None,
             last_build: None,
             last_sample: None,
@@ -4096,6 +4100,7 @@ impl App {
             home_workflow: HomeWorkflow::Launcher,
             home_workflow_import_count: 0,
             home_workflow_grid_source_key: None,
+            home_workflow_grid_inline_notice: None,
             home_workflow_error: None,
             last_build,
             last_sample,
@@ -4855,20 +4860,39 @@ impl App {
             HomeWorkflow::Import(HomeCreationKind::Grid)
         ) {
             if import.imported_source_keys.len() != 1 {
-                self.home_workflow_import_count = 0;
-                self.home_workflow_grid_source_key = None;
-                self.home_workflow_error = Some("drop only ONE IMAGE for the grid".to_string());
-                self.status = Some("create grid: drop only one image".to_string());
+                self.home_workflow_grid_inline_notice = None;
+                self.home_workflow_error =
+                    Some("drop only ONE IMAGE for the grid (selection unchanged)".to_string());
+                self.status =
+                    Some("create grid: drop only one image at a time (kept current selection)".to_string());
                 return Ok(());
             }
-            self.home_workflow_grid_source_key = import.imported_source_keys.first().cloned();
+            let next_source_key = import.imported_source_keys.first().cloned();
+            let previous_source_key = self.home_workflow_grid_source_key.clone();
+            self.home_workflow_grid_source_key = next_source_key.clone();
+            self.home_workflow_import_count = usize::from(next_source_key.is_some());
             self.home_workflow_error = None;
+            if let (Some(previous), Some(next)) = (previous_source_key, next_source_key) {
+                if previous != next {
+                    self.home_workflow_grid_inline_notice = Some(format!(
+                        "Replaced image: {previous} -> {next}"
+                    ));
+                }
+            } else {
+                self.home_workflow_grid_inline_notice =
+                    Some("Drop another image to replace this selection".to_string());
+            }
         }
 
         if import.imported > 0 {
-            self.home_workflow_import_count = self
-                .home_workflow_import_count
-                .saturating_add(import.imported);
+            if !matches!(
+                self.home_workflow,
+                HomeWorkflow::Import(HomeCreationKind::Grid)
+            ) {
+                self.home_workflow_import_count = self
+                    .home_workflow_import_count
+                    .saturating_add(import.imported);
+            }
             self.reload_glyphs()?;
             if self.view == AppView::Welcome && matches!(self.home_workflow, HomeWorkflow::Launcher)
             {
@@ -7560,6 +7584,7 @@ fn draw_home_creation_popup(frame: &mut Frame, app: &App, area: Rect, accent: Co
                 HomeCreationKind::AnimatedGlyph | HomeCreationKind::AnimatedGridGlyph
             ),
             app.animation_import_spinner_frame(),
+            app.home_workflow_grid_inline_notice.as_deref(),
         );
         frame.render_widget(
             Paragraph::new(drag_lines).wrap(Wrap { trim: false }),
@@ -9718,6 +9743,7 @@ fn drag_images_here_lines(
     imported_count: usize,
     animation_media_mode: bool,
     processing_spinner: Option<&str>,
+    inline_notice: Option<&str>,
 ) -> Vec<Line<'static>> {
     let horizontal_padding = 4usize;
     let horizontal_pad = " ".repeat(horizontal_padding);
@@ -9759,12 +9785,17 @@ fn drag_images_here_lines(
         }
     };
     let counter_label = center_label(&counter_text, inner_width);
+    let notice_label = inline_notice.map(|notice| center_label(notice, inner_width));
     let border_style = Style::default().fg(accent);
     let label_style = Style::default().fg(accent).add_modifier(Modifier::BOLD);
+    let notice_style = Style::default().fg(Color::DarkGray);
 
     let inner_rows = available_height.saturating_sub(2);
     let label_row = usize::from(inner_rows / 2);
     let counter_row = (label_row + 1).min(usize::from(inner_rows.saturating_sub(1)));
+    let notice_row = notice_label
+        .as_ref()
+        .map(|_| (counter_row + 1).min(usize::from(inner_rows.saturating_sub(1))));
 
     let mut lines = Vec::with_capacity(usize::from(available_height));
     lines.push(Line::from(vec![
@@ -9787,6 +9818,13 @@ fn drag_images_here_lines(
                 Span::raw(horizontal_pad.clone()),
                 Span::styled(left_side, border_style),
                 Span::styled(counter_label.clone(), Style::default().fg(Color::Gray)),
+                Span::styled(right_side, border_style),
+            ]));
+        } else if Some(row) == notice_row && notice_row != Some(counter_row) {
+            lines.push(Line::from(vec![
+                Span::raw(horizontal_pad.clone()),
+                Span::styled(left_side, border_style),
+                Span::styled(notice_label.clone().unwrap_or_default(), notice_style),
                 Span::styled(right_side, border_style),
             ]));
         } else {
@@ -10826,6 +10864,73 @@ mod tests {
     }
 
     #[test]
+    fn grid_home_workflow_second_drop_replaces_selected_source() {
+        let project_dir = make_temp_dir("grid-home-drop-replace");
+        let manifest_path = project_dir.join("petiglyph.toml");
+        write_manifest(&manifest_path, &Manifest::default()).expect("manifest is written");
+
+        let icons_dir = project_dir.join("icons");
+        fs::create_dir_all(&icons_dir).expect("icons dir is created");
+
+        let external_dir = project_dir.join("external");
+        fs::create_dir_all(&external_dir).expect("external dir is created");
+        let first_path = external_dir.join("grid_1.png");
+        let second_path = external_dir.join("grid_2.png");
+        write_test_png(&first_path);
+        write_test_png(&second_path);
+
+        let config = RuntimeConfig {
+            project_dir: project_dir.clone(),
+            project_id: "test-grid-home-drop-replace".to_string(),
+            input_dir: icons_dir,
+            out_dir: project_dir.join("build"),
+            font_name: "Petiglyph".to_string(),
+            glyph_size: 8,
+            base_threshold: 64,
+            threshold_overrides: BTreeMap::new(),
+            invert_overrides: BTreeMap::new(),
+            compositions: BTreeMap::new(),
+            animations: Vec::new(),
+            codepoint_start: 0x10_0000,
+        };
+        let mut app = App::new(manifest_path, config);
+        app.start_home_workflow(HomeCreationKind::Grid);
+
+        handle_paste_event_for_test(&mut app, &first_path.display().to_string())
+            .expect("first drop should succeed");
+        assert_eq!(
+            app.home_workflow_grid_source_key.as_deref(),
+            Some("grid_1.png"),
+            "first drop should set selected grid source"
+        );
+        assert_eq!(app.home_workflow_import_count, 1);
+
+        handle_paste_event_for_test(&mut app, &second_path.display().to_string())
+            .expect("second drop should succeed");
+        assert_eq!(
+            app.home_workflow_grid_source_key.as_deref(),
+            Some("grid_2.png"),
+            "second drop should replace selected grid source"
+        );
+        assert_eq!(
+            app.home_workflow_import_count, 1,
+            "grid workflow should keep a single selected source after replacement"
+        );
+        assert!(
+            app.status
+                .as_ref()
+                .is_some_and(|msg| !msg.contains("replaced selected image")),
+            "replacement detail should not be emitted in footer status"
+        );
+        assert!(
+            app.home_workflow_grid_inline_notice
+                .as_ref()
+                .is_some_and(|msg| msg.contains("Replaced image:")),
+            "grid workflow should surface inline replacement notice in drop area"
+        );
+    }
+
+    #[test]
     fn animated_home_workflow_reimport_identical_frames_keeps_progress_and_selection() {
         let project_dir = make_temp_dir("animated-home-reimport-identical");
         let manifest_path = project_dir.join("petiglyph.toml");
@@ -11346,11 +11451,12 @@ mod tests {
     #[test]
     fn drag_images_placeholder_handles_small_and_regular_regions() {
         assert!(
-            drag_images_here_lines(6, 2, ratatui::style::Color::Cyan, 0, false, None).is_empty(),
+            drag_images_here_lines(6, 2, ratatui::style::Color::Cyan, 0, false, None, None)
+                .is_empty(),
             "very small regions should skip drag placeholder rendering"
         );
 
-        let lines = drag_images_here_lines(40, 7, ratatui::style::Color::Cyan, 3, false, None);
+        let lines = drag_images_here_lines(40, 7, ratatui::style::Color::Cyan, 3, false, None, None);
         assert_eq!(lines.len(), 7, "placeholder should fill requested height");
         let rendered = lines
             .iter()
@@ -11378,7 +11484,8 @@ mod tests {
             "placeholder should show a checkmark when images have been added"
         );
 
-        let zero_lines = drag_images_here_lines(40, 7, ratatui::style::Color::Cyan, 0, false, None);
+        let zero_lines =
+            drag_images_here_lines(40, 7, ratatui::style::Color::Cyan, 0, false, None, None);
         let zero_rendered = zero_lines
             .iter()
             .map(|line| {
@@ -11401,7 +11508,8 @@ mod tests {
             "placeholder should not show checkmark when no images were added"
         );
 
-        let media_lines = drag_images_here_lines(40, 7, ratatui::style::Color::Cyan, 2, true, None);
+        let media_lines =
+            drag_images_here_lines(40, 7, ratatui::style::Color::Cyan, 2, true, None, None);
         let media_rendered = media_lines
             .iter()
             .map(|line| {
@@ -11425,7 +11533,7 @@ mod tests {
         );
 
         let processing_lines =
-            drag_images_here_lines(40, 7, ratatui::style::Color::Cyan, 0, true, Some("|"));
+            drag_images_here_lines(40, 7, ratatui::style::Color::Cyan, 0, true, Some("|"), None);
         let processing_rendered = processing_lines
             .iter()
             .map(|line| {
@@ -11444,6 +11552,31 @@ mod tests {
         assert!(
             processing_rendered.iter().all(|line| !line.contains("✓")),
             "placeholder should not show checkmark while processing is active"
+        );
+
+        let replace_lines = drag_images_here_lines(
+            50,
+            8,
+            ratatui::style::Color::Cyan,
+            1,
+            false,
+            None,
+            Some("Replaced image: grid_1.png -> grid_2.png"),
+        );
+        let replace_rendered = replace_lines
+            .iter()
+            .map(|line| {
+                line.spans
+                    .iter()
+                    .map(|span| span.content.as_ref())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>();
+        assert!(
+            replace_rendered
+                .iter()
+                .any(|line| line.contains("Replaced image: grid_1.png -> grid_2.png")),
+            "placeholder should show inline replacement notice when provided"
         );
     }
 
