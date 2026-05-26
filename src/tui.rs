@@ -130,6 +130,12 @@ struct InstalledAnimationSnapshotRecord {
     animation_type: AnimationType,
     fps: u8,
     #[serde(default)]
+    grayscale_processing: Option<animation_media::AnimationImportProcessingOptions>,
+    #[serde(default)]
+    uniform_threshold: Option<u8>,
+    #[serde(default)]
+    variable_threshold: bool,
+    #[serde(default)]
     frame_blocks: Vec<String>,
 }
 
@@ -396,6 +402,7 @@ struct AnimationConfig {
     cols: u32,
     horizontal_bleed: BleedLevel,
     vertical_bleed: BleedLevel,
+    grayscale_processing: Option<animation_media::AnimationImportProcessingOptions>,
     focus: AnimationConfigFocus,
 }
 
@@ -892,25 +899,33 @@ fn sample_from_installed_font_metadata(
                     .filter(|blocks| !blocks.is_empty())
                     .cloned()
                     .unwrap_or(snapshot.frame_blocks);
+                let grayscale_label =
+                    grayscale_summary_from_processing(snapshot.grayscale_processing);
+                let threshold_label = installed_animation_threshold_summary_label(
+                    snapshot.uniform_threshold,
+                    snapshot.variable_threshold,
+                );
 
                 for frame in &frame_blocks {
                     all_animation_frames.insert(frame.trim().to_string());
                 }
 
                 animation_rows.push(format!(
-                    "Animation: {} ({}, {} fps, {} frames)",
+                    "Animation: {} ({}, {} fps, {} frames, {}, th {})",
                     snapshot.name,
                     type_label,
                     snapshot.fps,
-                    frame_blocks.len()
+                    frame_blocks.len(),
+                    grayscale_label,
+                    threshold_label,
                 ));
                 animation_previews.push(InstalledFontAnimationPreview {
                     fps: snapshot.fps,
                     frame_blocks: frame_blocks.clone(),
                 });
                 let mut export = format!(
-                    "name: {}\ntype: {}\nfps: {}\n",
-                    snapshot.name, type_label, snapshot.fps
+                    "name: {}\ntype: {}\nfps: {}\ngrayscale: {}\nthreshold: {}\n",
+                    snapshot.name, type_label, snapshot.fps, grayscale_label, threshold_label
                 );
                 if !frame_blocks.is_empty() {
                     export.push('\n');
@@ -4047,6 +4062,9 @@ impl App {
         }
         sort_source_keys_for_animation_frames(&mut frames);
         let name = default_animation_name_from_frames(&self.config, &frames);
+        let grayscale_processing = Some(animation_import_processing_options(
+            &self.animation_import_settings,
+        ));
         self.glyph_tool_mode = GlyphToolMode::ConfigureAnimation(AnimationConfig {
             selected_frames: frames,
             animation_name: name,
@@ -4056,6 +4074,7 @@ impl App {
             cols: 2,
             horizontal_bleed: BleedLevel::Weak,
             vertical_bleed: BleedLevel::Off,
+            grayscale_processing,
             focus: AnimationConfigFocus::Fps,
         });
     }
@@ -4122,6 +4141,7 @@ impl App {
                 .then_some(config.horizontal_bleed),
             vertical_bleed: (config.animation_type == AnimationType::Grid)
                 .then_some(config.vertical_bleed),
+            grayscale_processing: config.grayscale_processing,
         };
         persist_animation_definition(&self.manifest_path, def)?;
         self.reload_glyphs()?;
@@ -6374,6 +6394,72 @@ fn animation_has_non_uniform_frame_thresholds(app: &App, animation: &AnimationDe
         return false;
     };
     values.any(|value| value != first)
+}
+
+fn animation_uniform_frame_threshold(app: &App, animation: &AnimationDef) -> Option<u8> {
+    let mut values = animation_threshold_parent_sources(animation)
+        .into_iter()
+        .map(|source_key| {
+            app.glyphs
+                .iter()
+                .find(|g| g.glyph.source_parent_key == source_key)
+                .map(|g| g.working_threshold)
+                .or_else(|| {
+                    app.config
+                        .threshold_overrides
+                        .get(&source_key)
+                        .copied()
+                        .or(Some(app.config.base_threshold))
+                })
+        })
+        .collect::<Vec<_>>();
+    if values.is_empty() {
+        return None;
+    }
+    let first = values.remove(0)?;
+    if values.into_iter().all(|v| v == Some(first)) {
+        Some(first)
+    } else {
+        None
+    }
+}
+
+fn animation_threshold_summary_label(app: &App, animation: &AnimationDef) -> String {
+    animation_uniform_frame_threshold(app, animation)
+        .map(|value| value.to_string())
+        .unwrap_or_else(|| "var. threshold".to_string())
+}
+
+fn grayscale_summary_from_processing(
+    processing: Option<animation_media::AnimationImportProcessingOptions>,
+) -> String {
+    match processing {
+        Some(processing) if !processing.grayscale_enabled => "gray OFF".to_string(),
+        Some(processing) => format!(
+            "gray ON B{:+} C{:+} G{:.2}",
+            processing.grayscale.brightness,
+            processing.grayscale.contrast,
+            processing.grayscale.gamma_percent as f32 / 100.0
+        ),
+        None => "gray n/a".to_string(),
+    }
+}
+
+fn animation_grayscale_summary_label(animation: &AnimationDef) -> String {
+    grayscale_summary_from_processing(animation.grayscale_processing)
+}
+
+fn installed_animation_threshold_summary_label(
+    uniform_threshold: Option<u8>,
+    variable: bool,
+) -> String {
+    if variable {
+        "var. threshold".to_string()
+    } else {
+        uniform_threshold
+            .map(|value| value.to_string())
+            .unwrap_or_else(|| "n/a".to_string())
+    }
 }
 
 fn selected_invert_sources(app: &App) -> Option<Vec<String>> {
@@ -8654,10 +8740,12 @@ fn draw_glyphs_view(
                         Span::raw(" "),
                         Span::styled(
                             format!(
-                                "({:?}, {} fps, {} frames)",
+                                "({:?}, {} fps, {} frames, {}, th {})",
                                 animation.animation_type,
                                 animation.fps,
-                                animation.frames.len()
+                                animation.frames.len(),
+                                animation_grayscale_summary_label(animation),
+                                animation_threshold_summary_label(app, animation),
                             ),
                             Style::default().fg(muted),
                         ),
@@ -8808,6 +8896,8 @@ fn draw_glyphs_view(
                 let has_non_uniform_thresholds =
                     animation_has_non_uniform_frame_thresholds(app, animation);
                 let has_non_uniform_invert = animation_has_non_uniform_frame_invert(app, animation);
+                let threshold_summary = animation_threshold_summary_label(app, animation);
+                let grayscale_summary = animation_grayscale_summary_label(animation);
                 vec![
                     Line::from(""),
                     Line::from(vec![
@@ -8832,12 +8922,16 @@ fn draw_glyphs_view(
                             animation.frames.len().to_string(),
                             Style::default().fg(accent),
                         ),
+                        Span::raw("  "),
+                        Span::styled(grayscale_summary, Style::default().fg(muted)),
+                        Span::raw("  Threshold: "),
+                        Span::styled(threshold_summary, Style::default().fg(accent)),
                     ]),
                     if has_non_uniform_thresholds {
                         Line::from(vec![
                             Span::raw("  Thresholds: "),
                             Span::styled(
-                                "frame-specific overrides active",
+                                "frame-specific overrides active (var. threshold)",
                                 Style::default().fg(Color::Yellow),
                             ),
                         ])
@@ -8890,7 +8984,15 @@ fn draw_glyphs_view(
                         Span::styled(
                             active_animation
                                 .map(|a| {
-                                    format!("{} ({:?}, {} fps)", a.name, a.animation_type, a.fps)
+                                    format!(
+                                        "{} ({:?}, {} fps, {} frames, {}, th {})",
+                                        a.name,
+                                        a.animation_type,
+                                        a.fps,
+                                        a.frames.len(),
+                                        animation_grayscale_summary_label(a),
+                                        animation_threshold_summary_label(app, a)
+                                    )
                                 })
                                 .unwrap_or_else(|| "none".to_string()),
                             Style::default().fg(muted),
@@ -8956,7 +9058,15 @@ fn draw_glyphs_view(
                         Span::styled(
                             active_animation
                                 .map(|a| {
-                                    format!("{} ({:?}, {} fps)", a.name, a.animation_type, a.fps)
+                                    format!(
+                                        "{} ({:?}, {} fps, {} frames, {}, th {})",
+                                        a.name,
+                                        a.animation_type,
+                                        a.fps,
+                                        a.frames.len(),
+                                        animation_grayscale_summary_label(a),
+                                        animation_threshold_summary_label(app, a)
+                                    )
                                 })
                                 .unwrap_or_else(|| "none".to_string()),
                             Style::default().fg(muted),
@@ -9084,7 +9194,15 @@ fn draw_glyphs_view(
                         Span::styled(
                             active_animation
                                 .map(|a| {
-                                    format!("{} ({:?}, {} fps)", a.name, a.animation_type, a.fps)
+                                    format!(
+                                        "{} ({:?}, {} fps, {} frames, {}, th {})",
+                                        a.name,
+                                        a.animation_type,
+                                        a.fps,
+                                        a.frames.len(),
+                                        animation_grayscale_summary_label(a),
+                                        animation_threshold_summary_label(app, a)
+                                    )
                                 })
                                 .unwrap_or_else(|| "none".to_string()),
                             Style::default().fg(muted),
@@ -10602,6 +10720,7 @@ mod tests {
             cols: None,
             horizontal_bleed: None,
             vertical_bleed: None,
+            grayscale_processing: None,
         };
         let started_at = Instant::now();
         let mut preview = AnimationPreview {
@@ -10707,6 +10826,7 @@ mod tests {
             cols: Some(2),
             horizontal_bleed: Some(BleedLevel::Weak),
             vertical_bleed: Some(BleedLevel::Off),
+            grayscale_processing: None,
         };
 
         let blocks = installed_animation_blocks_for_definition(&animation, &by_source);
@@ -11061,6 +11181,7 @@ mod tests {
                 cols: None,
                 horizontal_bleed: None,
                 vertical_bleed: None,
+                grayscale_processing: None,
             }],
             codepoint_start: 0x10_0000,
         };
@@ -11149,6 +11270,7 @@ mod tests {
                     cols: Some(1),
                     horizontal_bleed: Some(BleedLevel::Weak),
                     vertical_bleed: Some(BleedLevel::Off),
+                    grayscale_processing: None,
                 },
                 AnimationDef {
                     name: "run-standard".to_string(),
@@ -11159,6 +11281,7 @@ mod tests {
                     cols: None,
                     horizontal_bleed: None,
                     vertical_bleed: None,
+                    grayscale_processing: None,
                 },
             ],
             codepoint_start: 0x10_0000,
@@ -11245,6 +11368,7 @@ mod tests {
             cols: None,
             horizontal_bleed: None,
             vertical_bleed: None,
+            grayscale_processing: None,
         };
         let preview = AnimationPreview {
             animation_name: "walk".to_string(),
@@ -11624,6 +11748,7 @@ mod tests {
             cols: 1,
             horizontal_bleed: BleedLevel::Weak,
             vertical_bleed: BleedLevel::Off,
+            grayscale_processing: None,
             focus: AnimationConfigFocus::Fps,
         };
 
@@ -11699,6 +11824,7 @@ mod tests {
             cols: 1,
             horizontal_bleed: BleedLevel::Weak,
             vertical_bleed: BleedLevel::Off,
+            grayscale_processing: None,
             focus: AnimationConfigFocus::Fps,
         };
 
@@ -11778,6 +11904,7 @@ mod tests {
             cols: None,
             horizontal_bleed: None,
             vertical_bleed: None,
+            grayscale_processing: None,
         });
         config.animations.push(AnimationDef {
             name: "runner_anim_1".to_string(),
@@ -11788,6 +11915,7 @@ mod tests {
             cols: None,
             horizontal_bleed: None,
             vertical_bleed: None,
+            grayscale_processing: None,
         });
 
         let name = default_animation_name_from_frames(&config, &["runner_010.png".to_string()]);
@@ -11835,6 +11963,7 @@ mod tests {
                 cols: None,
                 horizontal_bleed: None,
                 vertical_bleed: None,
+                grayscale_processing: None,
             }],
             codepoint_start: 0x10_0000,
         };
@@ -11911,6 +12040,7 @@ mod tests {
             cols: None,
             horizontal_bleed: None,
             vertical_bleed: None,
+            grayscale_processing: None,
         };
         let config = RuntimeConfig {
             project_dir: project_dir.clone(),
@@ -11986,6 +12116,7 @@ mod tests {
             cols: None,
             horizontal_bleed: None,
             vertical_bleed: None,
+            grayscale_processing: None,
         };
         let config = RuntimeConfig {
             project_dir: project_dir.clone(),

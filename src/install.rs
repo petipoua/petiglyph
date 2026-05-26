@@ -93,7 +93,17 @@ struct InstalledAnimationSnapshot {
     #[serde(rename = "type")]
     animation_type: AnimationType,
     fps: u8,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    grayscale_processing: Option<crate::animation_media::AnimationImportProcessingOptions>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    uniform_threshold: Option<u8>,
+    #[serde(default, skip_serializing_if = "is_false")]
+    variable_threshold: bool,
     frame_blocks: Vec<String>,
+}
+
+fn is_false(value: &bool) -> bool {
+    !*value
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1649,6 +1659,12 @@ fn parse_compose_tile_key(source_key: &str) -> Option<(&str, usize, usize, usize
     Some((parent, rows, cols, row, col))
 }
 
+fn animation_frame_parent_source(source_key: &str) -> String {
+    source_key
+        .split_once("#compose:")
+        .map_or_else(|| source_key.to_string(), |(parent, _)| parent.to_string())
+}
+
 fn animation_snapshots_from_manifest_and_mapping(
     manifest_path: &Path,
 ) -> Vec<InstalledAnimationSnapshot> {
@@ -1673,9 +1689,35 @@ fn animation_snapshots_from_manifest_and_mapping(
     for entry in mappings {
         by_source.insert(entry.source_file, entry.codepoint);
     }
+    let base_threshold = manifest.threshold;
+    let threshold_overrides = manifest.threshold_overrides.clone();
 
     let mut out = Vec::new();
     for animation in manifest.animations {
+        let threshold_sources = animation
+            .frames
+            .iter()
+            .map(|frame| animation_frame_parent_source(frame))
+            .collect::<BTreeSet<_>>();
+        let mut threshold_values = threshold_sources
+            .iter()
+            .map(|source| {
+                threshold_overrides
+                    .get(source)
+                    .copied()
+                    .unwrap_or(base_threshold)
+            })
+            .collect::<Vec<_>>();
+        let first_threshold = threshold_values.first().copied();
+        let variable_threshold = match first_threshold {
+            Some(first) => threshold_values.drain(1..).any(|value| value != first),
+            None => false,
+        };
+        let uniform_threshold = if variable_threshold {
+            None
+        } else {
+            first_threshold
+        };
         let mut frame_blocks = Vec::new();
         for frame in &animation.frames {
             let block = match animation.animation_type {
@@ -1707,6 +1749,9 @@ fn animation_snapshots_from_manifest_and_mapping(
             name: animation.name,
             animation_type: animation.animation_type,
             fps: animation.fps,
+            grayscale_processing: animation.grayscale_processing,
+            uniform_threshold,
+            variable_threshold,
             frame_blocks,
         });
     }

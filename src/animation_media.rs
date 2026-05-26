@@ -21,7 +21,7 @@ pub(crate) struct AnimationMediaImportResult {
     pub(crate) frames_extracted: usize,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub(crate) struct AnimationGrayscaleOptions {
     pub(crate) brightness: i16,
     pub(crate) contrast: i16,
@@ -38,7 +38,7 @@ impl Default for AnimationGrayscaleOptions {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub(crate) struct AnimationImportProcessingOptions {
     pub(crate) grayscale_enabled: bool,
     pub(crate) grayscale: AnimationGrayscaleOptions,

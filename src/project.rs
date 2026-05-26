@@ -68,6 +68,9 @@ pub(crate) struct AnimationDef {
     pub(crate) horizontal_bleed: Option<BleedLevel>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) vertical_bleed: Option<BleedLevel>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) grayscale_processing:
+        Option<crate::animation_media::AnimationImportProcessingOptions>,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -426,6 +429,11 @@ pub(crate) fn load_runtime_config(
             if frame.trim().is_empty() {
                 bail!("animation {name} has an empty frame source key");
             }
+        }
+        if let Some(processing) = animation.grayscale_processing.as_mut() {
+            processing.grayscale.gamma_percent = processing.grayscale.gamma_percent.clamp(50, 200);
+            processing.grayscale.brightness = processing.grayscale.brightness.clamp(-80, 80);
+            processing.grayscale.contrast = processing.grayscale.contrast.clamp(-80, 80);
         }
         match animation.animation_type {
             AnimationType::Standard => {

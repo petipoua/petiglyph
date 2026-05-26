@@ -3462,6 +3462,7 @@ fn animation_preview_controls_update_thresholds_and_fps() {
         cols: None,
         horizontal_bleed: None,
         vertical_bleed: None,
+        grayscale_processing: None,
     });
     write_manifest(&manifest_path, &manifest).expect("manifest is written");
 
