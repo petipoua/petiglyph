@@ -17,7 +17,8 @@ use ratatui::widgets::{
     Block, BorderType, Borders, Clear, List, ListItem, ListState, Paragraph, Tabs, Wrap,
 };
 use ratatui::{Frame, Terminal};
-use std::collections::{BTreeMap, BTreeSet, HashSet};
+use std::cell::RefCell;
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::env;
 use std::fs::{self, OpenOptions};
 use std::hash::{Hash, Hasher};
@@ -40,7 +41,7 @@ use crate::build::{
     preprocess_sources_with_compositions_and_standard_sources,
 };
 use crate::glyph_debug;
-use crate::image_pipeline::preprocess_standard_source;
+use crate::image_pipeline::{coverage_map_from_image, preprocess_standard_source};
 use crate::install::{
     DEFAULT_INSTALL_NAME_MODE, FontInstallNameMode, effective_font_name,
     expected_install_ttf_path_for_mode, install_built_font, install_dir_for_manifest,
@@ -442,6 +443,23 @@ enum GlyphToolMode {
     ConfigureAnimation(AnimationConfig),
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+struct LivePreviewCoverageKey {
+    source_path: PathBuf,
+    file_len: u64,
+    file_modified_ns: Option<u128>,
+    glyph_size: u32,
+    grayscale_enabled: bool,
+    grayscale_brightness: i16,
+    grayscale_contrast: i16,
+    grayscale_gamma_percent: u16,
+}
+
+#[derive(Debug, Default)]
+struct LivePreviewCoverageCache {
+    entries: HashMap<LivePreviewCoverageKey, Vec<u8>>,
+}
+
 pub(crate) struct App {
     pub(crate) manifest_path: PathBuf,
     pub(crate) project_dir: PathBuf,
@@ -475,6 +493,7 @@ pub(crate) struct App {
     pub(crate) selecting_for_grid: bool,
     glyph_tool_mode: GlyphToolMode,
     glyph_preview_control: GlyphPreviewControl,
+    live_preview_coverage_cache: RefCell<LivePreviewCoverageCache>,
     animation_selection_order: Vec<String>,
     animation_selection_set: BTreeSet<String>,
     animation_imported_set: BTreeSet<String>,
@@ -2781,6 +2800,74 @@ fn signed_filename_value(value: i16) -> String {
     }
 }
 
+fn grayscale_luminance_byte(r: u8, g: u8, b: u8) -> u8 {
+    // Integer approximation of BT.601 luma.
+    (((77u16 * r as u16) + (150u16 * g as u16) + (29u16 * b as u16)) >> 8) as u8
+}
+
+fn apply_grayscale_adjustments_for_preview(
+    value: u8,
+    options: animation_media::AnimationGrayscaleOptions,
+) -> u8 {
+    let gamma = (options.gamma_percent as f32 / 100.0).clamp(0.50, 2.00);
+    let mut pixel = (value as f32 / 255.0).powf(1.0 / gamma) * 255.0;
+    let contrast_factor = 1.0 + (options.contrast as f32 / 100.0);
+    pixel = ((pixel - 128.0) * contrast_factor) + 128.0;
+    pixel += options.brightness as f32;
+    pixel.round().clamp(0.0, 255.0) as u8
+}
+
+fn apply_live_grayscale_processing(image: &mut RgbaImage, settings: &AnimationImportSettingsState) {
+    if !settings.grayscale_enabled {
+        return;
+    }
+    let options = settings.grayscale_options;
+    for pixel in image.pixels_mut() {
+        let luma = grayscale_luminance_byte(pixel[0], pixel[1], pixel[2]);
+        let adjusted = apply_grayscale_adjustments_for_preview(luma, options);
+        pixel[0] = adjusted;
+        pixel[1] = adjusted;
+        pixel[2] = adjusted;
+    }
+}
+
+fn live_preview_coverage_key(
+    source_path: &Path,
+    glyph_size: u32,
+    settings: &AnimationImportSettingsState,
+) -> Option<LivePreviewCoverageKey> {
+    if !source_path.is_file() || !is_supported_source(source_path) {
+        return None;
+    }
+    let metadata = source_path.metadata().ok()?;
+    let file_modified_ns = metadata.modified().ok().and_then(|modified| {
+        modified
+            .duration_since(UNIX_EPOCH)
+            .ok()
+            .map(|duration| duration.as_nanos())
+    });
+    Some(LivePreviewCoverageKey {
+        source_path: source_path.to_path_buf(),
+        file_len: metadata.len(),
+        file_modified_ns,
+        glyph_size,
+        grayscale_enabled: settings.grayscale_enabled,
+        grayscale_brightness: settings.grayscale_options.brightness,
+        grayscale_contrast: settings.grayscale_options.contrast,
+        grayscale_gamma_percent: settings.grayscale_options.gamma_percent,
+    })
+}
+
+fn live_import_source_coverage_uncached(
+    source_path: &Path,
+    glyph_size: u32,
+    settings: &AnimationImportSettingsState,
+) -> Option<Vec<u8>> {
+    let mut image = image::open(source_path).ok()?.to_rgba8();
+    apply_live_grayscale_processing(&mut image, settings);
+    coverage_map_from_image(&image, glyph_size).ok()
+}
+
 fn render_test_image_from_single_glyph(glyph: &InteractiveGlyph) -> Result<RgbaImage> {
     render_test_image_from_coverage(
         &glyph.glyph.coverage,
@@ -4225,6 +4312,28 @@ fn draw_welcome_view(
 }
 
 impl App {
+    fn live_import_source_coverage(&self, source_path: &Path) -> Option<Vec<u8>> {
+        let key = live_preview_coverage_key(
+            source_path,
+            self.config.glyph_size,
+            &self.animation_import_settings,
+        )?;
+        if let Some(cached) = self.live_preview_coverage_cache.borrow().entries.get(&key) {
+            return Some(cached.clone());
+        }
+        let coverage = live_import_source_coverage_uncached(
+            source_path,
+            self.config.glyph_size,
+            &self.animation_import_settings,
+        )?;
+        let mut cache = self.live_preview_coverage_cache.borrow_mut();
+        if cache.entries.len() > 32 {
+            cache.entries.clear();
+        }
+        cache.entries.insert(key, coverage.clone());
+        Some(coverage)
+    }
+
     fn has_imported_home_sources(&self, kind: HomeCreationKind) -> bool {
         match kind {
             HomeCreationKind::Glyph => self.home_workflow_import_count > 0,
@@ -4544,6 +4653,7 @@ impl App {
             selecting_for_grid: false,
             glyph_tool_mode: GlyphToolMode::None,
             glyph_preview_control: GlyphPreviewControl::Threshold,
+            live_preview_coverage_cache: RefCell::new(LivePreviewCoverageCache::default()),
             animation_selection_order: Vec::new(),
             animation_selection_set: BTreeSet::new(),
             animation_imported_set: BTreeSet::new(),
@@ -4628,6 +4738,7 @@ impl App {
             selecting_for_grid: false,
             glyph_tool_mode: GlyphToolMode::None,
             glyph_preview_control: GlyphPreviewControl::Threshold,
+            live_preview_coverage_cache: RefCell::new(LivePreviewCoverageCache::default()),
             animation_selection_order: Vec::new(),
             animation_selection_set: BTreeSet::new(),
             animation_imported_set: BTreeSet::new(),
@@ -5657,6 +5768,26 @@ impl App {
                     .unwrap_or(false);
                 return Ok(Some((image, threshold, invert, true)));
             }
+        }
+
+        let source_path = self.config.input_dir.join(source_key);
+        if let Some(coverage) = self.live_import_source_coverage(&source_path) {
+            let threshold = self.animation_import_settings.threshold;
+            let invert = self
+                .config
+                .invert_overrides
+                .get(source_key)
+                .copied()
+                .unwrap_or(false);
+            let image = render_test_image_from_coverage(
+                &coverage,
+                self.config.glyph_size,
+                self.config.glyph_size,
+                threshold,
+                invert,
+                source_key,
+            )?;
+            return Ok(Some((image, threshold, invert, false)));
         }
 
         let Some(active) = self
@@ -8253,6 +8384,28 @@ fn home_workflow_preview_lines(
         }
     }
 
+    let source_path = app.config.input_dir.join(source_key);
+    if let Some(coverage) = app.live_import_source_coverage(&source_path) {
+        let invert = app
+            .config
+            .invert_overrides
+            .get(source_key)
+            .copied()
+            .unwrap_or(false);
+        return (
+            format!("Source: {}", source_display_name(source_key)),
+            preview_lines_from_coverage_stable_frame(
+                &coverage,
+                app.config.glyph_size,
+                app.config.glyph_size,
+                app.animation_import_settings.threshold,
+                invert,
+                max_w,
+                max_h,
+            ),
+        );
+    }
+
     let glyph = app
         .glyphs
         .iter()
@@ -8317,11 +8470,17 @@ fn draw_animation_import_workflow_ui(
         .title(Span::styled(" Preview ", Style::default().fg(accent)));
     let preview_inner = preview_block.inner(layout[0]);
     frame.render_widget(preview_block, layout[0]);
+    let preview_max_h = preview_inner
+        .height
+        .saturating_sub(6)
+        .saturating_mul(3)
+        .saturating_div(4)
+        .max(1);
     let (preview_title, preview_content) = home_workflow_preview_lines(
         app,
         kind,
         preview_inner.width.saturating_sub(4) / 2,
-        preview_inner.height.saturating_sub(6),
+        preview_max_h,
     );
     let threshold_marker = if app.animation_import_settings.threshold == app.config.base_threshold {
         "default"
@@ -10636,6 +10795,35 @@ fn preview_lines_stable_frame(
     render_binary_preview_lines(&matrix, src_w, src_h, max_w, max_h, true, false)
 }
 
+fn preview_lines_from_coverage_stable_frame(
+    coverage: &[u8],
+    width_u32: u32,
+    height_u32: u32,
+    threshold: u8,
+    invert: bool,
+    max_w: u16,
+    max_h: u16,
+) -> Vec<Line<'static>> {
+    let src_w = width_u32 as usize;
+    let src_h = height_u32 as usize;
+    if src_w == 0 || src_h == 0 || max_w == 0 || max_h == 0 {
+        return vec![Line::from("    [Preview too small]")];
+    }
+    if coverage.len() != src_w.saturating_mul(src_h) {
+        return vec![Line::from("    [Preview unavailable]")];
+    }
+    let mut matrix = vec![false; src_w.saturating_mul(src_h)];
+    for y in 0..src_h {
+        for x in 0..src_w {
+            let idx = y * src_w + x;
+            if (coverage[idx] >= threshold) ^ invert {
+                matrix[idx] = true;
+            }
+        }
+    }
+    render_binary_preview_lines(&matrix, src_w, src_h, max_w, max_h, true, false)
+}
+
 fn looks_like_path_payload(payload: &str) -> bool {
     let trimmed = payload.trim();
     if trimmed.is_empty() {
@@ -12561,6 +12749,66 @@ mod tests {
         assert_eq!(app.animation_import_settings.threshold, 65);
         handle_key(&mut app, KeyCode::Down).expect("down decreases threshold");
         assert_eq!(app.animation_import_settings.threshold, 64);
+    }
+
+    #[test]
+    fn tweaking_grayscale_knobs_change_live_test_image_output() {
+        let project_dir = make_temp_dir("tweaking-live-grayscale-output");
+        let manifest_path = project_dir.join("petiglyph.toml");
+        write_manifest(&manifest_path, &Manifest::default()).expect("manifest is written");
+        let icons_dir = project_dir.join("icons");
+        fs::create_dir_all(&icons_dir).expect("icons dir is created");
+
+        let source_path = icons_dir.join("source.png");
+        let mut image = RgbaImage::from_pixel(8, 8, Rgba([0, 0, 0, 0]));
+        for y in 2..6 {
+            for x in 2..6 {
+                let shade = if x < 4 { 80 } else { 180 };
+                image.put_pixel(x, y, Rgba([shade, shade, shade, 255]));
+            }
+        }
+        image.save(&source_path).expect("source image is written");
+
+        let config = RuntimeConfig {
+            project_dir: project_dir.clone(),
+            project_id: "test-tweaking-live-grayscale-output".to_string(),
+            input_dir: icons_dir,
+            out_dir: project_dir.join("build"),
+            font_name: "Petiglyph".to_string(),
+            glyph_size: 8,
+            base_threshold: 64,
+            threshold_overrides: BTreeMap::new(),
+            invert_overrides: BTreeMap::new(),
+            compositions: BTreeMap::new(),
+            animations: Vec::new(),
+            codepoint_start: 0x10_0000,
+        };
+        let mut app = App::new(manifest_path, config);
+        app.start_home_workflow(HomeCreationKind::Glyph);
+        app.home_workflow = HomeWorkflow::Tweaking(HomeCreationKind::Glyph);
+        app.home_workflow_recent_imported_source_keys = vec!["source.png".to_string()];
+        app.animation_import_settings.threshold = 180;
+        app.animation_import_settings.grayscale_enabled = true;
+
+        app.animation_import_settings.grayscale_options.brightness = -80;
+        let darker = app
+            .render_test_image_for_source("source.png")
+            .expect("darker render succeeds")
+            .expect("darker render exists")
+            .0;
+
+        app.animation_import_settings.grayscale_options.brightness = 80;
+        let brighter = app
+            .render_test_image_for_source("source.png")
+            .expect("brighter render succeeds")
+            .expect("brighter render exists")
+            .0;
+
+        assert_ne!(
+            darker.as_raw(),
+            brighter.as_raw(),
+            "live grayscale knob changes should affect test-image output"
+        );
     }
 
     #[test]
