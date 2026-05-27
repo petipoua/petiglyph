@@ -41,7 +41,9 @@ use crate::build::{
     preprocess_sources_with_compositions_and_standard_sources,
 };
 use crate::glyph_debug;
-use crate::image_pipeline::{coverage_map_from_image, preprocess_standard_source};
+use crate::image_pipeline::{
+    coverage_map_from_image, load_source_rgba, preprocess_standard_source,
+};
 use crate::install::{
     DEFAULT_INSTALL_NAME_MODE, FontInstallNameMode, effective_font_name,
     expected_install_ttf_path_for_mode, install_built_font, install_dir_for_manifest,
@@ -219,6 +221,7 @@ pub(crate) fn tui_workspace(
     while !app.quit {
         app.poll_build_task();
         app.poll_font_task();
+        app.poll_project_switch_task();
         app.poll_animation_import_task();
         app.update_animation_preview();
         app.clear_expired_switch_notice();
@@ -517,6 +520,7 @@ pub(crate) struct App {
     launch_overrides: TuiLaunchOverrides,
     build_task: Option<BuildTask>,
     install_task: Option<InstallTask>,
+    project_switch_task: Option<ProjectSwitchTask>,
     animation_import_task: Option<AnimationImportTask>,
     animation_create_pending: Option<AnimationConfig>,
     animation_create_started_at: Option<Instant>,
@@ -587,6 +591,13 @@ struct InstallTask {
     spinner_last_frame_at: Instant,
 }
 
+struct ProjectSwitchTask {
+    target_manifest_path: PathBuf,
+    receiver: Receiver<Result<ProjectSwitchTaskOutput, String>>,
+    spinner_index: usize,
+    spinner_last_frame_at: Instant,
+}
+
 struct AnimationImportTask {
     receiver: Receiver<Result<AnimationImportTaskOutput, String>>,
     spinner_index: usize,
@@ -639,6 +650,16 @@ enum InstallTaskOutput {
     Uninstall {
         status_message: String,
     },
+}
+
+#[derive(Debug, Clone)]
+struct ProjectSwitchTaskOutput {
+    manifest_path: PathBuf,
+    config: RuntimeConfig,
+    loaded: LoadedGlyphs,
+    last_build: Option<BuildSummary>,
+    last_sample: Option<String>,
+    installed_font_path: Option<PathBuf>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1446,7 +1467,7 @@ pub(crate) fn should_dispatch_key_kind(kind: KeyEventKind) -> bool {
 
 fn app_debug_state(app: &App) -> String {
     format!(
-        "view={:?} welcome_focus={:?} glyphs_focus={:?} grid_config={} selecting_for_grid={} selected_project={} editing={} verbose_paths={} input={:?} cursor={} visual_cursor={} build_task={} install_task={} delete_confirm_selection={:?} renaming={} status={:?} quit={}",
+        "view={:?} welcome_focus={:?} glyphs_focus={:?} grid_config={} selecting_for_grid={} selected_project={} editing={} verbose_paths={} input={:?} cursor={} visual_cursor={} build_task={} install_task={} project_switch_task={} delete_confirm_selection={:?} renaming={} status={:?} quit={}",
         app.view,
         app.welcome_focus,
         app.glyphs_focus,
@@ -1460,6 +1481,7 @@ fn app_debug_state(app: &App) -> String {
         app.create_input.visual_cursor(),
         app.build_task.is_some(),
         app.install_task.is_some(),
+        app.project_switch_task.is_some(),
         app.delete_project_confirm_selection,
         app.renaming_input.is_some(),
         app.status,
@@ -2261,6 +2283,10 @@ fn handle_welcome_key(app: &mut App, key: KeyEvent) -> Result<()> {
     if app.renaming_input.is_some() {
         return handle_rename_mode_key(app, code);
     }
+    if app.project_switch_task.is_some() && !matches!(code, KeyCode::Esc | KeyCode::Char('q')) {
+        app.status = Some("project switch in progress...".to_string());
+        return Ok(());
+    }
     match code {
         KeyCode::Esc => {
             tui_debug_log("welcome.esc.before", app_debug_state(app));
@@ -2310,6 +2336,7 @@ fn handle_welcome_key(app: &mut App, key: KeyEvent) -> Result<()> {
                 return Ok(());
             }
             app.refresh_workspace_discovery()?;
+            app.refresh_pua_usage_summary();
             if app.active_project.is_some() {
                 app.reload_glyphs()?;
             }
@@ -2595,6 +2622,10 @@ fn handle_welcome_key(app: &mut App, key: KeyEvent) -> Result<()> {
             }
             WelcomeFocus::ProjectList => {
                 app.welcome_input_editing = false;
+                if app.project_switch_task.is_some() {
+                    app.status = Some("project switch in progress...".to_string());
+                    return Ok(());
+                }
                 if let Some(project) = app.projects.get(app.selected_project) {
                     let is_active = app
                         .active_project
@@ -2605,7 +2636,10 @@ fn handle_welcome_key(app: &mut App, key: KeyEvent) -> Result<()> {
                         app.renaming_original = Some(app.config.font_name.clone());
                         app.status = Some("renaming project...".to_string());
                     } else {
-                        app.set_active_project(project.manifest_path.clone())?;
+                        app.start_project_switch_task(
+                            project.manifest_path.clone(),
+                            project.font_name.clone(),
+                        )?;
                     }
                 }
             }
@@ -2863,7 +2897,7 @@ fn live_import_source_coverage_uncached(
     glyph_size: u32,
     settings: &AnimationImportSettingsState,
 ) -> Option<Vec<u8>> {
-    let mut image = image::open(source_path).ok()?.to_rgba8();
+    let mut image = load_source_rgba(source_path, glyph_size).ok()?;
     apply_live_grayscale_processing(&mut image, settings);
     coverage_map_from_image(&image, glyph_size).ok()
 }
@@ -3472,11 +3506,15 @@ fn draw_welcome_view(
             ),
         ]));
     } else {
+        let switching_target = app.project_switch_target_manifest_path();
+        let switching_spinner = app.project_switch_spinner_frame();
         for (idx, project) in app.projects.iter().enumerate() {
             let is_active = app
                 .active_project
                 .as_ref()
                 .is_some_and(|active| active == &project.manifest_path);
+            let is_switching_target =
+                switching_target.is_some_and(|target| target == project.manifest_path.as_path());
             let is_selected =
                 app.welcome_focus == WelcomeFocus::ProjectList && app.selected_project == idx;
             let is_renaming = is_active && app.renaming_input.is_some();
@@ -3561,6 +3599,20 @@ fn draw_welcome_view(
                         Style::default().fg(Color::White)
                     },
                 ));
+                if is_switching_target {
+                    if let Some(spinner) = switching_spinner {
+                        row.push(Span::styled(
+                            format!("  {spinner}"),
+                            Style::default()
+                                .fg(Color::Yellow)
+                                .add_modifier(Modifier::BOLD),
+                        ));
+                    }
+                    row.push(Span::styled(
+                        " loading...",
+                        Style::default().fg(Color::Yellow),
+                    ));
+                }
             }
             if app.verbose_paths && !is_renaming {
                 row.push(Span::styled(
@@ -4611,6 +4663,7 @@ impl App {
         };
 
         app.refresh_workspace_discovery()?;
+        app.refresh_pua_usage_summary();
         if app.active_project.is_some() {
             app.reload_glyphs()?;
         }
@@ -4677,6 +4730,7 @@ impl App {
             launch_overrides,
             build_task: None,
             install_task: None,
+            project_switch_task: None,
             animation_import_task: None,
             animation_create_pending: None,
             animation_create_started_at: None,
@@ -4762,6 +4816,7 @@ impl App {
             launch_overrides,
             build_task: None,
             install_task: None,
+            project_switch_task: None,
             animation_import_task: None,
             animation_create_pending: None,
             animation_create_started_at: None,
@@ -4785,7 +4840,6 @@ impl App {
                 self.status = Some(format!("font scan warning: {err}"));
             }
         }
-        self.pua_usage_summary = supplementary_pua_usage_summary().ok();
         self.sync_selected_installed_font();
 
         if self.projects.is_empty() {
@@ -4840,6 +4894,10 @@ impl App {
         }
 
         Ok(())
+    }
+
+    fn refresh_pua_usage_summary(&mut self) {
+        self.pua_usage_summary = supplementary_pua_usage_summary().ok();
     }
 
     fn sync_selected_project(&mut self) {
@@ -5232,8 +5290,45 @@ impl App {
         Ok(())
     }
 
+    fn start_project_switch_task(
+        &mut self,
+        manifest_path: PathBuf,
+        project_name: String,
+    ) -> Result<()> {
+        if self.install_in_progress()
+            || self.build_in_progress()
+            || self.project_switch_task.is_some()
+        {
+            self.status = Some(
+                "a background task is in progress; wait before switching projects".to_string(),
+            );
+            return Ok(());
+        }
+
+        let launch_overrides = self.launch_overrides.clone();
+        let target_manifest_path = manifest_path.clone();
+        let (sender, receiver) = mpsc::channel();
+        thread::spawn(move || {
+            let result = load_project_switch_task(manifest_path, launch_overrides)
+                .map_err(|err| err.to_string());
+            let _ = sender.send(result);
+        });
+
+        self.project_switch_task = Some(ProjectSwitchTask {
+            target_manifest_path,
+            receiver,
+            spinner_index: 0,
+            spinner_last_frame_at: Instant::now(),
+        });
+        self.status = Some(format!("switching to project `{project_name}`..."));
+        Ok(())
+    }
+
     fn set_active_project(&mut self, manifest_path: PathBuf) -> Result<()> {
-        if self.install_in_progress() || self.build_in_progress() {
+        if self.install_in_progress()
+            || self.build_in_progress()
+            || self.project_switch_task.is_some()
+        {
             self.status = Some(
                 "a background task is in progress; wait before switching projects".to_string(),
             );
@@ -5250,9 +5345,8 @@ impl App {
             .unwrap_or_else(|| Path::new("."))
             .to_path_buf();
         self.active_project = Some(manifest_path);
-        self.reload_config()?;
         self.reload_glyphs()?;
-        self.refresh_workspace_discovery()?;
+        self.sync_selected_project();
 
         if changed {
             self.switch_notice = Some(ProjectSwitchNotice {
@@ -6083,6 +6177,7 @@ impl App {
                         installed_path.display()
                     ));
                 } else {
+                    self.refresh_pua_usage_summary();
                     if let Some(idx) = self
                         .installed_fonts
                         .iter()
@@ -6100,18 +6195,90 @@ impl App {
                 if let Err(err) = self.refresh_workspace_discovery() {
                     self.status = Some(format!("{status_message}; refresh failed: {err}"));
                 } else if self.active_project.is_some() {
+                    self.refresh_pua_usage_summary();
                     if let Err(err) = self.reload_config() {
                         self.status = Some(format!("{status_message}; reload failed: {err}"));
                     } else {
                         self.status = Some(status_message);
                     }
                 } else {
+                    self.refresh_pua_usage_summary();
                     self.status = Some(status_message);
                 }
             }
             Err(err) => {
                 self.status = Some(format_status_from_error(&self.manifest_path, &err));
                 let _ = self.reload_config();
+            }
+        }
+    }
+
+    fn poll_project_switch_task(&mut self) {
+        let mut task_result = None;
+        let mut disconnected = false;
+
+        if let Some(task) = self.project_switch_task.as_mut() {
+            let frame_duration = Duration::from_millis(FONT_TASK_SPINNER_FRAME_MS);
+            let now = Instant::now();
+            while now.duration_since(task.spinner_last_frame_at) >= frame_duration {
+                task.spinner_index = (task.spinner_index + 1) % INSTALL_SPINNER_FRAMES.len();
+                task.spinner_last_frame_at += frame_duration;
+            }
+
+            match task.receiver.try_recv() {
+                Ok(result) => task_result = Some(result),
+                Err(TryRecvError::Empty) => {}
+                Err(TryRecvError::Disconnected) => disconnected = true,
+            }
+        }
+
+        if disconnected {
+            self.project_switch_task = None;
+            self.status = Some("project switch task terminated unexpectedly".to_string());
+            return;
+        }
+
+        let Some(result) = task_result else {
+            return;
+        };
+
+        self.project_switch_task = None;
+        match result {
+            Ok(output) => {
+                let old_label = self.active_project_switch_label();
+                let changed = self.active_project.as_ref() != Some(&output.manifest_path);
+
+                self.manifest_path = output.manifest_path.clone();
+                self.project_dir = output
+                    .manifest_path
+                    .parent()
+                    .unwrap_or_else(|| Path::new("."))
+                    .to_path_buf();
+                self.active_project = Some(output.manifest_path.clone());
+                self.config = output.config;
+                self.glyphs = output.loaded.glyphs;
+                self.live_glyph_source_count = Some(self.glyphs.len());
+                self.live_glyph_source_probe_fingerprint = Some(output.loaded.source_fingerprint);
+                self.live_glyph_source_probe_at = Some(Instant::now());
+                self.last_build = output.last_build;
+                self.last_sample = output.last_sample;
+                self.installed_font_path = output.installed_font_path;
+                self.debug_log_path = Some(glyph_debug::session_log_path(&self.config.project_dir));
+
+                self.clamp_glyph_selection();
+                self.sync_selected_project();
+                self.status = Some(format!("opened project `{}`", self.config.font_name));
+
+                if changed {
+                    self.switch_notice = Some(ProjectSwitchNotice {
+                        from_label: old_label,
+                        to_label: self.active_project_switch_label(),
+                        started_at: Instant::now(),
+                    });
+                }
+            }
+            Err(err) => {
+                self.status = Some(format_status_from_error(&self.manifest_path, &err));
             }
         }
     }
@@ -6234,6 +6401,18 @@ impl App {
         })
     }
 
+    fn project_switch_spinner_frame(&self) -> Option<&'static str> {
+        self.project_switch_task
+            .as_ref()
+            .map(|task| INSTALL_SPINNER_FRAMES[task.spinner_index % INSTALL_SPINNER_FRAMES.len()])
+    }
+
+    fn project_switch_target_manifest_path(&self) -> Option<&Path> {
+        self.project_switch_task
+            .as_ref()
+            .map(|task| task.target_manifest_path.as_path())
+    }
+
     fn font_task_button_style(&self) -> Option<Style> {
         self.font_task_kind().map(FontTaskKind::progress_style)
     }
@@ -6257,6 +6436,7 @@ impl App {
     pub(crate) fn background_task_in_progress(&self) -> bool {
         self.build_in_progress()
             || self.install_in_progress()
+            || self.project_switch_task.is_some()
             || self.animation_import_task.is_some()
     }
 
@@ -6264,6 +6444,7 @@ impl App {
     pub(crate) fn poll_background_tasks_for_test(&mut self) {
         self.poll_build_task();
         self.poll_font_task();
+        self.poll_project_switch_task();
         self.poll_animation_import_task();
     }
 
@@ -6465,6 +6646,33 @@ fn inactive_runtime_config(workspace_root: &Path) -> RuntimeConfig {
 
 pub(crate) fn switch_notice_visible(started_at: Instant, now: Instant) -> bool {
     now.duration_since(started_at) < Duration::from_millis(SWITCH_NOTICE_MS)
+}
+
+fn load_project_switch_task(
+    manifest_path: PathBuf,
+    launch_overrides: TuiLaunchOverrides,
+) -> Result<ProjectSwitchTaskOutput> {
+    let config = load_runtime_config(
+        &manifest_path,
+        launch_overrides.input_dir,
+        None,
+        launch_overrides.threshold,
+        launch_overrides.glyph_size,
+        launch_overrides.codepoint_start,
+    )?;
+    let loaded = load_interactive_glyphs_from_config(&config)?;
+    let (last_build, last_sample) = cached_build_state(&config);
+    let installed_font_path =
+        cached_installed_font_path(&manifest_path, &config.font_name, &config.project_id);
+
+    Ok(ProjectSwitchTaskOutput {
+        manifest_path,
+        config,
+        loaded,
+        last_build,
+        last_sample,
+        installed_font_path,
+    })
 }
 
 fn build_project_task(
@@ -7486,6 +7694,7 @@ fn handle_key_event(app: &mut App, key: KeyEvent) -> Result<()> {
                 return Ok(());
             }
             app.refresh_workspace_discovery()?;
+            app.refresh_pua_usage_summary();
             app.reload_glyphs()?;
             app.view = if app.glyphs.is_empty() {
                 AppView::Welcome
@@ -8452,34 +8661,25 @@ fn draw_animation_import_workflow_ui(
     let inner = block.inner(area);
     frame.render_widget(block, area);
 
-    let layout = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Min(0),
-            Constraint::Length(3),
-            Constraint::Length(3),
-            Constraint::Length(1),
-        ])
-        .margin(1)
-        .split(inner);
-
-    let preview_block = Block::default()
-        .borders(Borders::ALL)
-        .border_type(BorderType::Rounded)
-        .border_style(Style::default().fg(muted))
-        .title(Span::styled(" Preview ", Style::default().fg(accent)));
-    let preview_inner = preview_block.inner(layout[0]);
-    frame.render_widget(preview_block, layout[0]);
-    let preview_max_h = preview_inner
+    let content_area = Rect {
+        x: inner.x.saturating_add(1),
+        y: inner.y.saturating_add(1),
+        width: inner.width.saturating_sub(2),
+        height: inner.height.saturating_sub(2),
+    };
+    let fixed_controls_height = 3u16 + 3 + 1;
+    let max_preview_area_height = content_area
         .height
-        .saturating_sub(6)
-        .saturating_mul(3)
-        .saturating_div(4)
+        .saturating_sub(fixed_controls_height)
+        .max(3);
+    let preview_inner_width = content_area.width.saturating_sub(2);
+    let preview_max_h = max_preview_area_height
+        .saturating_sub(3) // borders plus the source/threshold header line.
         .max(1);
     let (preview_title, preview_content) = home_workflow_preview_lines(
         app,
         kind,
-        preview_inner.width.saturating_sub(4) / 2,
+        preview_inner_width.saturating_sub(4) / 2,
         preview_max_h,
     );
     let threshold_marker = if app.animation_import_settings.threshold == app.config.base_threshold {
@@ -8500,6 +8700,27 @@ fn draw_animation_import_workflow_ui(
         ),
     ])];
     preview_lines.extend(preview_content);
+    let preview_area_height = (preview_lines.len() as u16)
+        .saturating_add(2)
+        .clamp(3, max_preview_area_height);
+    let layout = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(preview_area_height),
+            Constraint::Length(3),
+            Constraint::Length(3),
+            Constraint::Length(1),
+            Constraint::Min(0),
+        ])
+        .split(content_area);
+
+    let preview_block = Block::default()
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(Style::default().fg(muted))
+        .title(Span::styled(" Preview ", Style::default().fg(accent)));
+    let preview_inner = preview_block.inner(layout[0]);
+    frame.render_widget(preview_block, layout[0]);
     frame.render_widget(
         Paragraph::new(preview_lines).wrap(Wrap { trim: false }),
         preview_inner,
@@ -10517,7 +10738,9 @@ fn composition_preview_lines(
     if let Some((cropped, cropped_w, cropped_h)) =
         crop_binary_matrix_to_active_bounds(&matrix, width, height)
     {
-        render_binary_preview_lines(&cropped, cropped_w, cropped_h, max_w, max_h, false, true)
+        render_binary_preview_lines(
+            &cropped, cropped_w, cropped_h, max_w, max_h, false, true, false,
+        )
     } else {
         vec![Line::from("    [No visible pixels at threshold]")]
     }
@@ -10575,7 +10798,7 @@ fn composition_preview_lines_stable_frame(
         }
     }
 
-    render_binary_preview_lines(&matrix, width, height, max_w, max_h, true, false)
+    render_binary_preview_lines(&matrix, width, height, max_w, max_h, true, false, false)
 }
 
 fn crop_binary_matrix_to_active_bounds(
@@ -10670,6 +10893,7 @@ fn render_binary_preview_lines(
     max_h: u16,
     allow_upscale: bool,
     trim_empty_rows: bool,
+    preserve_aspect: bool,
 ) -> Vec<Line<'static>> {
     const PREVIEW_X_COMP: f32 = 0.88;
 
@@ -10684,10 +10908,10 @@ fn render_binary_preview_lines(
     } else {
         src_w.min(max_w)
     };
-    let out_w = ((usize::max(1, base_w) as f32) * PREVIEW_X_COMP)
+    let max_out_w = ((usize::max(1, base_w) as f32) * PREVIEW_X_COMP)
         .round()
         .max(1.0) as usize;
-    let out_h = usize::max(
+    let max_out_h = usize::max(
         1,
         if allow_upscale {
             max_h
@@ -10695,6 +10919,15 @@ fn render_binary_preview_lines(
             src_h.min(max_h)
         },
     );
+    let (out_w, out_h) = if preserve_aspect {
+        let scale = (max_out_w as f64 / src_w as f64).min(max_out_h as f64 / src_h as f64);
+        (
+            ((src_w as f64 * scale).round() as usize).clamp(1, max_out_w),
+            ((src_h as f64 * scale).round() as usize).clamp(1, max_out_h),
+        )
+    } else {
+        (max_out_w, max_out_h)
+    };
     let sample_idx = |out_idx: usize, out_len: usize, src_len: usize| -> usize {
         let numerator = (2 * out_idx + 1) * src_len;
         let denominator = 2 * out_len;
@@ -10766,7 +10999,7 @@ fn preview_lines(
         return vec![Line::from("    [No visible pixels at threshold]")];
     };
 
-    render_binary_preview_lines(&cropped, crop_w, crop_h, max_w, max_h, true, true)
+    render_binary_preview_lines(&cropped, crop_w, crop_h, max_w, max_h, true, true, false)
 }
 
 fn preview_lines_stable_frame(
@@ -10792,7 +11025,7 @@ fn preview_lines_stable_frame(
         }
     }
 
-    render_binary_preview_lines(&matrix, src_w, src_h, max_w, max_h, true, false)
+    render_binary_preview_lines(&matrix, src_w, src_h, max_w, max_h, true, false, false)
 }
 
 fn preview_lines_from_coverage_stable_frame(
@@ -10821,7 +11054,12 @@ fn preview_lines_from_coverage_stable_frame(
             }
         }
     }
-    render_binary_preview_lines(&matrix, src_w, src_h, max_w, max_h, true, false)
+    let Some((cropped, crop_w, crop_h)) =
+        crop_binary_matrix_to_active_y_bounds(&matrix, src_w, src_h)
+    else {
+        return vec![Line::from("    [No visible pixels at threshold]")];
+    };
+    render_binary_preview_lines(&cropped, crop_w, crop_h, max_w, max_h, true, true, true)
 }
 
 fn looks_like_path_payload(payload: &str) -> bool {
@@ -11645,7 +11883,7 @@ mod tests {
         collect_dropped_paths, composition_preview_lines_stable_frame,
         default_animation_name_from_frames, drag_images_here_lines, emitted_composition_cols,
         glyph_matches_animation_frame_source, grayscale_options_are_default, handle_key,
-        handle_paste_event_for_test, import_image_files_to_input,
+        handle_paste_event_for_test, home_workflow_preview_lines, import_image_files_to_input,
         installed_animation_blocks_for_definition, installed_animation_frame_index,
         installed_animation_source_block, persist_composition_definition, preview_leftmost_control,
         preview_lines, prune_static_sample_blocks, scrollbar_thumb_geometry,
@@ -11655,7 +11893,7 @@ mod tests {
     use crate::build::{CompositionTileInfo, PreprocessedGlyph};
     use crate::project::{AnimationDef, CompositionDef, Manifest, read_manifest, write_manifest};
     use anyhow::anyhow;
-    use image::{Rgba, RgbaImage};
+    use image::{Rgb, RgbImage, Rgba, RgbaImage};
     use std::collections::BTreeMap;
     use std::fs;
     use std::path::PathBuf;
@@ -11679,6 +11917,24 @@ mod tests {
             }
         }
         img.save(path).expect("test png is written");
+    }
+
+    fn write_test_jpg(path: &std::path::Path) {
+        let mut img = RgbImage::from_pixel(8, 8, Rgb([255, 255, 255]));
+        for y in 2..6 {
+            for x in 2..6 {
+                img.put_pixel(x, y, Rgb([0, 0, 0]));
+            }
+        }
+        img.save(path).expect("test jpg is written");
+    }
+
+    fn write_test_svg(path: &std::path::Path) {
+        fs::write(
+            path,
+            r#"<svg xmlns="http://www.w3.org/2000/svg" width="8" height="8" viewBox="0 0 8 8"><rect width="8" height="8" fill="none"/><rect x="2" y="2" width="4" height="4" fill="black"/></svg>"#,
+        )
+        .expect("test svg is written");
     }
 
     #[test]
@@ -12808,6 +13064,230 @@ mod tests {
             darker.as_raw(),
             brighter.as_raw(),
             "live grayscale knob changes should affect test-image output"
+        );
+    }
+
+    #[test]
+    fn create_workflow_tweaking_popup_previews_jpg_sources() {
+        let project_dir = make_temp_dir("create-workflow-jpg-preview");
+        let manifest_path = project_dir.join("petiglyph.toml");
+        write_manifest(&manifest_path, &Manifest::default()).expect("manifest is written");
+        let icons_dir = project_dir.join("icons");
+        fs::create_dir_all(&icons_dir).expect("icons dir is created");
+        let external_dir = project_dir.join("external");
+        fs::create_dir_all(&external_dir).expect("external dir is created");
+        let dropped = external_dir.join("source.jpg");
+        write_test_jpg(&dropped);
+
+        let config = RuntimeConfig {
+            project_dir: project_dir.clone(),
+            project_id: "test-create-workflow-jpg-preview".to_string(),
+            input_dir: icons_dir,
+            out_dir: project_dir.join("build"),
+            font_name: "Petiglyph".to_string(),
+            glyph_size: 8,
+            base_threshold: 64,
+            threshold_overrides: BTreeMap::new(),
+            invert_overrides: BTreeMap::new(),
+            compositions: BTreeMap::new(),
+            animations: Vec::new(),
+            codepoint_start: 0x10_0000,
+        };
+        let mut app = App::new(manifest_path, config);
+        app.start_home_workflow(HomeCreationKind::Glyph);
+        handle_paste_event_for_test(&mut app, &dropped.display().to_string())
+            .expect("jpg drop/paste import should succeed");
+        app.home_workflow = HomeWorkflow::Tweaking(HomeCreationKind::Glyph);
+
+        let (title, lines) = home_workflow_preview_lines(&app, HomeCreationKind::Glyph, 16, 16);
+        let rendered = format!("{lines:?}");
+
+        assert_eq!(title, "Source: source.jpg");
+        assert!(
+            !rendered.contains("Preview not available yet"),
+            "jpg source should render a live preview in the tweaking popup"
+        );
+        assert!(
+            rendered.contains("█") || rendered.contains("▄") || rendered.contains("▀"),
+            "jpg preview should contain rendered semi-block glyphs"
+        );
+        assert!(
+            lines
+                .last()
+                .is_some_and(|line| format!("{line:?}").contains("█")
+                    || format!("{line:?}").contains("▄")
+                    || format!("{line:?}").contains("▀")),
+            "jpg preview should not leave blank rows after the rendered glyph"
+        );
+    }
+
+    #[test]
+    fn create_workflow_tweaking_popup_previews_png_renamed_as_jpg() {
+        let project_dir = make_temp_dir("create-workflow-renamed-png-preview");
+        let manifest_path = project_dir.join("petiglyph.toml");
+        write_manifest(&manifest_path, &Manifest::default()).expect("manifest is written");
+        let icons_dir = project_dir.join("icons");
+        fs::create_dir_all(&icons_dir).expect("icons dir is created");
+        let external_dir = project_dir.join("external");
+        fs::create_dir_all(&external_dir).expect("external dir is created");
+        let source_png = external_dir.join("source.png");
+        let dropped = external_dir.join("source.jpg");
+        write_test_png(&source_png);
+        fs::rename(&source_png, &dropped).expect("png fixture is renamed as jpg");
+
+        let config = RuntimeConfig {
+            project_dir: project_dir.clone(),
+            project_id: "test-create-workflow-renamed-png-preview".to_string(),
+            input_dir: icons_dir,
+            out_dir: project_dir.join("build"),
+            font_name: "Petiglyph".to_string(),
+            glyph_size: 8,
+            base_threshold: 64,
+            threshold_overrides: BTreeMap::new(),
+            invert_overrides: BTreeMap::new(),
+            compositions: BTreeMap::new(),
+            animations: Vec::new(),
+            codepoint_start: 0x10_0000,
+        };
+        let mut app = App::new(manifest_path, config);
+        app.start_home_workflow(HomeCreationKind::Glyph);
+        handle_paste_event_for_test(&mut app, &dropped.display().to_string())
+            .expect("renamed png drop/paste import should succeed");
+        app.home_workflow = HomeWorkflow::Tweaking(HomeCreationKind::Glyph);
+
+        let (title, lines) = home_workflow_preview_lines(&app, HomeCreationKind::Glyph, 16, 16);
+        let rendered = format!("{lines:?}");
+
+        assert_eq!(title, "Source: source.jpg");
+        assert!(
+            !rendered.contains("Preview not available yet"),
+            "png bytes with a jpg extension should still render a live preview"
+        );
+        assert!(
+            rendered.contains("█") || rendered.contains("▄") || rendered.contains("▀"),
+            "renamed png preview should contain rendered semi-block glyphs"
+        );
+        assert!(
+            lines
+                .last()
+                .is_some_and(|line| format!("{line:?}").contains("█")
+                    || format!("{line:?}").contains("▄")
+                    || format!("{line:?}").contains("▀")),
+            "renamed png preview should not leave blank rows after the rendered glyph"
+        );
+    }
+
+    #[test]
+    fn create_workflow_tweaking_popup_previews_svg_sources() {
+        let project_dir = make_temp_dir("create-workflow-svg-preview");
+        let manifest_path = project_dir.join("petiglyph.toml");
+        write_manifest(&manifest_path, &Manifest::default()).expect("manifest is written");
+        let icons_dir = project_dir.join("icons");
+        fs::create_dir_all(&icons_dir).expect("icons dir is created");
+        let external_dir = project_dir.join("external");
+        fs::create_dir_all(&external_dir).expect("external dir is created");
+        let dropped = external_dir.join("source.svg");
+        write_test_svg(&dropped);
+
+        let config = RuntimeConfig {
+            project_dir: project_dir.clone(),
+            project_id: "test-create-workflow-svg-preview".to_string(),
+            input_dir: icons_dir,
+            out_dir: project_dir.join("build"),
+            font_name: "Petiglyph".to_string(),
+            glyph_size: 8,
+            base_threshold: 64,
+            threshold_overrides: BTreeMap::new(),
+            invert_overrides: BTreeMap::new(),
+            compositions: BTreeMap::new(),
+            animations: Vec::new(),
+            codepoint_start: 0x10_0000,
+        };
+        let mut app = App::new(manifest_path, config);
+        app.start_home_workflow(HomeCreationKind::Glyph);
+        handle_paste_event_for_test(&mut app, &dropped.display().to_string())
+            .expect("svg drop/paste import should succeed");
+        app.home_workflow = HomeWorkflow::Tweaking(HomeCreationKind::Glyph);
+
+        let (title, lines) = home_workflow_preview_lines(&app, HomeCreationKind::Glyph, 16, 16);
+        let rendered = format!("{lines:?}");
+
+        assert_eq!(title, "Source: source.svg");
+        assert!(
+            !rendered.contains("Preview not available yet"),
+            "svg source should render a live preview in the tweaking popup"
+        );
+        assert!(
+            rendered.contains("█") || rendered.contains("▄") || rendered.contains("▀"),
+            "svg preview should contain rendered semi-block glyphs"
+        );
+        assert!(
+            lines
+                .last()
+                .is_some_and(|line| format!("{line:?}").contains("█")
+                    || format!("{line:?}").contains("▄")
+                    || format!("{line:?}").contains("▀")),
+            "svg preview should not leave blank rows after the rendered glyph"
+        );
+    }
+
+    #[test]
+    fn create_workflow_tweaking_popup_previews_copilot_svg_fixture() {
+        let fixture = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("icons/copilot.svg");
+        assert!(fixture.is_file(), "copilot svg fixture should exist");
+
+        let project_dir = make_temp_dir("create-workflow-copilot-svg-preview");
+        let manifest_path = project_dir.join("petiglyph.toml");
+        write_manifest(&manifest_path, &Manifest::default()).expect("manifest is written");
+        let icons_dir = project_dir.join("icons");
+        fs::create_dir_all(&icons_dir).expect("icons dir is created");
+
+        let config = RuntimeConfig {
+            project_dir: project_dir.clone(),
+            project_id: "test-create-workflow-copilot-svg-preview".to_string(),
+            input_dir: icons_dir,
+            out_dir: project_dir.join("build"),
+            font_name: "Petiglyph".to_string(),
+            glyph_size: 64,
+            base_threshold: 64,
+            threshold_overrides: BTreeMap::new(),
+            invert_overrides: BTreeMap::new(),
+            compositions: BTreeMap::new(),
+            animations: Vec::new(),
+            codepoint_start: 0x10_0000,
+        };
+        let mut app = App::new(manifest_path, config);
+        app.start_home_workflow(HomeCreationKind::Glyph);
+        handle_paste_event_for_test(&mut app, &fixture.display().to_string())
+            .expect("copilot svg drop/paste import should succeed");
+        app.home_workflow = HomeWorkflow::Tweaking(HomeCreationKind::Glyph);
+
+        let (title, lines) = home_workflow_preview_lines(&app, HomeCreationKind::Glyph, 32, 32);
+        let rendered = format!("{lines:?}");
+
+        assert_eq!(title, "Source: copilot.svg");
+        assert!(
+            !rendered.contains("Preview not available yet"),
+            "copilot svg should render a live preview in the tweaking popup"
+        );
+        assert!(
+            rendered.contains("█") || rendered.contains("▄") || rendered.contains("▀"),
+            "copilot svg preview should contain rendered semi-block glyphs"
+        );
+        assert!(
+            lines
+                .last()
+                .is_some_and(|line| format!("{line:?}").contains("█")
+                    || format!("{line:?}").contains("▄")
+                    || format!("{line:?}").contains("▀")),
+            "copilot svg preview should not leave blank rows after the rendered glyph"
+        );
+
+        let (_, tall_panel_lines) =
+            home_workflow_preview_lines(&app, HomeCreationKind::Glyph, 32, 96);
+        assert!(
+            tall_panel_lines.len() <= 32,
+            "create workflow preview should fit aspect instead of stretching into all vertical space"
         );
     }
 

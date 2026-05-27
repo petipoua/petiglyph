@@ -1,6 +1,8 @@
 use anyhow::{Context, Result, bail};
 use image::imageops::FilterType;
-use image::{GrayImage, ImageBuffer, Luma, Rgba, RgbaImage};
+use image::{
+    DynamicImage, GrayImage, ImageBuffer, ImageFormat, ImageReader, Luma, Rgba, RgbaImage,
+};
 use resvg::tiny_skia::{Pixmap, Transform};
 use resvg::usvg;
 use std::fs;
@@ -388,10 +390,28 @@ pub(crate) fn load_source_rgba(path: &Path, target_hint: u32) -> Result<RgbaImag
     if ext == "svg" {
         render_svg(path, target_hint)
     } else {
-        let img = image::open(path)
-            .with_context(|| format!("failed to decode image {}", path.display()))?;
+        let (img, _) = load_raster_image(path)?;
         Ok(img.to_rgba8())
     }
+}
+
+pub(crate) fn load_raster_image(path: &Path) -> Result<(DynamicImage, ImageFormat)> {
+    let reader =
+        ImageReader::open(path).with_context(|| format!("failed to open {}", path.display()))?;
+    let mut reader = reader
+        .with_guessed_format()
+        .with_context(|| format!("failed to inspect image format for {}", path.display()))?;
+    let guessed_format = reader.format();
+    let format = guessed_format
+        .or_else(|| ImageFormat::from_path(path).ok())
+        .with_context(|| format!("failed to determine image format for {}", path.display()))?;
+    if guessed_format.is_none() {
+        reader.set_format(format);
+    }
+    let image = reader
+        .decode()
+        .with_context(|| format!("failed to decode image {}", path.display()))?;
+    Ok((image, format))
 }
 
 fn render_svg(path: &Path, target_hint: u32) -> Result<RgbaImage> {
@@ -415,7 +435,16 @@ fn render_svg(path: &Path, target_hint: u32) -> Result<RgbaImage> {
     let transform = Transform::from_scale(out_w as f32 / src_w as f32, out_h as f32 / src_h as f32);
     resvg::render(&tree, transform, &mut pixmap.as_mut());
 
-    let pixels = pixmap.data().to_vec();
+    let mut pixels = pixmap.data().to_vec();
+    for pixel in pixels.chunks_exact_mut(4) {
+        let alpha = pixel[3] as u16;
+        if alpha == 0 || alpha == 255 {
+            continue;
+        }
+        pixel[0] = ((pixel[0] as u16 * 255) / alpha).min(255) as u8;
+        pixel[1] = ((pixel[1] as u16 * 255) / alpha).min(255) as u8;
+        pixel[2] = ((pixel[2] as u16 * 255) / alpha).min(255) as u8;
+    }
     ImageBuffer::from_raw(out_w, out_h, pixels)
         .ok_or_else(|| anyhow::anyhow!("failed to convert rendered SVG to RGBA image"))
 }

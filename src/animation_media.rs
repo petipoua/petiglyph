@@ -1,6 +1,6 @@
 use anyhow::{Context, Result, bail};
-use image::AnimationDecoder;
 use image::codecs::gif::GifDecoder;
+use image::{AnimationDecoder, DynamicImage, ImageFormat, Rgb, RgbImage};
 use std::ffi::OsStr;
 use std::fs;
 use std::fs::File;
@@ -8,6 +8,8 @@ use std::io::BufReader;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::{SystemTime, UNIX_EPOCH};
+
+use crate::image_pipeline::load_raster_image;
 
 #[derive(Debug, Clone)]
 pub(crate) struct AnimationMediaImportResult {
@@ -224,9 +226,9 @@ pub(crate) fn apply_grayscale_processing_to_image_file(
     frame_path: &Path,
     options: AnimationGrayscaleOptions,
 ) -> Result<()> {
-    let mut image = image::open(frame_path)
-        .with_context(|| format!("failed to decode extracted frame {}", frame_path.display()))?
-        .to_rgba8();
+    let (image, format) = load_raster_image(frame_path)
+        .with_context(|| format!("failed to decode extracted frame {}", frame_path.display()))?;
+    let mut image = image.to_rgba8();
 
     for pixel in image.pixels_mut() {
         let luma = luminance_byte(pixel[0], pixel[1], pixel[2]);
@@ -236,10 +238,43 @@ pub(crate) fn apply_grayscale_processing_to_image_file(
         pixel[2] = adjusted;
     }
 
-    image
-        .save(frame_path)
-        .with_context(|| format!("failed to rewrite extracted frame {}", frame_path.display()))?;
+    let output = if format == ImageFormat::Jpeg {
+        let rgb = RgbImage::from_fn(image.width(), image.height(), |x, y| {
+            let pixel = image.get_pixel(x, y);
+            Rgb([pixel[0], pixel[1], pixel[2]])
+        });
+        DynamicImage::ImageRgb8(rgb)
+    } else {
+        DynamicImage::ImageRgba8(image)
+    };
+    let temp_path = temp_rewrite_path(frame_path);
+    let save_result = output
+        .save_with_format(&temp_path, format)
+        .with_context(|| format!("failed to encode grayscale image {}", temp_path.display()));
+    if let Err(error) = save_result {
+        let _ = fs::remove_file(&temp_path);
+        return Err(error);
+    }
+    fs::rename(&temp_path, frame_path).with_context(|| {
+        let _ = fs::remove_file(&temp_path);
+        format!("failed to replace grayscale image {}", frame_path.display())
+    })?;
     Ok(())
+}
+
+fn temp_rewrite_path(path: &Path) -> PathBuf {
+    let file_name = path
+        .file_name()
+        .and_then(|value| value.to_str())
+        .unwrap_or("image");
+    let nonce = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|value| value.as_nanos())
+        .unwrap_or_default();
+    path.with_file_name(format!(
+        ".{file_name}.petiglyph-grayscale-{}-{nonce}.tmp",
+        std::process::id()
+    ))
 }
 
 fn luminance_byte(r: u8, g: u8, b: u8) -> u8 {
