@@ -3836,6 +3836,58 @@ fn empty_glyphs_panel_keeps_list_focus() {
 }
 
 #[test]
+fn glyphs_install_button_reroutes_to_home_install() {
+    let project_dir = make_temp_dir("glyphs-install-reroute");
+    let manifest_path = project_dir.join("petiglyph.toml");
+    write_manifest(&manifest_path, &Manifest::default()).expect("manifest is written");
+
+    let config = RuntimeConfig {
+        project_dir: project_dir.clone(),
+        project_id: "test-glyphs-install-reroute".to_string(),
+        input_dir: project_dir.join("icons"),
+        out_dir: project_dir.join("build"),
+        font_name: "Petiglyph".to_string(),
+        glyph_size: 8,
+        base_threshold: 64,
+        threshold_overrides: BTreeMap::new(),
+        invert_overrides: BTreeMap::new(),
+        compositions: BTreeMap::new(),
+        animations: Vec::new(),
+        codepoint_start: 0x10_0000,
+    };
+
+    let mut app = App::new(manifest_path, config);
+    app.view = AppView::Glyphs;
+    app.glyphs.push(InteractiveGlyph {
+        glyph: PreprocessedGlyph {
+            source_path: project_dir.join("icons/icon.png"),
+            source_key: "icon.png".to_string(),
+            source_parent_key: "icon.png".to_string(),
+            glyph_name: "icon".to_string(),
+            width: 2,
+            height: 2,
+            coverage: vec![255, 0, 0, 255],
+            image_fingerprint: "test".to_string(),
+            composition_tile: None,
+        },
+        saved_threshold: None,
+        working_threshold: 64,
+        saved_invert: false,
+        working_invert: false,
+    });
+
+    handle_key(&mut app, KeyCode::Up).expect("up should focus install button at top of list");
+    assert_eq!(app.glyphs_focus, GlyphsFocus::InstallButton);
+
+    handle_key(&mut app, KeyCode::Enter).expect("enter should reroute to home install");
+    assert_eq!(app.view, AppView::Welcome);
+    assert_eq!(app.welcome_focus, WelcomeFocus::InstallButton);
+    assert!(!app.welcome_input_editing);
+
+    fs::remove_dir_all(project_dir).expect("temp project dir is removed");
+}
+
+#[test]
 fn tab_cycles_panels_and_glyph_controls_stay_in_glyph_view() {
     let project_dir = make_temp_dir("handle-key-tab-cycle");
     let manifest_path = project_dir.join("petiglyph.toml");

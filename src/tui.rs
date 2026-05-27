@@ -305,6 +305,7 @@ pub(crate) enum AppView {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum GlyphsFocus {
+    InstallButton,
     List,
     Preview,
 }
@@ -2219,7 +2220,9 @@ fn handle_glyphs_key(app: &mut App, key: KeyEvent) -> Result<()> {
             app.quit = true;
         }
         KeyCode::Down | KeyCode::Char('j') => {
-            if app.glyphs_focus == GlyphsFocus::List {
+            if app.glyphs_focus == GlyphsFocus::InstallButton {
+                app.glyphs_focus = GlyphsFocus::List;
+            } else if app.glyphs_focus == GlyphsFocus::List {
                 let row_count = app.visible_glyph_rows().len();
                 if row_count > 0 {
                     app.selected_visible = (app.selected_visible + 1).min(row_count - 1);
@@ -2245,8 +2248,14 @@ fn handle_glyphs_key(app: &mut App, key: KeyEvent) -> Result<()> {
         }
         KeyCode::Up | KeyCode::Char('k') => {
             if app.glyphs_focus == GlyphsFocus::List {
-                app.selected_visible = app.selected_visible.saturating_sub(1);
-                app.clamp_glyph_selection();
+                if app.selected_visible == 0 {
+                    app.glyphs_focus = GlyphsFocus::InstallButton;
+                } else {
+                    app.selected_visible = app.selected_visible.saturating_sub(1);
+                    app.clamp_glyph_selection();
+                }
+            } else if app.glyphs_focus == GlyphsFocus::InstallButton {
+                // keep focus on the button
             } else {
                 match app.glyph_preview_control {
                     GlyphPreviewControl::Threshold => {
@@ -2268,6 +2277,8 @@ fn handle_glyphs_key(app: &mut App, key: KeyEvent) -> Result<()> {
         KeyCode::Left | KeyCode::Char('h') | KeyCode::Char('-') => {
             if matches!(code, KeyCode::Char('-')) {
                 adjust_selected_threshold_by(app, -1);
+            } else if app.glyphs_focus == GlyphsFocus::InstallButton {
+                // no-op while install button is focused
             } else if app.glyphs_focus == GlyphsFocus::List {
                 if matches!(
                     app.selected_visible_row(),
@@ -2315,6 +2326,8 @@ fn handle_glyphs_key(app: &mut App, key: KeyEvent) -> Result<()> {
         KeyCode::Right | KeyCode::Char('l') | KeyCode::Char('+') | KeyCode::Char('=') => {
             if matches!(code, KeyCode::Char('+') | KeyCode::Char('=')) {
                 adjust_selected_threshold_by(app, 1);
+            } else if app.glyphs_focus == GlyphsFocus::InstallButton {
+                // no-op while install button is focused
             } else if app.glyphs_focus == GlyphsFocus::List {
                 if matches!(
                     app.selected_visible_row(),
@@ -2358,6 +2371,13 @@ fn handle_glyphs_key(app: &mut App, key: KeyEvent) -> Result<()> {
             }
         }
         KeyCode::Enter | KeyCode::Char(' ') => {
+            if app.glyphs_focus == GlyphsFocus::InstallButton {
+                app.view = AppView::Welcome;
+                app.welcome_focus = WelcomeFocus::InstallButton;
+                app.welcome_input_editing = false;
+                trigger_install_action(app)?;
+                return Ok(());
+            }
             if app.glyphs_focus == GlyphsFocus::Preview
                 && app.glyph_preview_control == GlyphPreviewControl::Invert
             {
@@ -10355,8 +10375,31 @@ fn draw_glyphs_view(
 
     let left_chunks = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([Constraint::Min(0)])
+        .constraints([Constraint::Length(1), Constraint::Min(0)])
         .split(chunks[0]);
+
+    let is_install_focused = app.glyphs_focus == GlyphsFocus::InstallButton;
+    let install_label = if app.current_project_is_installed() {
+        " Reinstall "
+    } else {
+        " Install "
+    };
+    let install_style = if is_install_focused {
+        Style::default()
+            .fg(Color::Black)
+            .bg(accent)
+            .add_modifier(Modifier::BOLD)
+    } else {
+        Style::default()
+            .fg(Color::White)
+            .bg(Color::DarkGray)
+            .add_modifier(Modifier::BOLD)
+    };
+    frame.render_widget(
+        Paragraph::new(Line::from(vec![Span::styled(install_label, install_style)]))
+            .alignment(Alignment::Center),
+        left_chunks[0],
+    );
 
     let mut list_title = vec![Span::styled(" Glyphs ", Style::default().fg(accent))];
     if app.selecting_for_grid {
@@ -10542,7 +10585,7 @@ fn draw_glyphs_view(
         .highlight_style(list_highlight_style)
         .highlight_symbol(" \u{2023} ");
 
-    frame.render_stateful_widget(list, left_chunks[0], &mut list_state);
+    frame.render_stateful_widget(list, left_chunks[1], &mut list_state);
 
     if let Some(config) = &app.grid_config {
         draw_grid_config_ui(frame, app, config, chunks[1], accent, muted);
