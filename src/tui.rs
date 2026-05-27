@@ -223,6 +223,7 @@ pub(crate) fn tui_workspace(
         app.poll_font_task();
         app.poll_project_switch_task();
         app.poll_animation_import_task();
+        app.poll_home_import_task();
         app.update_animation_preview();
         app.clear_expired_switch_notice();
         app.refresh_live_glyph_source_count();
@@ -522,6 +523,7 @@ pub(crate) struct App {
     install_task: Option<InstallTask>,
     project_switch_task: Option<ProjectSwitchTask>,
     animation_import_task: Option<AnimationImportTask>,
+    home_import_task: Option<HomeImportTask>,
     animation_create_pending: Option<AnimationConfig>,
     animation_create_started_at: Option<Instant>,
     live_glyph_source_count: Option<usize>,
@@ -600,6 +602,12 @@ struct ProjectSwitchTask {
 
 struct AnimationImportTask {
     receiver: Receiver<Result<AnimationImportTaskOutput, String>>,
+    spinner_index: usize,
+    spinner_last_frame_at: Instant,
+}
+
+struct HomeImportTask {
+    receiver: Receiver<Result<DropImportResult, String>>,
     spinner_index: usize,
     spinner_last_frame_at: Instant,
 }
@@ -3266,6 +3274,10 @@ fn handle_home_creation_key(app: &mut App, key: KeyEvent) -> Result<()> {
                     app.status = Some("animation frames are still loading".to_string());
                     return Ok(());
                 }
+                if !is_animated_home_creation(kind) && app.home_import_task.is_some() {
+                    app.status = Some("images are still loading".to_string());
+                    return Ok(());
+                }
                 if !app.has_imported_home_sources(kind) {
                     app.status = Some(home_import_missing_sources_message(kind).to_string());
                     return Ok(());
@@ -3286,6 +3298,10 @@ fn handle_home_creation_key(app: &mut App, key: KeyEvent) -> Result<()> {
                     app.status = Some("home creation workflow canceled".to_string());
                 }
                 KeyCode::Enter => {
+                    if app.home_import_task.is_some() {
+                        app.status = Some("images are still loading".to_string());
+                        return Ok(());
+                    }
                     continue_home_workflow_after_tweaking(app, kind)?;
                 }
                 _ => {}
@@ -4798,6 +4814,7 @@ impl App {
             install_task: None,
             project_switch_task: None,
             animation_import_task: None,
+            home_import_task: None,
             animation_create_pending: None,
             animation_create_started_at: None,
             live_glyph_source_count: None,
@@ -4884,6 +4901,7 @@ impl App {
             install_task: None,
             project_switch_task: None,
             animation_import_task: None,
+            home_import_task: None,
             animation_create_pending: None,
             animation_create_started_at: None,
             live_glyph_source_count: None,
@@ -5636,6 +5654,7 @@ impl App {
         if self.build_in_progress()
             || self.install_in_progress()
             || self.animation_import_task.is_some()
+            || self.home_import_task.is_some()
         {
             self.status =
                 Some("a background task is in progress; wait before importing images".to_string());
@@ -5661,6 +5680,17 @@ impl App {
             return Ok(());
         }
 
+        if matches!(
+            self.home_workflow,
+            HomeWorkflow::Import(HomeCreationKind::Glyph)
+                | HomeWorkflow::Tweaking(HomeCreationKind::Glyph)
+                | HomeWorkflow::Import(HomeCreationKind::Grid)
+                | HomeWorkflow::Tweaking(HomeCreationKind::Grid)
+        ) {
+            self.start_home_import_task(payload.to_string())?;
+            return Ok(());
+        }
+
         let processing = if matches!(
             self.home_workflow,
             HomeWorkflow::Import(_) | HomeWorkflow::Tweaking(_)
@@ -5678,6 +5708,38 @@ impl App {
             ExistingImportPolicy::Rename,
             processing,
         )?;
+        self.finish_static_home_import(import)
+    }
+
+    fn start_home_import_task(&mut self, payload: String) -> Result<()> {
+        if self.home_import_task.is_some() {
+            self.status = Some("image import is already processing".to_string());
+            return Ok(());
+        }
+
+        let config = self.config.clone();
+        let processing = animation_import_processing_options(&self.animation_import_settings);
+        let (sender, receiver) = mpsc::channel();
+        thread::spawn(move || {
+            let result = import_image_files_to_input(
+                &config.input_dir,
+                &payload,
+                ExistingImportPolicy::Rename,
+                processing,
+            )
+            .map_err(|err| err.to_string());
+            let _ = sender.send(result);
+        });
+
+        self.home_import_task = Some(HomeImportTask {
+            receiver,
+            spinner_index: 0,
+            spinner_last_frame_at: Instant::now(),
+        });
+        Ok(())
+    }
+
+    fn finish_static_home_import(&mut self, import: DropImportResult) -> Result<()> {
         if matches!(
             self.home_workflow,
             HomeWorkflow::Import(HomeCreationKind::Glyph)
@@ -6394,6 +6456,49 @@ impl App {
         }
     }
 
+    fn poll_home_import_task(&mut self) {
+        let mut task_result = None;
+        let mut disconnected = false;
+
+        if let Some(task) = self.home_import_task.as_mut() {
+            let frame_duration = Duration::from_millis(FONT_TASK_SPINNER_FRAME_MS);
+            let now = Instant::now();
+            while now.duration_since(task.spinner_last_frame_at) >= frame_duration {
+                task.spinner_index =
+                    (task.spinner_index + 1) % ANIMATION_IMPORT_SPINNER_FRAMES.len();
+                task.spinner_last_frame_at += frame_duration;
+            }
+            match task.receiver.try_recv() {
+                Ok(result) => task_result = Some(result),
+                Err(TryRecvError::Empty) => {}
+                Err(TryRecvError::Disconnected) => disconnected = true,
+            }
+        }
+
+        if disconnected {
+            self.home_import_task = None;
+            self.status = Some("image import task terminated unexpectedly".to_string());
+            return;
+        }
+
+        let Some(result) = task_result else {
+            return;
+        };
+
+        self.home_import_task = None;
+        match result {
+            Ok(import) => {
+                if let Err(err) = self.finish_static_home_import(import) {
+                    self.status = Some(format_status_from_error(
+                        &self.manifest_path,
+                        &err.to_string(),
+                    ));
+                }
+            }
+            Err(err) => self.status = Some(format!("image import failed: {err}")),
+        }
+    }
+
     fn finish_animation_import(&mut self, output: AnimationImportTaskOutput) {
         if let Some(loaded) = output.loaded {
             self.glyphs = loaded.glyphs;
@@ -6476,6 +6581,13 @@ impl App {
         })
     }
 
+    fn home_import_spinner_frame(&self) -> Option<&'static str> {
+        self.home_import_task.as_ref().map(|task| {
+            ANIMATION_IMPORT_SPINNER_FRAMES
+                [task.spinner_index % ANIMATION_IMPORT_SPINNER_FRAMES.len()]
+        })
+    }
+
     fn project_switch_spinner_frame(&self) -> Option<&'static str> {
         self.project_switch_task
             .as_ref()
@@ -6513,6 +6625,7 @@ impl App {
             || self.install_in_progress()
             || self.project_switch_task.is_some()
             || self.animation_import_task.is_some()
+            || self.home_import_task.is_some()
     }
 
     #[cfg(test)]
@@ -6521,6 +6634,7 @@ impl App {
         self.poll_font_task();
         self.poll_project_switch_task();
         self.poll_animation_import_task();
+        self.poll_home_import_task();
     }
 
     fn active_project_label(&self) -> String {
@@ -8577,7 +8691,7 @@ fn draw_home_import_drop_ui(
     let processing_spinner = if animation_media_mode {
         app.animation_import_spinner_frame()
     } else {
-        None
+        app.home_import_spinner_frame()
     };
     let inline_notice = if matches!(kind, HomeCreationKind::Grid) {
         app.home_workflow_grid_inline_notice.as_deref()
@@ -12889,6 +13003,43 @@ mod tests {
     }
 
     #[test]
+    fn glyph_home_workflow_drop_starts_background_import_task() {
+        let project_dir = make_temp_dir("glyph-home-drop-import-task");
+        let manifest_path = project_dir.join("petiglyph.toml");
+        write_manifest(&manifest_path, &Manifest::default()).expect("manifest is written");
+        let icons_dir = project_dir.join("icons");
+        fs::create_dir_all(&icons_dir).expect("icons dir is created");
+        let external_dir = project_dir.join("external");
+        fs::create_dir_all(&external_dir).expect("external dir is created");
+        let image_path = external_dir.join("source.png");
+        write_test_png(&image_path);
+
+        let config = RuntimeConfig {
+            project_dir: project_dir.clone(),
+            project_id: "test-glyph-home-drop-import-task".to_string(),
+            input_dir: icons_dir,
+            out_dir: project_dir.join("build"),
+            font_name: "Petiglyph".to_string(),
+            glyph_size: 8,
+            base_threshold: 64,
+            threshold_overrides: BTreeMap::new(),
+            invert_overrides: BTreeMap::new(),
+            compositions: BTreeMap::new(),
+            animations: Vec::new(),
+            codepoint_start: 0x10_0000,
+        };
+        let mut app = App::new(manifest_path, config);
+        app.start_home_workflow(HomeCreationKind::Glyph);
+
+        handle_paste_event_for_test(&mut app, &image_path.display().to_string())
+            .expect("drop/paste import should succeed");
+        assert!(
+            app.home_import_task.is_some(),
+            "glyph home workflow drop should start background image import task"
+        );
+    }
+
+    #[test]
     fn grid_home_workflow_second_drop_replaces_selected_source() {
         let project_dir = make_temp_dir("grid-home-drop-replace");
         let manifest_path = project_dir.join("petiglyph.toml");
@@ -12923,6 +13074,13 @@ mod tests {
 
         handle_paste_event_for_test(&mut app, &first_path.display().to_string())
             .expect("first drop should succeed");
+        for _ in 0..100 {
+            app.poll_background_tasks_for_test();
+            if !app.background_task_in_progress() {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        }
         assert_eq!(
             app.home_workflow_grid_source_key.as_deref(),
             Some("grid_1.png"),
@@ -12932,6 +13090,13 @@ mod tests {
 
         handle_paste_event_for_test(&mut app, &second_path.display().to_string())
             .expect("second drop should succeed");
+        for _ in 0..100 {
+            app.poll_background_tasks_for_test();
+            if !app.background_task_in_progress() {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        }
         assert_eq!(
             app.home_workflow_grid_source_key.as_deref(),
             Some("grid_2.png"),
