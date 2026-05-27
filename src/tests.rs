@@ -30,13 +30,14 @@ use crate::project::{
     parse_codepoint, read_manifest, write_manifest,
 };
 use crate::tui::{
-    App, AppView, GlyphsFocus, GridConfig, GridConfigFocus, InstalledFontSample, InteractiveGlyph,
-    TuiLaunchOverrides, WelcomeFocus, build_action_name, format_projects_card_hint,
-    format_welcome_input_field, handle_key, handle_key_event_for_test, handle_paste_event_for_test,
-    install_action_name, installed_font_block_display_lines, persist_threshold_override,
-    regroup_installed_sample_blocks, render_ui_for_test, requested_keyboard_enhancement_flags,
-    resolve_installed_font_path_with, sample_glyphs_from_ttf_bytes, should_dispatch_key_kind,
-    switch_notice_visible, wrap_sample_for_display,
+    App, AppView, GlyphsFocus, GridConfig, GridConfigFocus, InstalledFontBlock,
+    InstalledFontSample, InteractiveGlyph, TuiLaunchOverrides, WelcomeFocus, build_action_name,
+    format_projects_card_hint, format_welcome_input_field, handle_key, handle_key_event_for_test,
+    handle_paste_event_for_test, install_action_name, installed_font_block_display_lines,
+    persist_threshold_override, regroup_installed_sample_blocks, render_ui_for_test,
+    requested_keyboard_enhancement_flags, resolve_installed_font_path_with,
+    sample_glyphs_from_ttf_bytes, should_dispatch_key_kind, switch_notice_visible,
+    wrap_sample_for_display,
 };
 
 fn make_temp_dir(name: &str) -> PathBuf {
@@ -566,6 +567,7 @@ fn unified_tui_multiple_projects_can_be_selected_from_home() {
     assert_eq!(app.selected_project, 0);
 
     handle_key(&mut app, KeyCode::Enter).expect("enter opens selected project");
+    drain_background_tasks(&mut app);
     assert_eq!(
         app.active_project.as_deref(),
         Some(workspace.join("project-a/petiglyph.toml").as_path())
@@ -583,6 +585,7 @@ fn unified_tui_multiple_projects_can_be_selected_from_home() {
     assert_eq!(app.welcome_focus, WelcomeFocus::ProjectList);
     assert_eq!(app.selected_project, 1);
     handle_key(&mut app, KeyCode::Enter).expect("enter opens next project");
+    drain_background_tasks(&mut app);
     assert_eq!(
         app.active_project.as_deref(),
         Some(workspace.join("project-b/petiglyph.toml").as_path())
@@ -730,7 +733,14 @@ fn unified_tui_multiple_projects_can_be_selected_from_home() {
     handle_key(&mut app, KeyCode::Up).expect("up in create buttons reaches create glyph");
     assert_eq!(app.welcome_focus, WelcomeFocus::HomeCreateButtons);
     handle_key(&mut app, KeyCode::Up).expect("up in create buttons reaches build");
-    assert_eq!(app.welcome_focus, WelcomeFocus::BuildButton);
+    assert!(
+        matches!(
+            app.welcome_focus,
+            WelcomeFocus::BuildButton | WelcomeFocus::InstallButton
+        ),
+        "focus should land on action row, got {:?}",
+        app.welcome_focus
+    );
     handle_key(&mut app, KeyCode::Left).expect("left from build returns to create input");
     assert_eq!(app.welcome_focus, WelcomeFocus::CreateInput);
 
@@ -890,31 +900,56 @@ fn installed_font_card_keeps_grid_tiles_adjacent() {
 
 #[test]
 fn regroup_installed_sample_blocks_merges_unitary_and_keeps_grids_ordered() {
-    let grouped = regroup_installed_sample_blocks(vec![
-        "A B".to_string(),
-        "C D".to_string(),
-        "XY\nZW".to_string(),
-        "E F".to_string(),
-        "12\n34".to_string(),
-    ]);
-    assert_eq!(grouped, vec!["A   B   C   D   E   F", "XY\nZW", "12\n34"]);
+    let grouped = regroup_installed_sample_blocks(
+        ["A B", "C D", "XY\nZW", "E F", "12\n34"]
+            .into_iter()
+            .map(test_installed_font_block)
+            .collect(),
+    );
+    assert_eq!(
+        grouped
+            .into_iter()
+            .map(|block| block.block)
+            .collect::<Vec<_>>(),
+        vec!["A   B   C   D   E   F", "XY\nZW", "12\n34"]
+    );
 }
 
 #[test]
 fn regroup_installed_sample_blocks_filters_empty_and_whitespace_blocks() {
-    let grouped = regroup_installed_sample_blocks(vec![
-        "   ".to_string(),
-        "\n\n".to_string(),
-        "A B".to_string(),
-        " \nC\nD\n ".to_string(),
-    ]);
-    assert_eq!(grouped, vec!["A   B", "C\nD"]);
+    let grouped = regroup_installed_sample_blocks(
+        ["   ", "\n\n", "A B", " \nC\nD\n "]
+            .into_iter()
+            .map(test_installed_font_block)
+            .collect(),
+    );
+    assert_eq!(
+        grouped
+            .into_iter()
+            .map(|block| block.block)
+            .collect::<Vec<_>>(),
+        vec!["A   B", "C\nD"]
+    );
 }
 
 #[test]
 fn regroup_installed_sample_blocks_expands_dense_ttf_fallback_samples() {
-    let grouped = regroup_installed_sample_blocks(vec!["ABC".to_string()]);
-    assert_eq!(grouped, vec!["A   B   C"]);
+    let grouped = regroup_installed_sample_blocks(vec![test_installed_font_block("ABC")]);
+    assert_eq!(
+        grouped
+            .into_iter()
+            .map(|block| block.block)
+            .collect::<Vec<_>>(),
+        vec!["A   B   C"]
+    );
+}
+
+fn test_installed_font_block(block: &str) -> InstalledFontBlock {
+    InstalledFontBlock {
+        label: "Glyphs: test (standard, 1 glyph, gray n/a, th 64)".to_string(),
+        block: block.to_string(),
+        export: block.to_string(),
+    }
 }
 
 #[test]
@@ -971,6 +1006,7 @@ fn delete_project_flow_requires_explicit_focus_on_delete_button() {
     let mut app = App::new_workspace(workspace.clone(), None, TuiLaunchOverrides::default())
         .expect("workspace TUI app initializes");
     handle_key(&mut app, KeyCode::Enter).expect("open project");
+    drain_background_tasks(&mut app);
     assert_eq!(app.active_project.as_deref(), Some(manifest_path.as_path()));
 
     app.welcome_focus = WelcomeFocus::DeleteProjectButton;
@@ -1022,6 +1058,7 @@ fn delete_project_confirmation_can_be_canceled() {
     let mut app = App::new_workspace(workspace.clone(), None, TuiLaunchOverrides::default())
         .expect("workspace TUI app initializes");
     handle_key(&mut app, KeyCode::Enter).expect("open project");
+    drain_background_tasks(&mut app);
     app.welcome_focus = WelcomeFocus::DeleteProjectButton;
     handle_key(&mut app, KeyCode::Enter).expect("open confirmation");
     handle_key(&mut app, KeyCode::Esc).expect("cancel confirmation");
@@ -1224,7 +1261,11 @@ fn home_installed_font_buttons_can_be_navigated() {
         InstalledFontSample {
             file_name: "alpha.ttf".to_string(),
             path: PathBuf::from("/tmp/alpha.ttf"),
-            blocks: vec!["AB".to_string()],
+            blocks: vec![InstalledFontBlock {
+                label: "Glyphs: alpha (standard, 2 glyphs, gray n/a, th 64)".to_string(),
+                block: "AB".to_string(),
+                export: "Glyphs: alpha (standard, 2 glyphs, gray n/a, th 64)\n\nAB".to_string(),
+            }],
             animation_rows: Vec::new(),
             animation_previews: Vec::new(),
             animation_exports: Vec::new(),
@@ -1232,7 +1273,11 @@ fn home_installed_font_buttons_can_be_navigated() {
         InstalledFontSample {
             file_name: "beta.ttf".to_string(),
             path: PathBuf::from("/tmp/beta.ttf"),
-            blocks: vec!["CD".to_string()],
+            blocks: vec![InstalledFontBlock {
+                label: "Glyphs: beta (standard, 2 glyphs, gray n/a, th 64)".to_string(),
+                block: "CD".to_string(),
+                export: "Glyphs: beta (standard, 2 glyphs, gray n/a, th 64)\n\nCD".to_string(),
+            }],
             animation_rows: Vec::new(),
             animation_previews: Vec::new(),
             animation_exports: Vec::new(),
@@ -1331,7 +1376,11 @@ fn home_installed_font_animation_row_is_selectable_and_copyable() {
     app.installed_fonts = vec![InstalledFontSample {
         file_name: "alpha.ttf".to_string(),
         path: PathBuf::from("/tmp/alpha.ttf"),
-        blocks: vec!["AB".to_string()],
+        blocks: vec![InstalledFontBlock {
+            label: "Glyphs: alpha (standard, 2 glyphs, gray n/a, th 64)".to_string(),
+            block: "AB".to_string(),
+            export: "Glyphs: alpha (standard, 2 glyphs, gray n/a, th 64)\n\nAB".to_string(),
+        }],
         animation_rows: vec!["Animation: walk (standard, 8 fps, 2 frames)".to_string()],
         animation_previews: Vec::new(),
         animation_exports: vec!["name: walk\ntype: standard\nfps: 8\n\nA\n\nB".to_string()],

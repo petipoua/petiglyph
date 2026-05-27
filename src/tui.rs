@@ -110,10 +110,17 @@ pub(crate) struct WelcomeProject {
 pub(crate) struct InstalledFontSample {
     pub(crate) file_name: String,
     pub(crate) path: PathBuf,
-    pub(crate) blocks: Vec<String>,
+    pub(crate) blocks: Vec<InstalledFontBlock>,
     pub(crate) animation_rows: Vec<String>,
     pub(crate) animation_previews: Vec<InstalledFontAnimationPreview>,
     pub(crate) animation_exports: Vec<String>,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct InstalledFontBlock {
+    pub(crate) label: String,
+    pub(crate) block: String,
+    pub(crate) export: String,
 }
 
 #[derive(Debug, Clone)]
@@ -147,7 +154,7 @@ struct InstalledAnimationSnapshotRecord {
 }
 
 type InstalledFontSamplePayload = (
-    Vec<String>,
+    Vec<InstalledFontBlock>,
     Vec<String>,
     Vec<InstalledFontAnimationPreview>,
     Vec<String>,
@@ -874,7 +881,12 @@ fn scan_installed_petiglyph_fonts(cwd: &Path) -> Result<Vec<InstalledFontSample>
                         })
                         .unwrap_or_default();
                     let _ = truncated;
-                    (vec![sample], Vec::new(), Vec::new(), Vec::new())
+                    (
+                        installed_font_blocks_without_metadata(vec![sample]),
+                        Vec::new(),
+                        Vec::new(),
+                        Vec::new(),
+                    )
                 }
             };
         let blocks = regroup_installed_sample_blocks(raw_blocks);
@@ -943,12 +955,13 @@ fn sample_from_installed_font_metadata(
             continue;
         }
         matched_metadata = true;
-        if let Some(mut sample) = sample_from_manifest_path(Path::new(&metadata.manifest_path)) {
+        if let Some(sample) = sample_from_manifest_path(Path::new(&metadata.manifest_path)) {
             let mut animation_rows = Vec::new();
             let mut animation_previews = Vec::new();
             let mut animation_exports = Vec::new();
             let manifest_path = Path::new(&metadata.manifest_path);
             let resolved_animation_blocks = installed_animation_blocks_from_manifest(manifest_path);
+            let static_block_details = installed_static_block_details_from_manifest(manifest_path);
 
             let mut all_animation_frames = HashSet::new();
             for snapshot in metadata.animation_snapshots {
@@ -996,7 +1009,8 @@ fn sample_from_installed_font_metadata(
                 animation_exports.push(export);
             }
 
-            sample = prune_static_sample_blocks(sample, &all_animation_frames);
+            let sample = prune_static_sample_blocks(sample, &all_animation_frames);
+            let sample = installed_font_blocks_with_details(sample, &static_block_details);
 
             return Ok(InstalledFontMetadataSample::Matched((
                 sample,
@@ -1029,6 +1043,171 @@ fn sample_from_manifest_path(manifest_path: &Path) -> Option<Vec<String>> {
                 .map(|s| s.to_string())
                 .collect::<Vec<_>>(),
         )
+    }
+}
+
+#[derive(Debug, Clone)]
+struct InstalledStaticBlockDetails {
+    entries_by_char: BTreeMap<char, InstalledStaticGlyphEntry>,
+}
+
+#[derive(Debug, Clone)]
+struct InstalledStaticGlyphEntry {
+    glyph_name: String,
+    source_file: String,
+    threshold: u8,
+}
+
+fn installed_static_block_details_from_manifest(
+    manifest_path: &Path,
+) -> Option<InstalledStaticBlockDetails> {
+    let manifest = read_manifest(manifest_path).ok()?;
+    let project_dir = manifest_path.parent().unwrap_or_else(|| Path::new("."));
+    let mapping_path = project_dir.join(&manifest.out_dir).join("glyph-map.json");
+    let mapping_raw = fs::read_to_string(mapping_path).ok()?;
+    let mappings: Vec<MappingEntry> = serde_json::from_str(&mapping_raw).ok()?;
+    let entries_by_char = mappings
+        .into_iter()
+        .filter_map(|entry| {
+            let ch = format_codepoint_char(&entry.codepoint)?;
+            let threshold_source = animation_frame_parent_source(&entry.source_file);
+            let threshold = manifest
+                .threshold_overrides
+                .get(&threshold_source)
+                .copied()
+                .unwrap_or(manifest.threshold);
+            Some((
+                ch,
+                InstalledStaticGlyphEntry {
+                    glyph_name: entry.glyph_name,
+                    source_file: entry.source_file,
+                    threshold,
+                },
+            ))
+        })
+        .collect();
+
+    Some(InstalledStaticBlockDetails { entries_by_char })
+}
+
+fn installed_font_blocks_without_metadata(blocks: Vec<String>) -> Vec<InstalledFontBlock> {
+    blocks
+        .into_iter()
+        .map(|block| {
+            let glyph_count = block.chars().filter(|ch| !ch.is_whitespace()).count();
+            let type_label = if block.contains('\n') {
+                "grid"
+            } else {
+                "standard"
+            };
+            let label = format!(
+                "Glyphs: unknown ({type_label}, {glyph_count} glyph{}, gray n/a, th n/a)",
+                if glyph_count == 1 { "" } else { "s" }
+            );
+            InstalledFontBlock {
+                label,
+                export: block.clone(),
+                block,
+            }
+        })
+        .collect()
+}
+
+fn installed_font_blocks_with_details(
+    blocks: Vec<String>,
+    details: &Option<InstalledStaticBlockDetails>,
+) -> Vec<InstalledFontBlock> {
+    blocks
+        .into_iter()
+        .map(|block| {
+            details
+                .as_ref()
+                .and_then(|details| installed_font_block_with_details(block.clone(), details))
+                .unwrap_or_else(|| {
+                    installed_font_blocks_without_metadata(vec![block])
+                        .into_iter()
+                        .next()
+                        .expect("one fallback block")
+                })
+        })
+        .collect()
+}
+
+fn installed_font_block_with_details(
+    block: String,
+    details: &InstalledStaticBlockDetails,
+) -> Option<InstalledFontBlock> {
+    let entries = block
+        .chars()
+        .filter(|ch| !ch.is_whitespace())
+        .filter_map(|ch| details.entries_by_char.get(&ch))
+        .collect::<Vec<_>>();
+    if entries.is_empty() {
+        return None;
+    }
+
+    let thresholds = entries
+        .iter()
+        .map(|entry| entry.threshold)
+        .collect::<BTreeSet<_>>();
+    let threshold_label = if thresholds.len() == 1 {
+        thresholds
+            .first()
+            .map(|value| value.to_string())
+            .unwrap_or_else(|| "n/a".to_string())
+    } else {
+        "var. threshold".to_string()
+    };
+
+    let (title, kind_details) = if block.contains('\n') {
+        let first_source = entries
+            .first()
+            .map(|entry| entry.source_file.as_str())
+            .unwrap_or("grid");
+        let (name, rows, cols) = parse_compose_tile_key(first_source)
+            .map(|(parent, rows, cols, _, _)| (parent.to_string(), rows, cols))
+            .unwrap_or_else(|| (first_source.to_string(), block.lines().count().max(1), 1));
+        (format!("Grid: {name}"), format!("grid, {rows}x{cols}"))
+    } else {
+        let names = entries
+            .iter()
+            .map(|entry| entry.glyph_name.as_str())
+            .collect::<Vec<_>>();
+        let title = if names.len() == 1 {
+            format!("Glyph: {}", names[0])
+        } else {
+            format!("Glyphs: {}", compact_name_list(&names, 3))
+        };
+        (
+            title,
+            format!(
+                "standard, {} glyph{}",
+                entries.len(),
+                if entries.len() == 1 { "" } else { "s" }
+            ),
+        )
+    };
+    let label = format!("{title} ({kind_details}, gray n/a, th {threshold_label})");
+    let export = format!("{label}\n\n{block}");
+
+    Some(InstalledFontBlock {
+        label,
+        block,
+        export,
+    })
+}
+
+fn compact_name_list(names: &[&str], max_visible: usize) -> String {
+    let visible = names
+        .iter()
+        .take(max_visible)
+        .copied()
+        .collect::<Vec<_>>()
+        .join(", ");
+    if names.len() > max_visible {
+        format!("{visible}, +{} more", names.len() - max_visible)
+    } else {
+        visible
     }
 }
 
@@ -1243,25 +1422,67 @@ fn remap_compose_source_key_unambiguous<'a>(
     Some(first)
 }
 
-pub(crate) fn regroup_installed_sample_blocks(blocks: Vec<String>) -> Vec<String> {
+pub(crate) fn regroup_installed_sample_blocks(
+    blocks: Vec<InstalledFontBlock>,
+) -> Vec<InstalledFontBlock> {
     let mut standard_blocks = Vec::new();
     let mut grid_blocks = Vec::new();
 
     for block in blocks {
-        let normalized = block.trim().to_string();
+        let normalized = block.block.trim().to_string();
         if normalized.is_empty() {
             continue;
         }
         if normalized.contains('\n') {
-            grid_blocks.push(normalized);
+            grid_blocks.push(InstalledFontBlock {
+                block: normalized,
+                ..block
+            });
         } else {
-            standard_blocks.push(normalized);
+            standard_blocks.push(InstalledFontBlock {
+                block: normalized,
+                ..block
+            });
         }
     }
 
     let mut grouped = Vec::new();
     if !standard_blocks.is_empty() {
-        grouped.push(expand_standard_sample_cells(&standard_blocks.join(" ")));
+        let block = expand_standard_sample_cells(
+            &standard_blocks
+                .iter()
+                .map(|block| block.block.as_str())
+                .collect::<Vec<_>>()
+                .join(" "),
+        );
+        let label = if standard_blocks.len() == 1 {
+            standard_blocks[0].label.clone()
+        } else {
+            let glyph_count = block.chars().filter(|ch| !ch.is_whitespace()).count();
+            let thresholds = standard_blocks
+                .iter()
+                .filter_map(|block| block.label.rsplit_once("th ").map(|(_, th)| th))
+                .collect::<BTreeSet<_>>();
+            let threshold_label = if thresholds.len() == 1 {
+                thresholds
+                    .first()
+                    .copied()
+                    .unwrap_or("n/a")
+                    .trim_end_matches(')')
+                    .to_string()
+            } else {
+                "var. threshold".to_string()
+            };
+            format!(
+                "Glyphs: mixed (standard, {glyph_count} glyph{}, gray n/a, th {threshold_label})",
+                if glyph_count == 1 { "" } else { "s" }
+            )
+        };
+        grouped.push(InstalledFontBlock {
+            label: label.clone(),
+            export: format!("{label}\n\n{block}"),
+            block,
+        });
     }
     grouped.extend(grid_blocks);
     grouped
@@ -2699,7 +2920,10 @@ fn handle_welcome_key(app: &mut App, key: KeyEvent) -> Result<()> {
                             let sample_count = font.blocks.len();
                             let sub = app.selected_installed_font_sub_index - 1;
                             if sub < sample_count {
-                                font.blocks.get(sub).cloned().unwrap_or_default()
+                                font.blocks
+                                    .get(sub)
+                                    .map(|block| block.export.clone())
+                                    .unwrap_or_default()
                             } else {
                                 let anim_idx = sub - sample_count;
                                 font.animation_exports
@@ -4221,14 +4445,14 @@ fn draw_welcome_view(
             }
 
             // Row 1..N: Blocks (Selectable individually)
-            for (b_idx, block_str) in font.blocks.iter().enumerate() {
+            for (b_idx, sample_block) in font.blocks.iter().enumerate() {
                 let sub_idx = b_idx + 1;
                 let is_focused = is_selected_font
                     && app.selected_installed_font_sub_index == sub_idx
                     && app.welcome_focus == WelcomeFocus::InstalledFontList;
 
                 let wrapped_lines =
-                    installed_font_block_display_lines(block_str, sample_wrap_width);
+                    installed_font_block_display_lines(&sample_block.block, sample_wrap_width);
 
                 if is_focused {
                     selected_font_row_idx = font_rows.len() + wrapped_lines.len().saturating_sub(1);
@@ -4250,34 +4474,46 @@ fn draw_welcome_view(
                     " ○ "
                 };
 
-                for (l_idx, line_text) in wrapped_lines.into_iter().enumerate() {
-                    let mut spans = vec![
-                        Span::styled(
-                            if l_idx == 0 { bullet } else { "   " },
-                            Style::default().fg(if is_focused {
-                                Color::White
-                            } else {
-                                Color::Reset
-                            }),
-                        ),
-                        Span::styled(line_text, base_style),
-                    ];
-
-                    if l_idx == 0 && is_focused {
-                        if let Some((at, id)) = &app.last_copy_notification {
-                            if id == &format!("{}-sample-{}", f_idx, b_idx)
-                                && now.duration_since(*at) < Duration::from_millis(1500)
-                            {
-                                spans.push(Span::raw("  "));
-                                spans.push(Span::styled(
-                                    "copied to clipboard",
-                                    Style::default()
-                                        .fg(Color::Yellow)
-                                        .add_modifier(Modifier::BOLD),
-                                ));
-                            }
+                let detail_style = if is_focused {
+                    Style::default()
+                        .bg(accent)
+                        .fg(Color::Black)
+                        .add_modifier(Modifier::BOLD)
+                } else {
+                    Style::default()
+                        .fg(Color::Magenta)
+                        .add_modifier(Modifier::BOLD)
+                };
+                let mut detail_spans = vec![
+                    Span::styled(
+                        bullet,
+                        Style::default().fg(if is_focused {
+                            Color::White
+                        } else {
+                            Color::Reset
+                        }),
+                    ),
+                    Span::styled(sample_block.label.clone(), detail_style),
+                ];
+                if is_focused {
+                    if let Some((at, id)) = &app.last_copy_notification {
+                        if id == &format!("{}-sample-{}", f_idx, b_idx)
+                            && now.duration_since(*at) < Duration::from_millis(1500)
+                        {
+                            detail_spans.push(Span::raw("  "));
+                            detail_spans.push(Span::styled(
+                                "copied to clipboard",
+                                Style::default()
+                                    .fg(Color::Yellow)
+                                    .add_modifier(Modifier::BOLD),
+                            ));
                         }
                     }
+                }
+                font_rows.push(Line::from(detail_spans));
+
+                for line_text in wrapped_lines {
+                    let spans = vec![Span::raw("   "), Span::styled(line_text, base_style)];
                     font_rows.push(Line::from(spans));
                 }
             }
@@ -12099,6 +12335,20 @@ mod tests {
         dir
     }
 
+    fn drain_background_tasks(app: &mut App) {
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while app.background_task_in_progress() && Instant::now() < deadline {
+            app.poll_background_tasks_for_test();
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        app.poll_background_tasks_for_test();
+        assert!(
+            !app.background_task_in_progress(),
+            "background task should complete before test continues; status={:?}",
+            app.status
+        );
+    }
+
     fn write_test_png(path: &std::path::Path) {
         let mut img = RgbaImage::from_pixel(8, 8, Rgba([255, 255, 255, 0]));
         for y in 2..6 {
@@ -13426,6 +13676,7 @@ mod tests {
         app.start_home_workflow(HomeCreationKind::Glyph);
         handle_paste_event_for_test(&mut app, &dropped.display().to_string())
             .expect("jpg drop/paste import should succeed");
+        drain_background_tasks(&mut app);
         app.home_workflow = HomeWorkflow::Tweaking(HomeCreationKind::Glyph);
 
         let (title, lines) = home_workflow_preview_lines(&app, HomeCreationKind::Glyph, 16, 16);
@@ -13482,6 +13733,7 @@ mod tests {
         app.start_home_workflow(HomeCreationKind::Glyph);
         handle_paste_event_for_test(&mut app, &dropped.display().to_string())
             .expect("renamed png drop/paste import should succeed");
+        drain_background_tasks(&mut app);
         app.home_workflow = HomeWorkflow::Tweaking(HomeCreationKind::Glyph);
 
         let (title, lines) = home_workflow_preview_lines(&app, HomeCreationKind::Glyph, 16, 16);
@@ -13536,6 +13788,7 @@ mod tests {
         app.start_home_workflow(HomeCreationKind::Glyph);
         handle_paste_event_for_test(&mut app, &dropped.display().to_string())
             .expect("svg drop/paste import should succeed");
+        drain_background_tasks(&mut app);
         app.home_workflow = HomeWorkflow::Tweaking(HomeCreationKind::Glyph);
 
         let (title, lines) = home_workflow_preview_lines(&app, HomeCreationKind::Glyph, 16, 16);
@@ -13589,6 +13842,7 @@ mod tests {
         app.start_home_workflow(HomeCreationKind::Glyph);
         handle_paste_event_for_test(&mut app, &fixture.display().to_string())
             .expect("copilot svg drop/paste import should succeed");
+        drain_background_tasks(&mut app);
         app.home_workflow = HomeWorkflow::Tweaking(HomeCreationKind::Glyph);
 
         let (title, lines) = home_workflow_preview_lines(&app, HomeCreationKind::Glyph, 32, 32);
@@ -13943,6 +14197,7 @@ mod tests {
         app.start_home_workflow(HomeCreationKind::Grid);
         handle_paste_event_for_test(&mut app, &dropped.display().to_string())
             .expect("grid import should succeed");
+        drain_background_tasks(&mut app);
         app.home_workflow = HomeWorkflow::Tweaking(HomeCreationKind::Grid);
         app.animation_import_settings.focus =
             super::AnimationImportSettingsFocus::ExportTestImageButton;

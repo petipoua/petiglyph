@@ -1562,8 +1562,14 @@ fn update_fontconfig_petiglyph_alias(install_dir: &Path, platform: FontPlatform)
 
     if families.is_empty() {
         if alias_path.is_file() {
-            fs::remove_file(&alias_path)
-                .with_context(|| format!("failed to remove {}", alias_path.display()))?;
+            match fs::remove_file(&alias_path) {
+                Ok(()) => {}
+                Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
+                Err(err) => {
+                    return Err(err)
+                        .with_context(|| format!("failed to remove {}", alias_path.display()));
+                }
+            }
         }
         return Ok(());
     }
