@@ -67,6 +67,8 @@ When a workflow is started, petiglyph shows a centered **Creation Workflow In Pr
 - `Create animated glyph`: import frame media, optionally adjust selected frames, configure name/FPS, then create the animation.
 - `Create animated grid glyph`: import frame media, configure name/FPS/grid/bleed, then create the animation.
 
+Creation workflow previews use aspect-fit scaling: the same scale factor is applied on both axes, so previews fit the available panel without vertical or horizontal stretching.
+
 Keyboard controls during the import popup:
 
 - `Enter` continues to the next workflow step

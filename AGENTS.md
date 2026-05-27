@@ -105,6 +105,14 @@
 - TUI debug logging uses the platform temp directory by default and can be overridden with `PETIGLYPH_TUI_DEBUG_LOG`.
 - npm, PyPI/TestPyPI, and GitHub artifact release workflows are present and action refs are pinned to full SHAs.
 
+### TUI Preview Rendering Invariant
+
+- All TUI image previews, including Glyphs panel previews and creation workflow popup previews, must preserve source/glyph aspect ratio when scaling.
+- Use aspect-fit behavior: compute one uniform scale factor from both available width and available height, then apply that same factor to X and Y.
+- Never stretch a preview vertically or horizontally just because the panel has extra space. Extra panel space should remain outside the rendered glyph/image, not distort it.
+- If the panel is too small, compress the preview proportionally to fit. If the thresholded image has empty rows, crop empty vertical bounds before aspect-fit scaling.
+- Future preview refactors should keep explicit tests for tall and wide preview areas so regressions cannot reintroduce independent X/Y scaling.
+
 ### HTY E2E Guidance (Important)
 
 - `hty` is very new; agentic LLMs instincts can be weak for this tool. Before changing `hty`-based test flows, check upstream docs/repo first:
