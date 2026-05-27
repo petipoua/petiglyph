@@ -3340,6 +3340,10 @@ fn handle_home_creation_key(app: &mut App, key: KeyEvent) -> Result<()> {
 fn continue_home_workflow_after_tweaking(app: &mut App, kind: HomeCreationKind) -> Result<()> {
     match kind {
         HomeCreationKind::Glyph => {
+            persist_creation_workflow_threshold(
+                app,
+                creation_workflow_threshold_sources(app, kind),
+            )?;
             app.reload_glyphs()?;
             app.complete_home_workflow_to_glyphs();
         }
@@ -3351,6 +3355,10 @@ fn continue_home_workflow_after_tweaking(app: &mut App, kind: HomeCreationKind) 
                 );
                 return Ok(());
             };
+            persist_creation_workflow_threshold(
+                app,
+                creation_workflow_threshold_sources(app, kind),
+            )?;
             app.grid_config = Some(GridConfig {
                 source_key,
                 rows: 2,
@@ -3375,6 +3383,10 @@ fn continue_home_workflow_after_tweaking(app: &mut App, kind: HomeCreationKind) 
                 );
                 return Ok(());
             }
+            persist_creation_workflow_threshold(
+                app,
+                creation_workflow_threshold_sources(app, kind),
+            )?;
             app.start_animation_config(AnimationType::Standard);
             app.home_workflow = HomeWorkflow::ConfigureAnimation(AnimationType::Standard);
             app.status = Some("configure animated glyph in popup, then Create".to_string());
@@ -3390,9 +3402,63 @@ fn continue_home_workflow_after_tweaking(app: &mut App, kind: HomeCreationKind) 
                 );
                 return Ok(());
             }
+            persist_creation_workflow_threshold(
+                app,
+                creation_workflow_threshold_sources(app, kind),
+            )?;
             app.start_animation_config(AnimationType::Grid);
             app.home_workflow = HomeWorkflow::ConfigureAnimation(AnimationType::Grid);
             app.status = Some("configure animated grid glyph in popup, then Create".to_string());
+        }
+    }
+    Ok(())
+}
+
+fn creation_workflow_threshold_sources(app: &App, kind: HomeCreationKind) -> Vec<String> {
+    match kind {
+        HomeCreationKind::Glyph => app.home_workflow_recent_imported_source_keys.clone(),
+        HomeCreationKind::Grid => app
+            .home_workflow_grid_source_key
+            .iter()
+            .cloned()
+            .collect::<Vec<_>>(),
+        HomeCreationKind::AnimatedGlyph | HomeCreationKind::AnimatedGridGlyph => {
+            app.animation_selection_order.clone()
+        }
+    }
+}
+
+fn persist_creation_workflow_threshold(app: &mut App, source_keys: Vec<String>) -> Result<()> {
+    if app.active_project.is_none() {
+        return Ok(());
+    }
+
+    let threshold = app.animation_import_settings.threshold;
+    let threshold_override = if threshold == app.config.base_threshold {
+        None
+    } else {
+        Some(threshold)
+    };
+    let sources = source_keys.into_iter().collect::<BTreeSet<_>>();
+    for source_key in &sources {
+        persist_threshold_override(&app.manifest_path, source_key, threshold_override)
+            .with_context(|| format!("failed to save threshold for {source_key}"))?;
+        match threshold_override {
+            Some(value) => {
+                app.config
+                    .threshold_overrides
+                    .insert(source_key.clone(), value);
+            }
+            None => {
+                app.config.threshold_overrides.remove(source_key);
+            }
+        }
+    }
+
+    for glyph in &mut app.glyphs {
+        if sources.contains(&glyph.glyph.source_parent_key) {
+            glyph.working_threshold = threshold;
+            glyph.saved_threshold = threshold_override;
         }
     }
     Ok(())
@@ -5612,7 +5678,16 @@ impl App {
             ExistingImportPolicy::Rename,
             processing,
         )?;
-        self.home_workflow_recent_imported_source_keys = import.imported_source_keys.clone();
+        if matches!(
+            self.home_workflow,
+            HomeWorkflow::Import(HomeCreationKind::Glyph)
+                | HomeWorkflow::Tweaking(HomeCreationKind::Glyph)
+        ) {
+            self.home_workflow_recent_imported_source_keys
+                .extend(import.imported_source_keys.clone());
+        } else {
+            self.home_workflow_recent_imported_source_keys = import.imported_source_keys.clone();
+        }
 
         if matches!(
             self.home_workflow,
@@ -11881,9 +11956,10 @@ mod tests {
         RuntimeConfig, VisibleGlyphRow, animation_frame_source_for_preview,
         animation_has_non_uniform_frame_invert, animation_has_non_uniform_frame_thresholds,
         collect_dropped_paths, composition_preview_lines_stable_frame,
-        default_animation_name_from_frames, drag_images_here_lines, emitted_composition_cols,
-        glyph_matches_animation_frame_source, grayscale_options_are_default, handle_key,
-        handle_paste_event_for_test, home_workflow_preview_lines, import_image_files_to_input,
+        continue_home_workflow_after_tweaking, default_animation_name_from_frames,
+        drag_images_here_lines, emitted_composition_cols, glyph_matches_animation_frame_source,
+        grayscale_options_are_default, handle_key, handle_paste_event_for_test,
+        home_workflow_preview_lines, import_image_files_to_input,
         installed_animation_blocks_for_definition, installed_animation_frame_index,
         installed_animation_source_block, persist_composition_definition, preview_leftmost_control,
         preview_lines, prune_static_sample_blocks, scrollbar_thumb_geometry,
@@ -13005,6 +13081,94 @@ mod tests {
         assert_eq!(app.animation_import_settings.threshold, 65);
         handle_key(&mut app, KeyCode::Down).expect("down decreases threshold");
         assert_eq!(app.animation_import_settings.threshold, 64);
+    }
+
+    #[test]
+    fn glyph_creation_tweak_threshold_becomes_glyph_panel_threshold() {
+        let project_dir = make_temp_dir("glyph-creation-threshold-persists");
+        let manifest_path = project_dir.join("petiglyph.toml");
+        write_manifest(&manifest_path, &Manifest::default()).expect("manifest is written");
+        let icons_dir = project_dir.join("icons");
+        fs::create_dir_all(&icons_dir).expect("icons dir is created");
+        write_test_png(&icons_dir.join("source.png"));
+
+        let config = RuntimeConfig {
+            project_dir: project_dir.clone(),
+            project_id: "test-glyph-creation-threshold-persists".to_string(),
+            input_dir: icons_dir,
+            out_dir: project_dir.join("build"),
+            font_name: "Petiglyph".to_string(),
+            glyph_size: 8,
+            base_threshold: 64,
+            threshold_overrides: BTreeMap::new(),
+            invert_overrides: BTreeMap::new(),
+            compositions: BTreeMap::new(),
+            animations: Vec::new(),
+            codepoint_start: 0x10_0000,
+        };
+        let mut app = App::new(manifest_path.clone(), config);
+        app.start_home_workflow(HomeCreationKind::Glyph);
+        app.home_workflow = HomeWorkflow::Tweaking(HomeCreationKind::Glyph);
+        app.home_workflow_recent_imported_source_keys = vec!["source.png".to_string()];
+        app.home_workflow_import_count = 1;
+        app.animation_import_settings.threshold = 91;
+
+        continue_home_workflow_after_tweaking(&mut app, HomeCreationKind::Glyph)
+            .expect("continue should persist threshold and load glyphs");
+
+        let manifest = read_manifest(&manifest_path).expect("manifest reload succeeds");
+        assert_eq!(manifest.threshold_overrides.get("source.png"), Some(&91));
+        let glyph = app
+            .glyphs
+            .iter()
+            .find(|glyph| glyph.glyph.source_parent_key == "source.png")
+            .expect("source glyph is loaded");
+        assert_eq!(glyph.working_threshold, 91);
+        assert_eq!(glyph.saved_threshold, Some(91));
+    }
+
+    #[test]
+    fn animated_creation_tweak_threshold_applies_to_all_selected_frames() {
+        let project_dir = make_temp_dir("animated-creation-threshold-persists");
+        let manifest_path = project_dir.join("petiglyph.toml");
+        write_manifest(&manifest_path, &Manifest::default()).expect("manifest is written");
+        let icons_dir = project_dir.join("icons");
+        fs::create_dir_all(&icons_dir).expect("icons dir is created");
+        write_test_png(&icons_dir.join("frame_1.png"));
+        write_test_png(&icons_dir.join("frame_2.png"));
+
+        let config = RuntimeConfig {
+            project_dir: project_dir.clone(),
+            project_id: "test-animated-creation-threshold-persists".to_string(),
+            input_dir: icons_dir,
+            out_dir: project_dir.join("build"),
+            font_name: "Petiglyph".to_string(),
+            glyph_size: 8,
+            base_threshold: 64,
+            threshold_overrides: BTreeMap::new(),
+            invert_overrides: BTreeMap::new(),
+            compositions: BTreeMap::new(),
+            animations: Vec::new(),
+            codepoint_start: 0x10_0000,
+        };
+        let mut app = App::new(manifest_path.clone(), config);
+        app.reload_glyphs().expect("glyphs load");
+        app.start_home_workflow(HomeCreationKind::AnimatedGlyph);
+        app.home_workflow = HomeWorkflow::Tweaking(HomeCreationKind::AnimatedGlyph);
+        app.animation_selection_order = vec!["frame_1.png".to_string(), "frame_2.png".to_string()];
+        app.animation_import_settings.threshold = 103;
+
+        continue_home_workflow_after_tweaking(&mut app, HomeCreationKind::AnimatedGlyph)
+            .expect("continue should persist animation frame thresholds");
+
+        let manifest = read_manifest(&manifest_path).expect("manifest reload succeeds");
+        assert_eq!(manifest.threshold_overrides.get("frame_1.png"), Some(&103));
+        assert_eq!(manifest.threshold_overrides.get("frame_2.png"), Some(&103));
+        assert!(
+            app.glyphs.iter().all(|glyph| {
+                glyph.working_threshold == 103 && glyph.saved_threshold == Some(103)
+            })
+        );
     }
 
     #[test]
