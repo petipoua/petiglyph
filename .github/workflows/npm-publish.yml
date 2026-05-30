@@ -29,6 +29,9 @@ jobs:
           node-version: ${{ env.NODE_VERSION }}
           registry-url: https://registry.npmjs.org
 
+      - name: Assert clean release checkout
+        run: ./scripts/release_assert_clean_tree.sh
+
       - name: Verify release metadata and integrity
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

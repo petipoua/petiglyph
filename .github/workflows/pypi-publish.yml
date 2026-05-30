@@ -80,6 +80,9 @@ jobs:
         with:
           ref: ${{ github.event.release.tag_name }}
 
+      - name: Assert clean release checkout
+        run: ./scripts/release_assert_clean_tree.sh
+
       - name: Build sdist
         uses: PyO3/maturin-action@e83996d129638aa358a18fbd1dfb82f0b0fb5d3b
         with:

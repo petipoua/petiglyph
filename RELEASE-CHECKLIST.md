@@ -143,7 +143,13 @@ References:
 
 Before tagging:
 
-- [ ] Working tree is clean except intentional release-prep changes.
+- [ ] Working tree is clean and release-prep changes are committed.
+- [ ] Release package hygiene passes after release-prep changes are committed:
+
+```bash
+./scripts/release_assert_clean_tree.sh
+```
+
 - [ ] `README.md`, `AGENTS.md`, `CROSS-COMPATIBILITY-GUIDE.md`, and release docs match current command/package behavior.
 - [ ] Release notes include unsigned macOS/Windows warnings where applicable.
 - [ ] Release notes identify limited-runtime-validation targets.
@@ -151,7 +157,7 @@ Before tagging:
 Tag and push:
 
 ```bash
-git status --short
+./scripts/release_assert_clean_tree.sh
 git tag -s v0.1.0 -m "petiglyph v0.1.0"
 git push origin v0.1.0
 ```

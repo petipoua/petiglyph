@@ -33,6 +33,7 @@ It complements `RELEASE-CHECKLIST.md` and reflects the release automation now in
   - Verifies release integrity (`gh release verify`) before publishing.
   - Publishes to TestPyPI then PyPI using trusted publishing.
 - Packaging/release helper scripts:
+  - `scripts/release_assert_clean_tree.sh`
   - `scripts/release_sync_versions.sh`
   - `scripts/release_stage_npm_artifacts.sh`
   - `scripts/release_npm_pack_test.sh`
@@ -108,14 +109,20 @@ ssh aur@aur.archlinux.org help
 
 2. Validate working tree/tests.
 3. Commit.
-4. Create signed annotated tag:
+4. Assert the committed release tree is clean and packageable:
+
+```bash
+./scripts/release_assert_clean_tree.sh
+```
+
+5. Create signed annotated tag:
 
 ```bash
 git tag -s v0.1.0 -m "petiglyph v0.1.0"
 git push origin v0.1.0
 ```
 
-5. The tag push triggers `.github/workflows/release.yml`.
+6. The tag push triggers `.github/workflows/release.yml`.
 
 ## 3.1 Technical Execution Timeline (From Commit To Registries)
 
