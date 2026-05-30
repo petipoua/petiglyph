@@ -31,7 +31,7 @@ use crate::project::{
 };
 use crate::tui::{
     App, AppView, GlyphsFocus, GridConfig, GridConfigFocus, InstalledFontBlock,
-    InstalledFontSample, InteractiveGlyph, TuiLaunchOverrides, WelcomeFocus, build_action_name,
+    InstalledFontSample, InteractiveGlyph, TuiLaunchOverrides, WelcomeFocus,
     format_projects_card_hint, format_welcome_input_field, handle_key, handle_key_event_for_test,
     handle_paste_event_for_test, install_action_name, installed_font_block_display_lines,
     persist_threshold_override, regroup_installed_sample_blocks, render_ui_for_test,
@@ -1076,8 +1076,6 @@ fn delete_project_confirmation_can_be_canceled() {
 
 #[test]
 fn project_action_labels_switch_with_current_project_state() {
-    assert_eq!(build_action_name(false), "Build");
-    assert_eq!(build_action_name(true), "Rebuild");
     assert_eq!(install_action_name(false), "Install");
     assert_eq!(install_action_name(true), "Reinstall");
 }

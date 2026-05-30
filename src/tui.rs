@@ -685,13 +685,6 @@ enum BuildTaskKind {
 }
 
 impl BuildTaskKind {
-    fn button_label(&self) -> &'static str {
-        match self {
-            Self::Build => "Building...",
-            Self::Rebuild => "Rebuilding...",
-        }
-    }
-
     fn footer_label(&self) -> &'static str {
         match self {
             Self::Build => "building project...",
@@ -1598,10 +1591,6 @@ fn format_welcome_input_field_with_cursor(
 #[cfg(test)]
 pub(crate) fn format_welcome_input_field(value: &str, focused: bool, width: usize) -> String {
     format_welcome_input_field_with_cursor(value.trim(), focused, value.chars().count(), width)
-}
-
-pub(crate) fn build_action_name(project_is_built: bool) -> &'static str {
-    if project_is_built { "Rebuild" } else { "Build" }
 }
 
 pub(crate) fn install_action_name(project_is_installed: bool) -> &'static str {

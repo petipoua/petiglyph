@@ -66,6 +66,48 @@ fn assert_api_envelope(payload: &Value, command: &str, ok: bool) {
     assert!(payload.get("data").is_some(), "data field should exist");
 }
 
+#[test]
+fn cli_help_describes_polished_command_surface() {
+    let workspace = make_temp_dir("help-polish");
+
+    let top = run_petiglyph(&workspace, &["--help"], None, None);
+    assert!(top.status.success(), "top-level help should succeed");
+    let top_stdout = String::from_utf8_lossy(&top.stdout);
+    assert!(
+        top_stdout.contains("set-threshold    Shortcut for `glyph set-threshold`"),
+        "top-level threshold command should be described as a shortcut: {top_stdout}"
+    );
+    assert!(
+        top_stdout.contains(
+            "sample           Build, install, refresh font cache, and print the sample private-use string"
+        ),
+        "sample help should describe its install/cache behavior: {top_stdout}"
+    );
+    assert!(
+        top_stdout.contains(
+            "nuke-everything  Remove all petiglyph-managed user state (fonts, registry, and metadata)"
+        ),
+        "nuke-everything name should be kept with clear wording: {top_stdout}"
+    );
+
+    let animation = run_petiglyph(&workspace, &["animation", "--help"], None, None);
+    assert!(animation.status.success(), "animation help should succeed");
+    let animation_stdout = String::from_utf8_lossy(&animation.stdout);
+    for expected in [
+        "create-standard  Import media frames and create a standard animation",
+        "create-grid      Import media frames and create a grid animation",
+        "set-fps          Update an animation's frames-per-second value",
+        "delete           Delete an animation definition from the project manifest",
+    ] {
+        assert!(
+            animation_stdout.contains(expected),
+            "animation help should contain `{expected}`: {animation_stdout}"
+        );
+    }
+
+    fs::remove_dir_all(workspace).expect("temp dir is removed");
+}
+
 fn create_project_with_icon(workspace: &Path, project_name: &str) -> (PathBuf, PathBuf) {
     let project_dir = workspace.join(project_name);
     let create = run_petiglyph(
@@ -244,6 +286,445 @@ fn cli_clear_threshold_json_updates_manifest() {
 
     fs::remove_dir_all(project_dir).expect("project dir is removed");
     fs::remove_dir_all(workspace).expect("temp dir is removed");
+}
+
+#[test]
+fn cli_glyph_set_invert_json_updates_manifest() {
+    let workspace = make_temp_dir("glyph-set-invert-json");
+    let (project_dir, manifest_path) = create_project_with_icon(&workspace, "invert-demo");
+
+    let output = run_petiglyph(
+        &project_dir,
+        &[
+            "glyph",
+            "set-invert",
+            "alpha.png",
+            "--invert",
+            "on",
+            "--json",
+        ],
+        None,
+        None,
+    );
+    assert!(
+        output.status.success(),
+        "glyph set-invert --json should succeed"
+    );
+    let payload = parse_json_stdout(&output);
+    assert_api_envelope(&payload, "glyph.set-invert", true);
+    assert_eq!(payload["data"]["image_name"].as_str(), Some("alpha.png"));
+    assert_eq!(payload["data"]["invert"].as_bool(), Some(true));
+
+    let manifest_content = fs::read_to_string(&manifest_path).expect("manifest should be readable");
+    assert!(
+        manifest_content.contains("[invert_overrides]")
+            && manifest_content.contains("\"alpha.png\" = true"),
+        "manifest should persist invert override"
+    );
+}
+
+#[test]
+fn cli_composition_set_and_clear_json_updates_manifest() {
+    let workspace = make_temp_dir("composition-set-clear-json");
+    let (project_dir, manifest_path) = create_project_with_icon(&workspace, "composition-demo");
+
+    let set_output = run_petiglyph(
+        &project_dir,
+        &[
+            "composition",
+            "set",
+            "alpha.png",
+            "--rows",
+            "2",
+            "--cols",
+            "3",
+            "--horizontal-bleed",
+            "weak",
+            "--vertical-bleed",
+            "off",
+            "--json",
+        ],
+        None,
+        None,
+    );
+    assert!(
+        set_output.status.success(),
+        "composition set --json should succeed"
+    );
+    let set_payload = parse_json_stdout(&set_output);
+    assert_api_envelope(&set_payload, "composition.set", true);
+
+    let after_set = fs::read_to_string(&manifest_path).expect("manifest should be readable");
+    let parsed_after_set: toml::Value = toml::from_str(&after_set).expect("valid manifest toml");
+    let comp = parsed_after_set
+        .get("compositions")
+        .and_then(|v| v.get("alpha.png"))
+        .expect("composition entry should exist");
+    assert!(
+        comp.get("rows").and_then(|v| v.as_integer()) == Some(2)
+            && comp.get("cols").and_then(|v| v.as_integer()) == Some(3),
+        "composition should be persisted"
+    );
+
+    let clear_output = run_petiglyph(
+        &project_dir,
+        &["composition", "clear", "alpha.png", "--json"],
+        None,
+        None,
+    );
+    assert!(
+        clear_output.status.success(),
+        "composition clear --json should succeed"
+    );
+    let clear_payload = parse_json_stdout(&clear_output);
+    assert_api_envelope(&clear_payload, "composition.clear", true);
+
+    let after_clear = fs::read_to_string(&manifest_path).expect("manifest should be readable");
+    let parsed_after_clear: toml::Value =
+        toml::from_str(&after_clear).expect("valid manifest toml");
+    assert!(
+        parsed_after_clear
+            .get("compositions")
+            .and_then(|v| v.get("alpha.png"))
+            .is_none(),
+        "composition should be removed"
+    );
+}
+
+#[test]
+fn cli_animation_create_set_fps_delete_json_updates_manifest() {
+    let workspace = make_temp_dir("animation-lifecycle-json");
+    let (project_dir, manifest_path) = create_project_with_icon(&workspace, "animation-demo");
+    write_test_png(&project_dir.join("icons/frame2.png"));
+
+    let create_output = run_petiglyph(
+        &project_dir,
+        &[
+            "animation",
+            "create-standard",
+            "--input",
+            "icons/alpha.png",
+            "--input",
+            "icons/frame2.png",
+            "--name",
+            "walk",
+            "--fps",
+            "8",
+            "--json",
+        ],
+        None,
+        None,
+    );
+    assert!(
+        create_output.status.success(),
+        "animation create-standard --json should succeed"
+    );
+    let create_payload = parse_json_stdout(&create_output);
+    assert_api_envelope(&create_payload, "animation.create-standard", true);
+    assert_eq!(create_payload["data"]["name"].as_str(), Some("walk"));
+    assert_eq!(create_payload["data"]["fps"].as_u64(), Some(8));
+
+    let set_fps_output = run_petiglyph(
+        &project_dir,
+        &["animation", "set-fps", "walk", "--fps", "10", "--json"],
+        None,
+        None,
+    );
+    assert!(
+        set_fps_output.status.success(),
+        "animation set-fps --json should succeed"
+    );
+    let set_fps_payload = parse_json_stdout(&set_fps_output);
+    assert_api_envelope(&set_fps_payload, "animation.set-fps", true);
+    assert_eq!(set_fps_payload["data"]["fps"].as_u64(), Some(10));
+
+    let manifest_after_set = fs::read_to_string(&manifest_path).expect("manifest readable");
+    assert!(
+        manifest_after_set.contains("name = \"walk\"") && manifest_after_set.contains("fps = 10"),
+        "manifest should reflect updated fps"
+    );
+
+    let delete_output = run_petiglyph(
+        &project_dir,
+        &["animation", "delete", "walk", "--json"],
+        None,
+        None,
+    );
+    assert!(
+        delete_output.status.success(),
+        "animation delete --json should succeed"
+    );
+    let delete_payload = parse_json_stdout(&delete_output);
+    assert_api_envelope(&delete_payload, "animation.delete", true);
+
+    let manifest_after_delete = fs::read_to_string(&manifest_path).expect("manifest readable");
+    assert!(
+        !manifest_after_delete.contains("name = \"walk\""),
+        "animation should be removed from manifest"
+    );
+}
+
+#[test]
+fn cli_glyph_create_json_imports_and_persists_defaults() {
+    let workspace = make_temp_dir("glyph-create-json");
+    let (project_dir, manifest_path) = create_project_with_icon(&workspace, "glyph-create-demo");
+    let source = workspace.join("glyph-source.png");
+    write_test_png(&source);
+
+    let output = run_petiglyph(
+        &project_dir,
+        &[
+            "glyph",
+            "create",
+            "--input",
+            source.to_str().expect("source path should be utf8"),
+            "--threshold",
+            "97",
+            "--invert",
+            "on",
+            "--json",
+        ],
+        None,
+        None,
+    );
+    assert!(
+        output.status.success(),
+        "glyph create --json should succeed"
+    );
+    let payload = parse_json_stdout(&output);
+    assert_api_envelope(&payload, "glyph.create", true);
+    assert_eq!(
+        payload["data"]["imported_sources"]
+            .as_array()
+            .map(|v| v.len()),
+        Some(1),
+        "one source should be imported"
+    );
+
+    let manifest_content = fs::read_to_string(&manifest_path).expect("manifest should be readable");
+    assert!(
+        manifest_content.contains("= 97"),
+        "manifest should persist threshold override for imported source"
+    );
+    assert!(
+        manifest_content.contains("[invert_overrides]"),
+        "manifest should persist invert override section"
+    );
+}
+
+#[test]
+fn cli_grid_create_json_persists_composition_and_rejects_multiple_sources() {
+    let workspace = make_temp_dir("grid-create-json");
+    let (project_dir, manifest_path) = create_project_with_icon(&workspace, "grid-create-demo");
+    let source1 = workspace.join("grid-source-1.png");
+    let source2 = workspace.join("grid-source-2.png");
+    write_test_png(&source1);
+    write_test_png(&source2);
+
+    let ok_output = run_petiglyph(
+        &project_dir,
+        &[
+            "grid",
+            "create",
+            "--input",
+            source1.to_str().expect("source path should be utf8"),
+            "--rows",
+            "2",
+            "--cols",
+            "2",
+            "--horizontal-bleed",
+            "strong",
+            "--vertical-bleed",
+            "weak",
+            "--threshold",
+            "111",
+            "--json",
+        ],
+        None,
+        None,
+    );
+    assert!(
+        ok_output.status.success(),
+        "grid create --json should succeed"
+    );
+    let ok_payload = parse_json_stdout(&ok_output);
+    assert_api_envelope(&ok_payload, "grid.create", true);
+
+    let manifest_content = fs::read_to_string(&manifest_path).expect("manifest should be readable");
+    assert!(
+        manifest_content.contains("rows = 2")
+            && manifest_content.contains("cols = 2")
+            && manifest_content.contains("horizontal_bleed = \"strong\"")
+            && manifest_content.contains("vertical_bleed = \"weak\""),
+        "grid composition settings should be persisted"
+    );
+
+    let error_output = run_petiglyph(
+        &project_dir,
+        &[
+            "grid",
+            "create",
+            "--input",
+            source1.to_str().expect("source path should be utf8"),
+            "--input",
+            source2.to_str().expect("source path should be utf8"),
+            "--rows",
+            "2",
+            "--cols",
+            "2",
+            "--json",
+        ],
+        None,
+        None,
+    );
+    assert!(
+        !error_output.status.success(),
+        "grid create should fail when multiple sources are imported"
+    );
+    let error_payload = parse_json_stdout(&error_output);
+    assert_api_envelope(&error_payload, "grid.create", false);
+    assert!(
+        error_payload["error"]["message"]
+            .as_str()
+            .expect("error message")
+            .contains("exactly one imported source"),
+        "error should explain single-source requirement"
+    );
+}
+
+#[test]
+fn cli_animation_create_grid_json_sets_animation_and_compositions() {
+    let workspace = make_temp_dir("animation-create-grid-json");
+    let (project_dir, manifest_path) = create_project_with_icon(&workspace, "anim-grid-demo");
+    let frame2 = workspace.join("frame-b.png");
+    write_test_png(&frame2);
+
+    let output = run_petiglyph(
+        &project_dir,
+        &[
+            "animation",
+            "create-grid",
+            "--input",
+            "icons/alpha.png",
+            "--input",
+            frame2.to_str().expect("frame2 path should be utf8"),
+            "--name",
+            "gridwalk",
+            "--fps",
+            "12",
+            "--rows",
+            "2",
+            "--cols",
+            "2",
+            "--horizontal-bleed",
+            "weak",
+            "--vertical-bleed",
+            "off",
+            "--json",
+        ],
+        None,
+        None,
+    );
+    assert!(
+        output.status.success(),
+        "animation create-grid --json should succeed"
+    );
+    let payload = parse_json_stdout(&output);
+    assert_api_envelope(&payload, "animation.create-grid", true);
+    assert_eq!(payload["data"]["name"].as_str(), Some("gridwalk"));
+    assert_eq!(payload["data"]["fps"].as_u64(), Some(12));
+    assert_eq!(payload["data"]["frame_count"].as_u64(), Some(2));
+
+    let manifest_content = fs::read_to_string(&manifest_path).expect("manifest should be readable");
+    let parsed: toml::Value = toml::from_str(&manifest_content).expect("valid manifest toml");
+    let animations = parsed
+        .get("animations")
+        .and_then(|v| v.as_array())
+        .expect("animations should be an array");
+    let anim = animations
+        .iter()
+        .find(|entry| entry.get("name").and_then(|v| v.as_str()) == Some("gridwalk"))
+        .expect("gridwalk animation should exist");
+    assert_eq!(anim.get("rows").and_then(|v| v.as_integer()), Some(2));
+    assert_eq!(anim.get("cols").and_then(|v| v.as_integer()), Some(2));
+}
+
+#[test]
+fn cli_animation_set_fps_json_rejects_out_of_range() {
+    let workspace = make_temp_dir("animation-set-fps-invalid-json");
+    let (project_dir, _) = create_project_with_icon(&workspace, "anim-fps-demo");
+
+    let output = run_petiglyph(
+        &project_dir,
+        &["animation", "set-fps", "missing", "--fps", "0", "--json"],
+        None,
+        None,
+    );
+    assert!(
+        !output.status.success(),
+        "animation set-fps should reject invalid fps"
+    );
+    let payload = parse_json_stdout(&output);
+    assert_api_envelope(&payload, "animation.set-fps", false);
+    assert!(
+        payload["error"]["message"]
+            .as_str()
+            .expect("error message")
+            .contains("fps must be in 1..=30"),
+        "error should include fps range"
+    );
+}
+
+#[test]
+fn cli_legacy_and_nested_threshold_commands_match_manifest_mutation() {
+    let workspace = make_temp_dir("threshold-parity-json");
+    let (project_dir, manifest_path) =
+        create_project_with_icon(&workspace, "threshold-parity-demo");
+
+    let legacy_output = run_petiglyph(
+        &project_dir,
+        &["set-threshold", "alpha.png", "140", "--json"],
+        None,
+        None,
+    );
+    assert!(
+        legacy_output.status.success(),
+        "legacy set-threshold should succeed"
+    );
+    let legacy_payload = parse_json_stdout(&legacy_output);
+    assert_api_envelope(&legacy_payload, "set-threshold", true);
+
+    let nested_output = run_petiglyph(
+        &project_dir,
+        &["glyph", "set-threshold", "alpha.png", "141", "--json"],
+        None,
+        None,
+    );
+    assert!(
+        nested_output.status.success(),
+        "nested glyph set-threshold should succeed"
+    );
+    let nested_payload = parse_json_stdout(&nested_output);
+    assert_api_envelope(&nested_payload, "glyph.set-threshold", true);
+
+    let clear_nested_output = run_petiglyph(
+        &project_dir,
+        &["glyph", "clear-threshold", "alpha.png", "--json"],
+        None,
+        None,
+    );
+    assert!(
+        clear_nested_output.status.success(),
+        "nested glyph clear-threshold should succeed"
+    );
+    let clear_nested_payload = parse_json_stdout(&clear_nested_output);
+    assert_api_envelope(&clear_nested_payload, "glyph.clear-threshold", true);
+
+    let manifest_content = fs::read_to_string(&manifest_path).expect("manifest should be readable");
+    assert!(
+        !manifest_content.contains("\"alpha.png\" = 141"),
+        "clear-threshold alias should remove the override"
+    );
 }
 
 #[test]

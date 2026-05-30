@@ -113,6 +113,12 @@
 - If the panel is too small, compress the preview proportionally to fit. If the thresholded image has empty rows, crop empty vertical bounds before aspect-fit scaling.
 - Future preview refactors should keep explicit tests for tall and wide preview areas so regressions cannot reintroduce independent X/Y scaling.
 
+### TUI Change Guardrail (Strict)
+
+- The TUI has been carefully crafted and must not be altered as a side quest.
+- Agents must not change TUI behavior, keybindings, copy/text, layout, flow, or visual details unless the user explicitly requests a TUI change in the current task.
+- If a task can be completed without touching `src/tui.rs` (or TUI-facing tests/docs), leave TUI files unchanged.
+
 ### HTY E2E Guidance (Important)
 
 - `hty` is very new; agentic LLMs instincts can be weak for this tool. Before changing `hty`-based test flows, check upstream docs/repo first:

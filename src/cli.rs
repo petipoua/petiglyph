@@ -1,6 +1,7 @@
 use anyhow::{Context, Result};
-use clap::{Parser, Subcommand};
+use clap::{Parser, Subcommand, ValueEnum};
 use serde::Serialize;
+use std::collections::BTreeSet;
 use std::fs;
 use std::io::{self, IsTerminal, Write};
 use std::path::{Path, PathBuf};
@@ -8,6 +9,7 @@ use std::process::{Command, Stdio};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::artifact_warning::incompatible_artifact_warning;
+use crate::build::is_supported_source;
 use crate::build::{BuildOptions, BuildSummary, build_outputs_with_options};
 use crate::doctor::{DoctorReport, doctor};
 use crate::install::{
@@ -16,9 +18,9 @@ use crate::install::{
     uninstall_project_font, uninstall_tool_state,
 };
 use crate::project::{
-    RuntimeConfig, create_project, delete_project_for_manifest, discover_project_manifests,
-    format_codepoint, load_runtime_config, manifest_path_from_option, read_manifest,
-    write_manifest,
+    AnimationDef, AnimationType, BleedLevel, CompositionDef, Manifest, RuntimeConfig,
+    create_project, delete_project_for_manifest, discover_project_manifests, format_codepoint,
+    load_runtime_config, manifest_path_from_option, read_manifest, slugify, write_manifest,
 };
 use crate::tui::{tui, tui_workspace};
 
@@ -65,7 +67,7 @@ enum CliCommand {
         #[arg(long)]
         json: bool,
     },
-    /// Set a custom monochrome threshold override for a specific glyph source image.
+    /// Shortcut for `glyph set-threshold`.
     SetThreshold {
         /// The filename of the source image in the icons folder (e.g., 'alpha.png').
         image_name: String,
@@ -78,7 +80,7 @@ enum CliCommand {
         #[arg(long)]
         json: bool,
     },
-    /// Clear a custom monochrome threshold override for a specific glyph source image.
+    /// Shortcut for `glyph clear-threshold`.
     ClearThreshold {
         /// The filename of the source image in the icons folder (e.g., 'alpha.png').
         image_name: String,
@@ -88,6 +90,26 @@ enum CliCommand {
         /// Emit machine-readable JSON to stdout.
         #[arg(long)]
         json: bool,
+    },
+    /// Glyph operations: import/create and glyph-level overrides.
+    Glyph {
+        #[command(subcommand)]
+        command: GlyphCommand,
+    },
+    /// Grid composition creation workflow commands.
+    Grid {
+        #[command(subcommand)]
+        command: GridCommand,
+    },
+    /// Composition mutation commands.
+    Composition {
+        #[command(subcommand)]
+        command: CompositionCommand,
+    },
+    /// Animation creation and mutation commands.
+    Animation {
+        #[command(subcommand)]
+        command: AnimationCommand,
     },
     /// Launch the petiglyph TUI for a project.
     Tui {
@@ -134,7 +156,7 @@ enum CliCommand {
         #[arg(long)]
         force_remap: bool,
     },
-    /// Build the font and print the sample private-use string.
+    /// Build, install, refresh font cache, and print the sample private-use string.
     Sample {
         /// Path to the manifest file. When omitted, auto-detect from the current directory or one level below.
         #[arg(short, long)]
@@ -197,7 +219,7 @@ enum CliCommand {
         #[arg(long)]
         json: bool,
     },
-    /// Completely nuke the petiglyph tool state for the current user (managed fonts + registry + metadata).
+    /// Remove all petiglyph-managed user state (fonts, registry, and metadata).
     #[command(name = "nuke-everything")]
     NukeEverything {
         /// Emit machine-readable JSON to stdout.
@@ -219,6 +241,220 @@ enum CliCommand {
         #[arg(long)]
         json: bool,
     },
+}
+
+#[derive(Debug, Subcommand)]
+enum GlyphCommand {
+    /// Import one or more source images and apply glyph-level defaults.
+    Create {
+        #[arg(short, long)]
+        manifest: Option<PathBuf>,
+        #[arg(long = "input", required = true)]
+        input: Vec<PathBuf>,
+        #[arg(long, default_value_t = 64)]
+        threshold: u8,
+        #[arg(long, value_enum, default_value_t = InvertValue::Off)]
+        invert: InvertValue,
+        #[arg(long, default_value_t = false)]
+        grayscale_enabled: bool,
+        #[arg(long, default_value_t = 0)]
+        grayscale_brightness: i16,
+        #[arg(long, default_value_t = 0)]
+        grayscale_contrast: i16,
+        #[arg(long, default_value_t = 100)]
+        grayscale_gamma_percent: u16,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Set glyph threshold override.
+    SetThreshold {
+        image_name: String,
+        threshold: u8,
+        #[arg(short, long)]
+        manifest: Option<PathBuf>,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Clear glyph threshold override.
+    ClearThreshold {
+        image_name: String,
+        #[arg(short, long)]
+        manifest: Option<PathBuf>,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Set glyph invert override.
+    SetInvert {
+        image_name: String,
+        #[arg(long, value_enum)]
+        invert: InvertValue,
+        #[arg(short, long)]
+        manifest: Option<PathBuf>,
+        #[arg(long)]
+        json: bool,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+enum GridCommand {
+    /// Create/replace a grid composition from one imported image.
+    Create {
+        #[arg(short, long)]
+        manifest: Option<PathBuf>,
+        #[arg(long = "input", required = true)]
+        input: Vec<PathBuf>,
+        #[arg(long)]
+        rows: usize,
+        #[arg(long)]
+        cols: usize,
+        #[arg(long, value_enum, default_value_t = BleedValue::Weak)]
+        horizontal_bleed: BleedValue,
+        #[arg(long, value_enum, default_value_t = BleedValue::Off)]
+        vertical_bleed: BleedValue,
+        #[arg(long, default_value_t = 64)]
+        threshold: u8,
+        #[arg(long, value_enum, default_value_t = InvertValue::Off)]
+        invert: InvertValue,
+        #[arg(long, default_value_t = false)]
+        grayscale_enabled: bool,
+        #[arg(long, default_value_t = 0)]
+        grayscale_brightness: i16,
+        #[arg(long, default_value_t = 0)]
+        grayscale_contrast: i16,
+        #[arg(long, default_value_t = 100)]
+        grayscale_gamma_percent: u16,
+        #[arg(long)]
+        json: bool,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+enum CompositionCommand {
+    Set {
+        source_key: String,
+        #[arg(short, long)]
+        manifest: Option<PathBuf>,
+        #[arg(long)]
+        rows: usize,
+        #[arg(long)]
+        cols: usize,
+        #[arg(long, value_enum, default_value_t = BleedValue::Weak)]
+        horizontal_bleed: BleedValue,
+        #[arg(long, value_enum, default_value_t = BleedValue::Off)]
+        vertical_bleed: BleedValue,
+        #[arg(long)]
+        json: bool,
+    },
+    Clear {
+        source_key: String,
+        #[arg(short, long)]
+        manifest: Option<PathBuf>,
+        #[arg(long)]
+        json: bool,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+enum AnimationCommand {
+    /// Import media frames and create a standard animation.
+    CreateStandard {
+        #[arg(short, long)]
+        manifest: Option<PathBuf>,
+        #[arg(long = "input", required = true)]
+        input: Vec<PathBuf>,
+        #[arg(long)]
+        name: Option<String>,
+        #[arg(long)]
+        fps: u8,
+        #[arg(long, default_value_t = 64)]
+        threshold: u8,
+        #[arg(long, value_enum, default_value_t = InvertValue::Off)]
+        invert: InvertValue,
+        #[arg(long, default_value_t = true)]
+        grayscale_enabled: bool,
+        #[arg(long, default_value_t = 0)]
+        grayscale_brightness: i16,
+        #[arg(long, default_value_t = 0)]
+        grayscale_contrast: i16,
+        #[arg(long, default_value_t = 100)]
+        grayscale_gamma_percent: u16,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Import media frames and create a grid animation.
+    CreateGrid {
+        #[arg(short, long)]
+        manifest: Option<PathBuf>,
+        #[arg(long = "input", required = true)]
+        input: Vec<PathBuf>,
+        #[arg(long)]
+        name: Option<String>,
+        #[arg(long)]
+        fps: u8,
+        #[arg(long)]
+        rows: usize,
+        #[arg(long)]
+        cols: usize,
+        #[arg(long, value_enum, default_value_t = BleedValue::Weak)]
+        horizontal_bleed: BleedValue,
+        #[arg(long, value_enum, default_value_t = BleedValue::Off)]
+        vertical_bleed: BleedValue,
+        #[arg(long, default_value_t = 64)]
+        threshold: u8,
+        #[arg(long, value_enum, default_value_t = InvertValue::Off)]
+        invert: InvertValue,
+        #[arg(long, default_value_t = true)]
+        grayscale_enabled: bool,
+        #[arg(long, default_value_t = 0)]
+        grayscale_brightness: i16,
+        #[arg(long, default_value_t = 0)]
+        grayscale_contrast: i16,
+        #[arg(long, default_value_t = 100)]
+        grayscale_gamma_percent: u16,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Update an animation's frames-per-second value.
+    SetFps {
+        name: String,
+        #[arg(long)]
+        fps: u8,
+        #[arg(short, long)]
+        manifest: Option<PathBuf>,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Delete an animation definition from the project manifest.
+    Delete {
+        name: String,
+        #[arg(short, long)]
+        manifest: Option<PathBuf>,
+        #[arg(long)]
+        json: bool,
+    },
+}
+
+#[derive(Debug, Clone, Copy, ValueEnum)]
+enum InvertValue {
+    On,
+    Off,
+}
+
+#[derive(Debug, Clone, Copy, ValueEnum)]
+enum BleedValue {
+    Off,
+    Weak,
+    Strong,
+}
+
+impl From<BleedValue> for BleedLevel {
+    fn from(value: BleedValue) -> Self {
+        match value {
+            BleedValue::Off => BleedLevel::Off,
+            BleedValue::Weak => BleedLevel::Weak,
+            BleedValue::Strong => BleedLevel::Strong,
+        }
+    }
 }
 
 #[derive(Debug, Serialize)]
@@ -276,6 +512,37 @@ struct ClearThresholdCommandData {
     manifest: String,
     image_name: String,
     was_present: bool,
+}
+
+#[derive(Debug, Serialize)]
+struct ImportedSourcesCommandData {
+    manifest: String,
+    imported_sources: Vec<String>,
+}
+
+#[derive(Debug, Serialize)]
+struct SetInvertCommandData {
+    manifest: String,
+    image_name: String,
+    invert: bool,
+}
+
+#[derive(Debug, Serialize)]
+struct CompositionCommandData {
+    manifest: String,
+    source_key: String,
+    rows: Option<usize>,
+    cols: Option<usize>,
+}
+
+#[derive(Debug, Serialize)]
+struct AnimationMutationCommandData {
+    manifest: String,
+    name: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    fps: Option<u8>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    frame_count: Option<usize>,
 }
 
 #[derive(Debug, Serialize)]
@@ -482,6 +749,25 @@ fn command_emits_json(cli: &Cli) -> bool {
             | Some(CliCommand::UninstallFont { json: true, .. })
             | Some(CliCommand::NukeEverything { json: true })
             | Some(CliCommand::Doctor { json: true, .. })
+            | Some(CliCommand::Glyph {
+                command: GlyphCommand::Create { json: true, .. }
+                    | GlyphCommand::SetThreshold { json: true, .. }
+                    | GlyphCommand::ClearThreshold { json: true, .. }
+                    | GlyphCommand::SetInvert { json: true, .. },
+            })
+            | Some(CliCommand::Grid {
+                command: GridCommand::Create { json: true, .. },
+            })
+            | Some(CliCommand::Composition {
+                command: CompositionCommand::Set { json: true, .. }
+                    | CompositionCommand::Clear { json: true, .. },
+            })
+            | Some(CliCommand::Animation {
+                command: AnimationCommand::CreateStandard { json: true, .. }
+                    | AnimationCommand::CreateGrid { json: true, .. }
+                    | AnimationCommand::SetFps { json: true, .. }
+                    | AnimationCommand::Delete { json: true, .. },
+            })
     )
 }
 
@@ -813,6 +1099,10 @@ fn run_cli(cli: Cli) -> std::result::Result<(), CliRunError> {
             || clear_threshold_command(manifest_path_from_option(manifest)?, &image_name),
             print_clear_threshold_result,
         ),
+        Some(CliCommand::Glyph { command }) => run_glyph_command(command),
+        Some(CliCommand::Grid { command }) => run_grid_command(command),
+        Some(CliCommand::Composition { command }) => run_composition_command(command),
+        Some(CliCommand::Animation { command }) => run_animation_command(command),
         Some(CliCommand::Tui {
             manifest,
             input_dir,
@@ -974,6 +1264,258 @@ fn run_cli(cli: Cli) -> std::result::Result<(), CliRunError> {
             json,
             || doctor_command(manifest, repair),
             print_doctor_result,
+        ),
+    }
+}
+
+fn run_glyph_command(command: GlyphCommand) -> std::result::Result<(), CliRunError> {
+    match command {
+        GlyphCommand::Create {
+            manifest,
+            input,
+            threshold,
+            invert,
+            grayscale_enabled,
+            grayscale_brightness,
+            grayscale_contrast,
+            grayscale_gamma_percent,
+            json,
+        } => run_automation_command(
+            "glyph.create",
+            json,
+            || {
+                create_glyphs_command(
+                    manifest_path_from_option(manifest)?,
+                    input,
+                    threshold,
+                    invert,
+                    grayscale_options(
+                        grayscale_enabled,
+                        grayscale_brightness,
+                        grayscale_contrast,
+                        grayscale_gamma_percent,
+                    )?,
+                )
+            },
+            print_imported_sources_result,
+        ),
+        GlyphCommand::SetThreshold {
+            image_name,
+            threshold,
+            manifest,
+            json,
+        } => run_automation_command(
+            "glyph.set-threshold",
+            json,
+            || set_threshold_command(manifest_path_from_option(manifest)?, &image_name, threshold),
+            print_set_threshold_result,
+        ),
+        GlyphCommand::ClearThreshold {
+            image_name,
+            manifest,
+            json,
+        } => run_automation_command(
+            "glyph.clear-threshold",
+            json,
+            || clear_threshold_command(manifest_path_from_option(manifest)?, &image_name),
+            print_clear_threshold_result,
+        ),
+        GlyphCommand::SetInvert {
+            image_name,
+            invert,
+            manifest,
+            json,
+        } => run_automation_command(
+            "glyph.set-invert",
+            json,
+            || set_invert_command(manifest_path_from_option(manifest)?, &image_name, invert),
+            print_set_invert_result,
+        ),
+    }
+}
+
+fn run_grid_command(command: GridCommand) -> std::result::Result<(), CliRunError> {
+    match command {
+        GridCommand::Create {
+            manifest,
+            input,
+            rows,
+            cols,
+            horizontal_bleed,
+            vertical_bleed,
+            threshold,
+            invert,
+            grayscale_enabled,
+            grayscale_brightness,
+            grayscale_contrast,
+            grayscale_gamma_percent,
+            json,
+        } => run_automation_command(
+            "grid.create",
+            json,
+            || {
+                create_grid_command(
+                    manifest_path_from_option(manifest)?,
+                    input,
+                    rows,
+                    cols,
+                    horizontal_bleed.into(),
+                    vertical_bleed.into(),
+                    threshold,
+                    invert,
+                    grayscale_options(
+                        grayscale_enabled,
+                        grayscale_brightness,
+                        grayscale_contrast,
+                        grayscale_gamma_percent,
+                    )?,
+                )
+            },
+            print_imported_sources_result,
+        ),
+    }
+}
+
+fn run_composition_command(command: CompositionCommand) -> std::result::Result<(), CliRunError> {
+    match command {
+        CompositionCommand::Set {
+            source_key,
+            manifest,
+            rows,
+            cols,
+            horizontal_bleed,
+            vertical_bleed,
+            json,
+        } => run_automation_command(
+            "composition.set",
+            json,
+            || {
+                set_composition_command(
+                    manifest_path_from_option(manifest)?,
+                    source_key,
+                    rows,
+                    cols,
+                    horizontal_bleed.into(),
+                    vertical_bleed.into(),
+                )
+            },
+            print_composition_result,
+        ),
+        CompositionCommand::Clear {
+            source_key,
+            manifest,
+            json,
+        } => run_automation_command(
+            "composition.clear",
+            json,
+            || clear_composition_command(manifest_path_from_option(manifest)?, source_key),
+            print_composition_result,
+        ),
+    }
+}
+
+fn run_animation_command(command: AnimationCommand) -> std::result::Result<(), CliRunError> {
+    match command {
+        AnimationCommand::CreateStandard {
+            manifest,
+            input,
+            name,
+            fps,
+            threshold,
+            invert,
+            grayscale_enabled,
+            grayscale_brightness,
+            grayscale_contrast,
+            grayscale_gamma_percent,
+            json,
+        } => run_automation_command(
+            "animation.create-standard",
+            json,
+            || {
+                create_animation_command(
+                    manifest_path_from_option(manifest)?,
+                    input,
+                    name,
+                    AnimationType::Standard,
+                    fps,
+                    None,
+                    None,
+                    None,
+                    None,
+                    threshold,
+                    invert,
+                    grayscale_options(
+                        grayscale_enabled,
+                        grayscale_brightness,
+                        grayscale_contrast,
+                        grayscale_gamma_percent,
+                    )?,
+                )
+            },
+            print_animation_mutation_result,
+        ),
+        AnimationCommand::CreateGrid {
+            manifest,
+            input,
+            name,
+            fps,
+            rows,
+            cols,
+            horizontal_bleed,
+            vertical_bleed,
+            threshold,
+            invert,
+            grayscale_enabled,
+            grayscale_brightness,
+            grayscale_contrast,
+            grayscale_gamma_percent,
+            json,
+        } => run_automation_command(
+            "animation.create-grid",
+            json,
+            || {
+                create_animation_command(
+                    manifest_path_from_option(manifest)?,
+                    input,
+                    name,
+                    AnimationType::Grid,
+                    fps,
+                    Some(rows),
+                    Some(cols),
+                    Some(horizontal_bleed.into()),
+                    Some(vertical_bleed.into()),
+                    threshold,
+                    invert,
+                    grayscale_options(
+                        grayscale_enabled,
+                        grayscale_brightness,
+                        grayscale_contrast,
+                        grayscale_gamma_percent,
+                    )?,
+                )
+            },
+            print_animation_mutation_result,
+        ),
+        AnimationCommand::SetFps {
+            name,
+            fps,
+            manifest,
+            json,
+        } => run_automation_command(
+            "animation.set-fps",
+            json,
+            || animation_set_fps_command(manifest_path_from_option(manifest)?, name, fps),
+            print_animation_mutation_result,
+        ),
+        AnimationCommand::Delete {
+            name,
+            manifest,
+            json,
+        } => run_automation_command(
+            "animation.delete",
+            json,
+            || animation_delete_command(manifest_path_from_option(manifest)?, name),
+            print_animation_mutation_result,
         ),
     }
 }
@@ -1562,6 +2104,585 @@ fn clear_threshold_command(
         image_name: image_name.to_string(),
         was_present,
     })
+}
+
+fn grayscale_options(
+    enabled: bool,
+    brightness: i16,
+    contrast: i16,
+    gamma_percent: u16,
+) -> Result<crate::animation_media::AnimationImportProcessingOptions> {
+    if !(-80..=80).contains(&brightness) {
+        anyhow::bail!("grayscale brightness must be in -80..=80");
+    }
+    if !(-80..=80).contains(&contrast) {
+        anyhow::bail!("grayscale contrast must be in -80..=80");
+    }
+    if !(50..=200).contains(&gamma_percent) {
+        anyhow::bail!("grayscale gamma percent must be in 50..=200");
+    }
+    Ok(crate::animation_media::AnimationImportProcessingOptions {
+        grayscale_enabled: enabled,
+        grayscale: crate::animation_media::AnimationGrayscaleOptions {
+            brightness,
+            contrast,
+            gamma_percent,
+        },
+    })
+}
+
+fn create_glyphs_command(
+    manifest_path: PathBuf,
+    input: Vec<PathBuf>,
+    threshold: u8,
+    invert: InvertValue,
+    processing: crate::animation_media::AnimationImportProcessingOptions,
+) -> Result<ImportedSourcesCommandData> {
+    validate_threshold(threshold)?;
+    let mut manifest = read_manifest(&manifest_path)?;
+    let input_dir = manifest_input_dir(&manifest_path, &manifest);
+    let imported = import_static_sources(&input_dir, input, processing)?;
+    if imported.is_empty() {
+        anyhow::bail!("no importable images were added");
+    }
+    for source in &imported {
+        manifest
+            .threshold_overrides
+            .insert(source.clone(), threshold);
+        if matches!(invert, InvertValue::On) {
+            manifest.invert_overrides.insert(source.clone(), true);
+        } else {
+            manifest.invert_overrides.remove(source);
+        }
+    }
+    write_manifest(&manifest_path, &manifest)?;
+    Ok(ImportedSourcesCommandData {
+        manifest: manifest_path.display().to_string(),
+        imported_sources: imported,
+    })
+}
+
+fn create_grid_command(
+    manifest_path: PathBuf,
+    input: Vec<PathBuf>,
+    rows: usize,
+    cols: usize,
+    horizontal_bleed: BleedLevel,
+    vertical_bleed: BleedLevel,
+    threshold: u8,
+    invert: InvertValue,
+    processing: crate::animation_media::AnimationImportProcessingOptions,
+) -> Result<ImportedSourcesCommandData> {
+    validate_threshold(threshold)?;
+    validate_grid(rows, cols)?;
+    let mut manifest = read_manifest(&manifest_path)?;
+    let input_dir = manifest_input_dir(&manifest_path, &manifest);
+    let imported = import_static_sources(&input_dir, input, processing)?;
+    if imported.len() != 1 {
+        anyhow::bail!("grid create requires exactly one imported source");
+    }
+    let source = imported[0].clone();
+    manifest
+        .threshold_overrides
+        .insert(source.clone(), threshold);
+    if matches!(invert, InvertValue::On) {
+        manifest.invert_overrides.insert(source.clone(), true);
+    } else {
+        manifest.invert_overrides.remove(&source);
+    }
+    manifest.compositions.insert(
+        source,
+        CompositionDef {
+            rows,
+            cols,
+            horizontal_bleed,
+            vertical_bleed,
+        },
+    );
+    write_manifest(&manifest_path, &manifest)?;
+    Ok(ImportedSourcesCommandData {
+        manifest: manifest_path.display().to_string(),
+        imported_sources: imported,
+    })
+}
+
+fn set_invert_command(
+    manifest_path: PathBuf,
+    image_name: &str,
+    invert: InvertValue,
+) -> Result<SetInvertCommandData> {
+    let mut manifest = read_manifest(&manifest_path)?;
+    let invert_bool = matches!(invert, InvertValue::On);
+    if invert_bool {
+        manifest
+            .invert_overrides
+            .insert(image_name.to_string(), true);
+    } else {
+        manifest.invert_overrides.remove(image_name);
+    }
+    write_manifest(&manifest_path, &manifest)?;
+    Ok(SetInvertCommandData {
+        manifest: manifest_path.display().to_string(),
+        image_name: image_name.to_string(),
+        invert: invert_bool,
+    })
+}
+
+fn set_composition_command(
+    manifest_path: PathBuf,
+    source_key: String,
+    rows: usize,
+    cols: usize,
+    horizontal_bleed: BleedLevel,
+    vertical_bleed: BleedLevel,
+) -> Result<CompositionCommandData> {
+    validate_grid(rows, cols)?;
+    let mut manifest = read_manifest(&manifest_path)?;
+    manifest.compositions.insert(
+        source_key.clone(),
+        CompositionDef {
+            rows,
+            cols,
+            horizontal_bleed,
+            vertical_bleed,
+        },
+    );
+    write_manifest(&manifest_path, &manifest)?;
+    Ok(CompositionCommandData {
+        manifest: manifest_path.display().to_string(),
+        source_key,
+        rows: Some(rows),
+        cols: Some(cols),
+    })
+}
+
+fn clear_composition_command(
+    manifest_path: PathBuf,
+    source_key: String,
+) -> Result<CompositionCommandData> {
+    let mut manifest = read_manifest(&manifest_path)?;
+    manifest.compositions.remove(&source_key);
+    write_manifest(&manifest_path, &manifest)?;
+    Ok(CompositionCommandData {
+        manifest: manifest_path.display().to_string(),
+        source_key,
+        rows: None,
+        cols: None,
+    })
+}
+
+#[allow(clippy::too_many_arguments)]
+fn create_animation_command(
+    manifest_path: PathBuf,
+    input: Vec<PathBuf>,
+    name: Option<String>,
+    animation_type: AnimationType,
+    fps: u8,
+    rows: Option<usize>,
+    cols: Option<usize>,
+    horizontal_bleed: Option<BleedLevel>,
+    vertical_bleed: Option<BleedLevel>,
+    threshold: u8,
+    invert: InvertValue,
+    processing: crate::animation_media::AnimationImportProcessingOptions,
+) -> Result<AnimationMutationCommandData> {
+    validate_threshold(threshold)?;
+    validate_fps(fps)?;
+    let mut manifest = read_manifest(&manifest_path)?;
+    let input_dir = manifest_input_dir(&manifest_path, &manifest);
+    let payload = input
+        .iter()
+        .map(|p| p.display().to_string())
+        .collect::<Vec<_>>()
+        .join("\n");
+    let media = crate::animation_media::import_animation_media_to_input(
+        &input_dir,
+        &payload,
+        crate::animation_media::ExistingImportPolicy::ReuseIdentical,
+        processing,
+    )?;
+    let mut frames = media.imported_source_keys;
+    if frames.is_empty() {
+        anyhow::bail!("animation import produced no frames");
+    }
+    frames.sort_by_key(|k| natural_sort_key(k));
+    frames.dedup();
+
+    for source in &frames {
+        manifest
+            .threshold_overrides
+            .insert(source.clone(), threshold);
+        if matches!(invert, InvertValue::On) {
+            manifest.invert_overrides.insert(source.clone(), true);
+        } else {
+            manifest.invert_overrides.remove(source);
+        }
+    }
+
+    let animation_name = unique_animation_name(&manifest, name.as_deref(), &frames);
+    if manifest.animations.iter().any(|a| a.name == animation_name) {
+        anyhow::bail!("animation `{animation_name}` already exists");
+    }
+
+    let (final_frames, grid_rows, grid_cols, grid_hb, grid_vb) =
+        if animation_type == AnimationType::Grid {
+            let rows = rows.ok_or_else(|| anyhow::anyhow!("grid animation requires --rows"))?;
+            let cols = cols.ok_or_else(|| anyhow::anyhow!("grid animation requires --cols"))?;
+            validate_grid(rows, cols)?;
+            let hb = horizontal_bleed.unwrap_or(BleedLevel::Weak);
+            let vb = vertical_bleed.unwrap_or(BleedLevel::Off);
+            let desired = CompositionDef {
+                rows,
+                cols,
+                horizontal_bleed: hb,
+                vertical_bleed: vb,
+            };
+            let mut resolved = Vec::with_capacity(frames.len());
+            for frame in &frames {
+                if let Some(existing) = manifest.compositions.get(frame) {
+                    if existing != &desired {
+                        let dup = duplicate_source_key_for_grid_conflict(&input_dir, frame)?;
+                        manifest.compositions.insert(dup.clone(), desired.clone());
+                        resolved.push(dup);
+                        continue;
+                    }
+                    resolved.push(frame.clone());
+                } else {
+                    manifest.compositions.insert(frame.clone(), desired.clone());
+                    resolved.push(frame.clone());
+                }
+            }
+            (resolved, Some(rows), Some(cols), Some(hb), Some(vb))
+        } else {
+            (frames, None, None, None, None)
+        };
+
+    manifest.animations.push(AnimationDef {
+        name: animation_name.clone(),
+        animation_type,
+        fps,
+        frames: final_frames.clone(),
+        rows: grid_rows,
+        cols: grid_cols,
+        horizontal_bleed: grid_hb,
+        vertical_bleed: grid_vb,
+        grayscale_processing: Some(processing),
+    });
+    write_manifest(&manifest_path, &manifest)?;
+    Ok(AnimationMutationCommandData {
+        manifest: manifest_path.display().to_string(),
+        name: animation_name,
+        fps: Some(fps),
+        frame_count: Some(final_frames.len()),
+    })
+}
+
+fn animation_set_fps_command(
+    manifest_path: PathBuf,
+    name: String,
+    fps: u8,
+) -> Result<AnimationMutationCommandData> {
+    validate_fps(fps)?;
+    let mut manifest = read_manifest(&manifest_path)?;
+    let Some(anim) = manifest.animations.iter_mut().find(|a| a.name == name) else {
+        anyhow::bail!("animation not found: {name}");
+    };
+    anim.fps = fps;
+    let frame_count = anim.frames.len();
+    write_manifest(&manifest_path, &manifest)?;
+    Ok(AnimationMutationCommandData {
+        manifest: manifest_path.display().to_string(),
+        name,
+        fps: Some(fps),
+        frame_count: Some(frame_count),
+    })
+}
+
+fn animation_delete_command(
+    manifest_path: PathBuf,
+    name: String,
+) -> Result<AnimationMutationCommandData> {
+    let mut manifest = read_manifest(&manifest_path)?;
+    let before = manifest.animations.len();
+    manifest.animations.retain(|a| a.name != name);
+    if before == manifest.animations.len() {
+        anyhow::bail!("animation not found: {name}");
+    }
+    write_manifest(&manifest_path, &manifest)?;
+    Ok(AnimationMutationCommandData {
+        manifest: manifest_path.display().to_string(),
+        name,
+        fps: None,
+        frame_count: None,
+    })
+}
+
+fn validate_threshold(threshold: u8) -> Result<()> {
+    let _ = threshold;
+    Ok(())
+}
+
+fn validate_fps(fps: u8) -> Result<()> {
+    if !(1..=30).contains(&fps) {
+        anyhow::bail!("fps must be in 1..=30");
+    }
+    Ok(())
+}
+
+fn validate_grid(rows: usize, cols: usize) -> Result<()> {
+    if rows == 0 || cols == 0 {
+        anyhow::bail!("rows and cols must be > 0");
+    }
+    Ok(())
+}
+
+fn manifest_input_dir(manifest_path: &Path, manifest: &Manifest) -> PathBuf {
+    manifest_path
+        .parent()
+        .unwrap_or_else(|| Path::new("."))
+        .join(&manifest.input_dir)
+}
+
+fn import_static_sources(
+    input_dir: &Path,
+    inputs: Vec<PathBuf>,
+    processing: crate::animation_media::AnimationImportProcessingOptions,
+) -> Result<Vec<String>> {
+    fs::create_dir_all(input_dir)
+        .with_context(|| format!("failed to create {}", input_dir.display()))?;
+    let mut out = Vec::new();
+    for src in inputs {
+        if !src.is_file() {
+            anyhow::bail!("input is not a file: {}", src.display());
+        }
+        if !is_supported_source(&src) {
+            anyhow::bail!("unsupported image type: {}", src.display());
+        }
+        let file_name = src
+            .file_name()
+            .ok_or_else(|| anyhow::anyhow!("input has no file name: {}", src.display()))?;
+        let mut dest = input_dir.join(file_name);
+        if dest.exists() {
+            dest = next_available_import_destination(input_dir, file_name);
+        }
+        fs::copy(&src, &dest).with_context(|| {
+            format!("failed to import {} into {}", src.display(), dest.display())
+        })?;
+        if processing.grayscale_enabled && should_apply_static_import_grayscale(&dest) {
+            let _ = crate::animation_media::apply_grayscale_processing_to_image_file(
+                &dest,
+                processing.grayscale,
+            );
+        }
+        out.push(source_key_from_input_path(input_dir, &dest));
+    }
+    Ok(out)
+}
+
+fn next_available_import_destination(input_dir: &Path, file_name: &std::ffi::OsStr) -> PathBuf {
+    let candidate = input_dir.join(file_name);
+    if !candidate.exists() {
+        return candidate;
+    }
+    let path = Path::new(file_name);
+    let stem = path.file_stem().and_then(|v| v.to_str()).unwrap_or("glyph");
+    let ext = path.extension().and_then(|v| v.to_str()).unwrap_or("");
+    for idx in 2.. {
+        let renamed = if ext.is_empty() {
+            format!("{stem}-{idx}")
+        } else {
+            format!("{stem}-{idx}.{ext}")
+        };
+        let cand = input_dir.join(renamed);
+        if !cand.exists() {
+            return cand;
+        }
+    }
+    candidate
+}
+
+fn should_apply_static_import_grayscale(path: &Path) -> bool {
+    matches!(
+        path.extension().and_then(|ext| ext.to_str()).map(|e| e.to_ascii_lowercase()),
+        Some(ext) if matches!(ext.as_str(), "png" | "jpg" | "jpeg" | "webp" | "avif" | "bmp")
+    )
+}
+
+fn source_key_from_input_path(input_dir: &Path, source_path: &Path) -> String {
+    source_path
+        .strip_prefix(input_dir)
+        .unwrap_or(source_path)
+        .to_string_lossy()
+        .replace('\\', "/")
+}
+
+fn duplicate_source_key_for_grid_conflict(input_dir: &Path, source_key: &str) -> Result<String> {
+    let source_path = input_dir.join(source_key);
+    let file_name = source_path
+        .file_name()
+        .ok_or_else(|| anyhow::anyhow!("invalid source file path for {source_key}"))?;
+    let duplicate_path = next_incremental_duplicate_destination(input_dir, Path::new(file_name))?;
+    fs::copy(&source_path, &duplicate_path).with_context(|| {
+        format!(
+            "failed to duplicate source {} for grid conflict resolution",
+            source_path.display()
+        )
+    })?;
+    Ok(source_key_from_input_path(input_dir, &duplicate_path))
+}
+
+fn next_incremental_duplicate_destination(
+    input_dir: &Path,
+    source_file_name: &Path,
+) -> Result<PathBuf> {
+    let stem = source_file_name
+        .file_stem()
+        .and_then(|value| value.to_str())
+        .filter(|value| !value.is_empty())
+        .unwrap_or("glyph");
+    let ext = source_file_name
+        .extension()
+        .and_then(|value| value.to_str())
+        .map(|value| value.to_string());
+    let base_stem = stem_without_trailing_numeric_suffixes(stem);
+    let mut max_suffix = 0u32;
+    for entry in fs::read_dir(input_dir)? {
+        let path = entry?.path();
+        if !path.is_file() {
+            continue;
+        }
+        let candidate_ext = path
+            .extension()
+            .and_then(|value| value.to_str())
+            .map(|value| value.to_string());
+        if candidate_ext != ext {
+            continue;
+        }
+        let Some(candidate_stem) = path.file_stem().and_then(|value| value.to_str()) else {
+            continue;
+        };
+        if candidate_stem == base_stem {
+            continue;
+        }
+        if let Some(rest) = candidate_stem.strip_prefix(base_stem)
+            && let Some(numeric) = rest.strip_prefix('-')
+            && let Ok(value) = numeric.parse::<u32>()
+        {
+            max_suffix = max_suffix.max(value);
+        }
+    }
+    let next = max_suffix.saturating_add(1);
+    let file_name = match ext {
+        Some(ext) => format!("{base_stem}-{next}.{ext}"),
+        None => format!("{base_stem}-{next}"),
+    };
+    Ok(input_dir.join(file_name))
+}
+
+fn stem_without_trailing_numeric_suffixes(stem: &str) -> &str {
+    let mut current = stem;
+    loop {
+        let Some((head, tail)) = current.rsplit_once('-') else {
+            break;
+        };
+        if tail.is_empty() || !tail.chars().all(|ch| ch.is_ascii_digit()) {
+            break;
+        }
+        current = head;
+    }
+    if current.is_empty() { stem } else { current }
+}
+
+fn unique_animation_name(manifest: &Manifest, provided: Option<&str>, frames: &[String]) -> String {
+    let base = provided
+        .map(str::trim)
+        .filter(|v| !v.is_empty())
+        .map(|v| slugify(v))
+        .filter(|v| !v.is_empty())
+        .unwrap_or_else(|| {
+            let first = frames
+                .first()
+                .map(|f| slugify(f.trim_end_matches(".png")))
+                .filter(|v| !v.is_empty())
+                .unwrap_or_else(|| "animation".to_string());
+            format!("{first}_anim")
+        });
+    let existing = manifest
+        .animations
+        .iter()
+        .map(|a| a.name.clone())
+        .collect::<BTreeSet<_>>();
+    if !existing.contains(&base) {
+        return base;
+    }
+    for idx in 2.. {
+        let candidate = format!("{base}_{idx}");
+        if !existing.contains(&candidate) {
+            return candidate;
+        }
+    }
+    base
+}
+
+fn natural_sort_key(value: &str) -> (String, usize) {
+    let mut key = String::new();
+    let mut num_buf = String::new();
+    for ch in value.chars() {
+        if ch.is_ascii_digit() {
+            num_buf.push(ch);
+            continue;
+        }
+        if !num_buf.is_empty() {
+            key.push_str(&format!("{:010}", num_buf.parse::<u32>().unwrap_or(0)));
+            num_buf.clear();
+        }
+        key.push(ch.to_ascii_lowercase());
+    }
+    if !num_buf.is_empty() {
+        key.push_str(&format!("{:010}", num_buf.parse::<u32>().unwrap_or(0)));
+    }
+    (key, value.len())
+}
+
+fn print_imported_sources_result(data: &ImportedSourcesCommandData) {
+    println!(
+        "petiglyph: imported {} source(s)",
+        data.imported_sources.len()
+    );
+    println!("  manifest: {}", data.manifest);
+    for source in &data.imported_sources {
+        println!("  - {}", source);
+    }
+}
+
+fn print_set_invert_result(data: &SetInvertCommandData) {
+    println!(
+        "petiglyph: invert override {}",
+        if data.invert { "on" } else { "off" }
+    );
+    println!("  manifest: {}", data.manifest);
+    println!("  image:    {}", data.image_name);
+}
+
+fn print_composition_result(data: &CompositionCommandData) {
+    println!("petiglyph: composition updated");
+    println!("  manifest: {}", data.manifest);
+    println!("  source:   {}", data.source_key);
+    if let (Some(rows), Some(cols)) = (data.rows, data.cols) {
+        println!("  grid:     {}x{}", rows, cols);
+    }
+}
+
+fn print_animation_mutation_result(data: &AnimationMutationCommandData) {
+    println!("petiglyph: animation updated");
+    println!("  manifest: {}", data.manifest);
+    println!("  name:     {}", data.name);
+    if let Some(fps) = data.fps {
+        println!("  fps:      {}", fps);
+    }
+    if let Some(frame_count) = data.frame_count {
+        println!("  frames:   {}", frame_count);
+    }
 }
 
 fn build_font(

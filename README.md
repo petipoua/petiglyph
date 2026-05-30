@@ -103,6 +103,25 @@ petiglyph set-threshold alpha.png 128 --json
 petiglyph clear-threshold alpha.png
 petiglyph clear-threshold alpha.png --json
 
+# glyph workflow + overrides (parity command family)
+petiglyph glyph create --input ./assets/alpha.png --threshold 128 --invert off --json
+petiglyph glyph set-threshold alpha.png 128 --json
+petiglyph glyph clear-threshold alpha.png --json
+petiglyph glyph set-invert alpha.png --invert on --json
+
+# composition workflow
+petiglyph composition set alpha.png --rows 2 --cols 2 --horizontal-bleed weak --vertical-bleed off --json
+petiglyph composition clear alpha.png --json
+
+# grid workflow
+petiglyph grid create --input ./assets/sheet.png --rows 2 --cols 2 --threshold 96 --invert off --json
+
+# animation workflow
+petiglyph animation create-standard --input ./assets/run.gif --fps 8 --name run --json
+petiglyph animation create-grid --input ./assets/run.gif --rows 2 --cols 2 --fps 8 --name run_grid --json
+petiglyph animation set-fps run --fps 12 --json
+petiglyph animation delete run --json
+
 # launch the TUI for the current project/workspace
 petiglyph
 petiglyph tui
@@ -141,6 +160,17 @@ Project-scoped commands accept `--manifest` to target a specific project:
 - `delete`
 - `set-threshold`
 - `clear-threshold`
+- `glyph create`
+- `glyph set-threshold`
+- `glyph clear-threshold`
+- `glyph set-invert`
+- `grid create`
+- `composition set`
+- `composition clear`
+- `animation create-standard`
+- `animation create-grid`
+- `animation set-fps`
+- `animation delete`
 - `tui`
 - `build`
 - `sample`
@@ -168,6 +198,17 @@ For project-scoped commands, when `--manifest` is omitted, petiglyph checks `./p
 - `delete`
 - `set-threshold`
 - `clear-threshold`
+- `glyph create`
+- `glyph set-threshold`
+- `glyph clear-threshold`
+- `glyph set-invert`
+- `grid create`
+- `composition set`
+- `composition clear`
+- `animation create-standard`
+- `animation create-grid`
+- `animation set-fps`
+- `animation delete`
 - `build`
 - `sample`
 - `install-font`
