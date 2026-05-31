@@ -125,10 +125,24 @@ If `ffmpeg` is installed, also smoke one animated media import manually through 
 
 ## 4. TUI E2E
 
+Install and validate `hty` first:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/LatentEvals/hty/main/scripts/install.sh | sh
+export PATH="$HOME/.local/bin:$PATH"
+hty --help
+```
+
 Run the headless harness:
 
 ```bash
 ./scripts/tui_e2e_hty.sh
+```
+
+Run the new creation-workflow popup journeys directly when debugging:
+
+```bash
+./scripts/tui_e2e_hty.sh --journey 8,9,10
 ```
 
 Optional visible debug run:
@@ -141,6 +155,9 @@ Before changing the harness, check local and upstream `hty` behavior:
 
 ```bash
 hty --help
+hty help run
+hty help send
+hty help wait
 ```
 
 References:

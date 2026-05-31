@@ -441,22 +441,44 @@ pwsh -File .\scripts\clipboard_smoke.ps1 -PetiglyphPath .\target\release\petigly
 To run process-level TUI E2E journeys (headless PTY automation with optional live watch):
 
 ```bash
-# requires hty: https://hty.sh
+# install hty (https://hty.sh)
+curl -fsSL https://raw.githubusercontent.com/LatentEvals/hty/main/scripts/install.sh | sh
+export PATH="$HOME/.local/bin:$PATH"
+
+# verify local CLI behavior
+hty --help
+
+# run all journeys (1-10)
 ./scripts/tui_e2e_hty.sh
 
-# optional live observer + slower key steps
-./scripts/tui_e2e_hty.sh --watch --step-delay-ms 250
+# optional: run only creation-workflow journeys
+./scripts/tui_e2e_hty.sh --journey 6,7,8
+
+# optional: live watch each session (auto terminal detection)
+./scripts/tui_e2e_hty.sh --watch
+
+# optional: force watcher terminal
+./scripts/tui_e2e_hty.sh --watch --watch-terminal alacritty
+
+# optional: render diagnostics only
+./scripts/tui_e2e_hty.sh --render-probe-only
 ```
 
 The harness mirrors these critical flows:
 
 - launch + quit from existing project
 - create project from Home panel
-- build shortcut writes artifacts
-- glyph threshold override persists and clears
-- workspace multi-project selection builds chosen project
-- rescan picks up new image and rebuild includes it
-- multi-project create/build/install/uninstall lifecycle in one session, using real `png`/`svg`/`jpg` fixtures from `icons/`
+- build + rescan includes newly added sources in output artifacts
+- glyph threshold override persists and clears in manifest
+- workspace multi-project selection builds the selected project only
+- creation workflow popup: create glyph
+- creation workflow popup: create grid (rows/cols/bleed persisted)
+- creation workflow popup: create animated glyph from deterministic GIF fixture
+- install lifecycle via the Home panel in an isolated session `HOME`
+- full user story journey: project creation, all creation workflows + glyph tweaks, install, sample copy checks, project/font cleanup, quit
+
+The harness seeds the one-time FFmpeg prompt state in an isolated session `HOME` so focus stays on TUI interactions even when `ffmpeg` is not installed.
+Use `--render-probe` (or `--render-probe-only`) when diagnosing hty repaint/erase regressions.
 
 ## Local AUR-Style Test Scripts
 
