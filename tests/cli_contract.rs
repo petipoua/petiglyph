@@ -2,11 +2,12 @@ use image::{Rgba, RgbaImage};
 use serde_json::Value;
 use std::env;
 use std::fs;
+use std::fs::{File, FileTimes};
 #[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 fn make_temp_dir(name: &str) -> PathBuf {
     let nonce = SystemTime::now()
@@ -16,6 +17,36 @@ fn make_temp_dir(name: &str) -> PathBuf {
     let dir = env::temp_dir().join(format!("petiglyph-cli-{name}-{nonce}"));
     fs::create_dir_all(&dir).expect("temp dir is created");
     dir
+}
+
+fn fake_path_without_ffmpeg(workspace: &Path) -> String {
+    let fake_bin = workspace.join("fake-bin-no-ffmpeg");
+    fs::create_dir_all(&fake_bin).expect("fake path directory is created");
+    fake_bin.display().to_string()
+}
+
+fn ffmpeg_prompt_state_path(home: &Path) -> PathBuf {
+    if cfg!(target_os = "linux") {
+        home.join(".local/share/fonts/petiglyph/.ffmpeg-setup-prompt-v1.json")
+    } else if cfg!(target_os = "macos") {
+        home.join("Library/Fonts/petiglyph/.ffmpeg-setup-prompt-v1.json")
+    } else if cfg!(target_os = "windows") {
+        home.join("AppData/Local/Microsoft/Windows/Fonts/petiglyph/.ffmpeg-setup-prompt-v1.json")
+    } else {
+        home.join(".ffmpeg-setup-prompt-v1.json")
+    }
+}
+
+fn make_stale_file(path: &Path) {
+    fs::write(path, "stale lock").expect("stale lock file is written");
+    let stale_time = SystemTime::now() - Duration::from_secs(3600);
+    let times = FileTimes::new().set_modified(stale_time);
+    File::options()
+        .write(true)
+        .open(path)
+        .expect("stale lock should be openable")
+        .set_times(times)
+        .expect("stale mtime should be set");
 }
 
 fn write_test_png(path: &Path) {
@@ -744,6 +775,316 @@ fn cli_no_subcommand_errors_without_manifest() {
     );
 
     fs::remove_dir_all(workspace).expect("temp dir is removed");
+}
+
+#[test]
+fn cli_hidden_uninstall_stub_returns_guidance_and_non_zero() {
+    let workspace = make_temp_dir("hidden-uninstall");
+    let output = run_petiglyph(&workspace, &["uninstall"], None, None);
+    assert!(
+        !output.status.success(),
+        "hidden uninstall stub should exit non-zero"
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("uninstall is ambiguous"),
+        "stderr should explain ambiguity: {stderr}"
+    );
+    assert!(
+        stderr.contains("uninstall-font") && stderr.contains("nuke-everything"),
+        "stderr should include both guidance commands: {stderr}"
+    );
+}
+
+#[test]
+fn cli_tui_non_tty_without_manifest_errors_cleanly() {
+    let workspace = make_temp_dir("tui-non-tty-no-manifest");
+    let output = run_petiglyph(&workspace, &["tui"], None, None);
+    assert!(
+        !output.status.success(),
+        "tui should fail in non-tty contexts"
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("interactive petiglyph TUI requires a terminal"),
+        "stderr should include terminal-required guidance: {stderr}"
+    );
+}
+
+#[test]
+fn cli_tui_non_tty_with_manifest_errors_cleanly() {
+    let workspace = make_temp_dir("tui-non-tty-with-manifest");
+    let (_, manifest_path) = create_project_with_icon(&workspace, "tui-demo");
+    let output = run_petiglyph(
+        &workspace,
+        &[
+            "tui",
+            "--manifest",
+            manifest_path.to_str().expect("manifest should be utf8"),
+        ],
+        None,
+        None,
+    );
+    assert!(
+        !output.status.success(),
+        "tui --manifest should fail in non-tty contexts"
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("requires a terminal")
+            || stderr.contains("No such device or address")
+            || stderr.contains("not a terminal"),
+        "stderr should report terminal requirement: {stderr}"
+    );
+}
+
+#[test]
+fn cli_json_commands_do_not_trigger_ffmpeg_prompt_or_state() {
+    let workspace = make_temp_dir("json-no-ffmpeg-prompt");
+    let home = workspace.join("home");
+    fs::create_dir_all(&home).expect("home dir is created");
+    let (_, manifest_path) = create_project_with_icon(&workspace, "json-ffmpeg-demo");
+    let fake_path = fake_path_without_ffmpeg(&workspace);
+    let state_path = ffmpeg_prompt_state_path(&home);
+
+    let list = run_petiglyph(
+        &workspace,
+        &["list", "--json"],
+        Some(&home),
+        Some(&fake_path),
+    );
+    assert!(list.status.success(), "list --json should succeed");
+    let list_payload = parse_json_stdout(&list);
+    assert_api_envelope(&list_payload, "list", true);
+    let list_stdout = String::from_utf8_lossy(&list.stdout);
+    assert!(
+        !list_stdout.contains("FFmpeg was not found."),
+        "json output must not include ffmpeg prompt text"
+    );
+
+    let build = run_petiglyph(
+        manifest_path.parent().expect("project dir"),
+        &["build", "--json"],
+        Some(&home),
+        Some(&fake_path),
+    );
+    assert!(build.status.success(), "build --json should succeed");
+    let build_payload = parse_json_stdout(&build);
+    assert_api_envelope(&build_payload, "build", true);
+    let build_stdout = String::from_utf8_lossy(&build.stdout);
+    assert!(
+        !build_stdout.contains("FFmpeg was not found."),
+        "json output must not include ffmpeg prompt text"
+    );
+
+    assert!(
+        !state_path.exists(),
+        "json commands should not write ffmpeg prompt state"
+    );
+}
+
+#[test]
+fn cli_ffmpeg_prompt_state_not_written_for_non_tty_create() {
+    let workspace = make_temp_dir("non-tty-no-ffmpeg-prompt");
+    let home = workspace.join("home");
+    fs::create_dir_all(&home).expect("home dir is created");
+    let fake_path = fake_path_without_ffmpeg(&workspace);
+
+    let output = run_petiglyph(
+        &workspace,
+        &["create", "non-tty-create-demo"],
+        Some(&home),
+        Some(&fake_path),
+    );
+    assert!(
+        output.status.success(),
+        "create should succeed in non-interactive mode"
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("non-interactive shell detected; skipping automatic TUI launch"),
+        "create should explicitly skip automatic TUI launch in non-tty mode: {stdout}"
+    );
+
+    let state_path = ffmpeg_prompt_state_path(&home);
+    assert!(
+        !state_path.exists(),
+        "non-tty runs should not write ffmpeg prompt state"
+    );
+}
+
+#[test]
+fn cli_unsupported_import_file_errors_for_create_workflows() {
+    let workspace = make_temp_dir("unsupported-imports");
+    let (project_dir, _) = create_project_with_icon(&workspace, "unsupported-demo");
+    let unsupported = workspace.join("not-an-image.txt");
+    fs::write(&unsupported, "plain text").expect("unsupported fixture is written");
+
+    let glyph = run_petiglyph(
+        &project_dir,
+        &[
+            "glyph",
+            "create",
+            "--input",
+            unsupported.to_str().expect("path should be utf8"),
+            "--json",
+        ],
+        None,
+        None,
+    );
+    assert!(!glyph.status.success(), "glyph create should fail");
+    let glyph_payload = parse_json_stdout(&glyph);
+    assert_api_envelope(&glyph_payload, "glyph.create", false);
+    assert!(
+        glyph_payload["error"]["message"]
+            .as_str()
+            .expect("glyph error message")
+            .contains("unsupported image type"),
+        "glyph create should explain unsupported image type"
+    );
+
+    let grid = run_petiglyph(
+        &project_dir,
+        &[
+            "grid",
+            "create",
+            "--input",
+            unsupported.to_str().expect("path should be utf8"),
+            "--rows",
+            "2",
+            "--cols",
+            "2",
+            "--json",
+        ],
+        None,
+        None,
+    );
+    assert!(!grid.status.success(), "grid create should fail");
+    let grid_payload = parse_json_stdout(&grid);
+    assert_api_envelope(&grid_payload, "grid.create", false);
+    assert!(
+        grid_payload["error"]["message"]
+            .as_str()
+            .expect("grid error message")
+            .contains("unsupported image type"),
+        "grid create should explain unsupported image type"
+    );
+
+    let anim_standard = run_petiglyph(
+        &project_dir,
+        &[
+            "animation",
+            "create-standard",
+            "--input",
+            unsupported.to_str().expect("path should be utf8"),
+            "--fps",
+            "8",
+            "--json",
+        ],
+        None,
+        None,
+    );
+    assert!(
+        !anim_standard.status.success(),
+        "animation create-standard should fail"
+    );
+    let anim_standard_payload = parse_json_stdout(&anim_standard);
+    assert_api_envelope(&anim_standard_payload, "animation.create-standard", false);
+    assert!(
+        anim_standard_payload["error"]["message"]
+            .as_str()
+            .expect("animation standard error message")
+            .contains("animation import produced no frames"),
+        "animation create-standard should explain empty frame import"
+    );
+
+    let anim_grid = run_petiglyph(
+        &project_dir,
+        &[
+            "animation",
+            "create-grid",
+            "--input",
+            unsupported.to_str().expect("path should be utf8"),
+            "--fps",
+            "8",
+            "--rows",
+            "2",
+            "--cols",
+            "2",
+            "--json",
+        ],
+        None,
+        None,
+    );
+    assert!(!anim_grid.status.success(), "animation create-grid should fail");
+    let anim_grid_payload = parse_json_stdout(&anim_grid);
+    assert_api_envelope(&anim_grid_payload, "animation.create-grid", false);
+    assert!(
+        anim_grid_payload["error"]["message"]
+            .as_str()
+            .expect("animation grid error message")
+            .contains("animation import produced no frames"),
+        "animation create-grid should explain empty frame import"
+    );
+}
+
+#[test]
+fn cli_doctor_repair_json_removes_stale_project_lock() {
+    let workspace = make_temp_dir("doctor-repair-json");
+    let home = workspace.join("home");
+    fs::create_dir_all(&home).expect("home dir is created");
+    let (project_dir, manifest_path) = create_project_with_icon(&workspace, "doctor-repair-demo");
+    let project_lock = project_dir.join(".petiglyph-build.lock");
+    make_stale_file(&project_lock);
+
+    let output = run_petiglyph(
+        &workspace,
+        &[
+            "doctor",
+            "--repair",
+            "--json",
+            "--manifest",
+            manifest_path.to_str().expect("manifest should be utf8"),
+        ],
+        Some(&home),
+        None,
+    );
+    assert!(output.status.success(), "doctor --repair --json should succeed");
+    let payload = parse_json_stdout(&output);
+    assert_api_envelope(&payload, "doctor", true);
+    assert!(
+        payload["data"]["repair"].as_bool() == Some(true),
+        "repair flag should be true"
+    );
+    assert!(
+        payload["data"]["repaired"].as_u64().unwrap_or(0) >= 1,
+        "doctor repair should report at least one repaired item"
+    );
+    assert!(
+        !project_lock.exists(),
+        "stale project lock should be removed by doctor repair"
+    );
+}
+
+#[test]
+fn cli_create_non_interactive_without_no_launch_skips_tui() {
+    let workspace = make_temp_dir("create-non-interactive");
+    let output = run_petiglyph(&workspace, &["create", "create-no-launch-implicit"], None, None);
+    assert!(
+        output.status.success(),
+        "create should succeed without --no-launch in non-tty contexts"
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("non-interactive shell detected; skipping automatic TUI launch"),
+        "create output should report non-interactive skip: {stdout}"
+    );
+    assert!(
+        workspace
+            .join("create-no-launch-implicit/petiglyph.toml")
+            .exists(),
+        "project manifest should be created"
+    );
 }
 
 #[test]

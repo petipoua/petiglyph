@@ -144,6 +144,8 @@ gh workflow run release.yml --ref <test-tag-or-branch-if-workflow_dispatch-is-ad
 
 ### 5. Make The TUI E2E Harness A First-Class Release Gate
 
+Status: validated locally after the hty E2E refactor. `hty --help` passes, `./scripts/tui_e2e_hty.sh` passes all 10 journeys, and `./scripts/tui_e2e_hty.sh --journey 8` passes.
+
 Observation:
 
 - `scripts/tui_e2e_hty.sh` defines 7 useful process-level journeys.
@@ -152,13 +154,13 @@ Observation:
 
 Tasks:
 
-- [ ] Check upstream `hty` docs and local CLI behavior before editing the harness.
-- [ ] Add a documented installer step for `hty` in CI and local docs.
-- [ ] Run the current 7 journeys in headless CI mode on Linux.
-- [ ] Add at least one journey for the "Creation Workflow In Progress" popup that imports a glyph and reaches the Glyphs panel.
-- [ ] Add a grid popup journey that imports one image, configures rows/cols/bleed, and verifies manifest composition output.
-- [ ] Add an animated popup journey using a small GIF fixture. Keep video/FFmpeg testing as a separate slower smoke unless CI installs `ffmpeg`.
-- [ ] Ensure CI sets up `ffmpeg` or explicitly disables/satisfies the first-run FFmpeg prompt so it cannot steal TUI focus.
+- [x] Check upstream `hty` docs and local CLI behavior before editing the harness.
+- [x] Add a documented installer step for `hty` in CI and local docs.
+- [x] Run the current 7 journeys in headless CI mode on Linux.
+- [x] Add at least one journey for the "Creation Workflow In Progress" popup that imports a glyph and reaches the Glyphs panel.
+- [x] Add a grid popup journey that imports one image, configures rows/cols/bleed, and verifies manifest composition output.
+- [x] Add an animated popup journey using a small GIF fixture. Keep video/FFmpeg testing as a separate slower smoke unless CI installs `ffmpeg`.
+- [x] Ensure CI sets up `ffmpeg` or explicitly disables/satisfies the first-run FFmpeg prompt so it cannot steal TUI focus.
 
 Validation:
 
@@ -170,6 +172,8 @@ hty --help
 
 ### 6. Broaden CLI Contract Tests For Missing Edges
 
+Status: implemented. Added edge-case coverage for hidden uninstall guidance, non-TTY TUI invocation paths, FFmpeg prompt suppression/state behavior in JSON and non-interactive flows, unsupported import paths across glyph/grid/animation create commands, `doctor --repair --json` stale-lock repair, and non-interactive `create` auto-launch skip behavior.
+
 Observation:
 
 - `tests/cli_contract.rs` covers many JSON command paths and important install lifecycle behavior.
@@ -177,13 +181,13 @@ Observation:
 
 Tasks:
 
-- [ ] Add tests for hidden `petiglyph uninstall` returning guidance and non-zero exit.
-- [ ] Add tests for `petiglyph tui </dev/null` with and without `--manifest`.
-- [ ] Add tests that no JSON command ever triggers the FFmpeg first-run prompt.
-- [ ] Add tests for FFmpeg prompt state behavior using a temporary `HOME` and fake `PATH`.
-- [ ] Add tests for unsupported import files in `glyph create`, `grid create`, and `animation create-*`.
-- [ ] Add tests for `doctor --repair --json` against a project with stale lock entries.
-- [ ] Add tests for `create <name>` in non-interactive mode without `--no-launch`, verifying it skips TUI launch cleanly.
+- [x] Add tests for hidden `petiglyph uninstall` returning guidance and non-zero exit.
+- [x] Add tests for `petiglyph tui </dev/null` with and without `--manifest`.
+- [x] Add tests that no JSON command ever triggers the FFmpeg first-run prompt.
+- [x] Add tests for FFmpeg prompt state behavior using a temporary `HOME` and fake `PATH`.
+- [x] Add tests for unsupported import files in `glyph create`, `grid create`, and `animation create-*`.
+- [x] Add tests for `doctor --repair --json` against a project with stale lock entries.
+- [x] Add tests for `create <name>` in non-interactive mode without `--no-launch`, verifying it skips TUI launch cleanly.
 
 Validation:
 
