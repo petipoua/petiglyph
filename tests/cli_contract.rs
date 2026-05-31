@@ -68,6 +68,10 @@ fn run_petiglyph(
     if let Some(home) = home_override {
         cmd.env("HOME", home);
         cmd.env("USERPROFILE", home);
+        cmd.env("LOCALAPPDATA", home.join("AppData/Local"));
+        cmd.env("APPDATA", home.join("AppData/Roaming"));
+        cmd.env("XDG_CONFIG_HOME", home.join(".config"));
+        cmd.env("XDG_DATA_HOME", home.join(".local/share"));
     }
 
     if let Some(path) = path_override {
@@ -1520,6 +1524,204 @@ fn cli_install_identity_isolated_even_for_slug_collisions() {
     assert_ne!(
         installed_a, installed_b,
         "install artifacts must remain isolated even when project slugs collide"
+    );
+
+    fs::remove_dir_all(workspace).expect("temp dir is removed");
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn cli_install_and_uninstall_json_lifecycle_is_idempotent_macos() {
+    let workspace = make_temp_dir("install-lifecycle-macos");
+    let (project_dir, _) = create_project_with_icon(&workspace, "demo-font");
+    let home = workspace.join("home");
+    fs::create_dir_all(&home).expect("home dir is created");
+
+    let install_1 = run_petiglyph(&project_dir, &["install-font", "--json"], Some(&home), None);
+    assert!(install_1.status.success(), "first install should succeed");
+    let install_1_payload = parse_json_stdout(&install_1);
+    assert_api_envelope(&install_1_payload, "install-font", true);
+    assert_eq!(
+        install_1_payload["data"]["platform"].as_str(),
+        Some("macos")
+    );
+    assert_eq!(
+        install_1_payload["data"]["replaced_previous_ttf_count"].as_u64(),
+        Some(0)
+    );
+
+    let installed_ttf_1 = PathBuf::from(
+        install_1_payload["data"]["installed_ttf"]
+            .as_str()
+            .expect("installed ttf"),
+    );
+    let expected_dir = home.join("Library").join("Fonts").join("petiglyph");
+    assert!(
+        installed_ttf_1.starts_with(&expected_dir)
+            && installed_ttf_1
+                .extension()
+                .and_then(|ext| ext.to_str())
+                .is_some_and(|ext| ext.eq_ignore_ascii_case("ttf")),
+        "install should write a ttf under ~/Library/Fonts/petiglyph"
+    );
+
+    let install_2 = run_petiglyph(&project_dir, &["install-font", "--json"], Some(&home), None);
+    assert!(install_2.status.success(), "second install should succeed");
+    let install_2_payload = parse_json_stdout(&install_2);
+    assert_api_envelope(&install_2_payload, "install-font", true);
+    assert_eq!(
+        install_2_payload["data"]["replaced_previous_ttf_count"].as_u64(),
+        Some(0),
+        "second identical install should keep immutable artifact without replacement"
+    );
+
+    let uninstall_1 =
+        run_petiglyph(&project_dir, &["uninstall-font", "--json"], Some(&home), None);
+    assert!(
+        uninstall_1.status.success(),
+        "first uninstall should succeed"
+    );
+    let uninstall_1_payload = parse_json_stdout(&uninstall_1);
+    assert_api_envelope(&uninstall_1_payload, "uninstall-font", true);
+    assert_eq!(
+        uninstall_1_payload["data"]["outcome"].as_str(),
+        Some("removed")
+    );
+    assert_eq!(
+        uninstall_1_payload["data"]["removed_ttf_count"].as_u64(),
+        Some(1)
+    );
+
+    let uninstall_2 =
+        run_petiglyph(&project_dir, &["uninstall-font", "--json"], Some(&home), None);
+    assert!(
+        uninstall_2.status.success(),
+        "second uninstall should succeed"
+    );
+    let uninstall_2_payload = parse_json_stdout(&uninstall_2);
+    assert_api_envelope(&uninstall_2_payload, "uninstall-font", true);
+    assert_eq!(
+        uninstall_2_payload["data"]["outcome"].as_str(),
+        Some("already_absent")
+    );
+
+    let remaining_ttf_count = fs::read_dir(expected_dir)
+        .ok()
+        .into_iter()
+        .flat_map(|entries| entries.filter_map(|entry| entry.ok()))
+        .filter(|entry| {
+            entry
+                .path()
+                .extension()
+                .and_then(|ext| ext.to_str())
+                .is_some_and(|ext| ext.eq_ignore_ascii_case("ttf"))
+        })
+        .count();
+    assert_eq!(
+        remaining_ttf_count, 0,
+        "immutable install artifacts should be fully removed on uninstall"
+    );
+
+    fs::remove_dir_all(workspace).expect("temp dir is removed");
+}
+
+#[cfg(target_os = "windows")]
+#[test]
+fn cli_install_and_uninstall_json_lifecycle_is_idempotent_windows() {
+    let workspace = make_temp_dir("install-lifecycle-windows");
+    let (project_dir, _) = create_project_with_icon(&workspace, "demo-font");
+    let home = workspace.join("home");
+    fs::create_dir_all(&home).expect("home dir is created");
+
+    let install_1 = run_petiglyph(&project_dir, &["install-font", "--json"], Some(&home), None);
+    assert!(install_1.status.success(), "first install should succeed");
+    let install_1_payload = parse_json_stdout(&install_1);
+    assert_api_envelope(&install_1_payload, "install-font", true);
+    assert_eq!(
+        install_1_payload["data"]["platform"].as_str(),
+        Some("windows")
+    );
+    assert_eq!(
+        install_1_payload["data"]["replaced_previous_ttf_count"].as_u64(),
+        Some(0)
+    );
+
+    let installed_ttf_1 = PathBuf::from(
+        install_1_payload["data"]["installed_ttf"]
+            .as_str()
+            .expect("installed ttf"),
+    );
+    let expected_dir = home
+        .join("AppData")
+        .join("Local")
+        .join("Microsoft")
+        .join("Windows")
+        .join("Fonts")
+        .join("petiglyph");
+    assert!(
+        installed_ttf_1.starts_with(&expected_dir)
+            && installed_ttf_1
+                .extension()
+                .and_then(|ext| ext.to_str())
+                .is_some_and(|ext| ext.eq_ignore_ascii_case("ttf")),
+        "install should write a ttf under %LOCALAPPDATA%/Microsoft/Windows/Fonts/petiglyph"
+    );
+
+    let install_2 = run_petiglyph(&project_dir, &["install-font", "--json"], Some(&home), None);
+    assert!(install_2.status.success(), "second install should succeed");
+    let install_2_payload = parse_json_stdout(&install_2);
+    assert_api_envelope(&install_2_payload, "install-font", true);
+    assert_eq!(
+        install_2_payload["data"]["replaced_previous_ttf_count"].as_u64(),
+        Some(0),
+        "second identical install should keep immutable artifact without replacement"
+    );
+
+    let uninstall_1 =
+        run_petiglyph(&project_dir, &["uninstall-font", "--json"], Some(&home), None);
+    assert!(
+        uninstall_1.status.success(),
+        "first uninstall should succeed"
+    );
+    let uninstall_1_payload = parse_json_stdout(&uninstall_1);
+    assert_api_envelope(&uninstall_1_payload, "uninstall-font", true);
+    assert_eq!(
+        uninstall_1_payload["data"]["outcome"].as_str(),
+        Some("removed")
+    );
+    assert_eq!(
+        uninstall_1_payload["data"]["removed_ttf_count"].as_u64(),
+        Some(1)
+    );
+
+    let uninstall_2 =
+        run_petiglyph(&project_dir, &["uninstall-font", "--json"], Some(&home), None);
+    assert!(
+        uninstall_2.status.success(),
+        "second uninstall should succeed"
+    );
+    let uninstall_2_payload = parse_json_stdout(&uninstall_2);
+    assert_api_envelope(&uninstall_2_payload, "uninstall-font", true);
+    assert_eq!(
+        uninstall_2_payload["data"]["outcome"].as_str(),
+        Some("already_absent")
+    );
+
+    let remaining_ttf_count = fs::read_dir(expected_dir)
+        .ok()
+        .into_iter()
+        .flat_map(|entries| entries.filter_map(|entry| entry.ok()))
+        .filter(|entry| {
+            entry
+                .path()
+                .extension()
+                .and_then(|ext| ext.to_str())
+                .is_some_and(|ext| ext.eq_ignore_ascii_case("ttf"))
+        })
+        .count();
+    assert_eq!(
+        remaining_ttf_count, 0,
+        "immutable install artifacts should be fully removed on uninstall"
     );
 
     fs::remove_dir_all(workspace).expect("temp dir is removed");

@@ -1,6 +1,7 @@
 param(
     [string]$PetiglyphPath = "",
     [switch]$SkipCliChecks,
+    [switch]$SkipClipboardChecks,
     [switch]$NoReadbackVerify
 )
 
@@ -47,6 +48,30 @@ function Assert-Success($result, $label) {
     Write-Ok $label
 }
 
+function Invoke-PetiglyphTuiNoTty {
+    if ($PetiglyphPath -ne "") {
+        $output = $null | & $PetiglyphPath tui 2>&1
+        $exitCode = $LASTEXITCODE
+        return [PSCustomObject]@{
+            ExitCode = $exitCode
+            Output = ($output -join [Environment]::NewLine)
+        }
+    }
+
+    $repoRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
+    Push-Location $repoRoot
+    try {
+        $output = $null | & cargo run --quiet -- tui 2>&1
+        $exitCode = $LASTEXITCODE
+        return [PSCustomObject]@{
+            ExitCode = $exitCode
+            Output = ($output -join [Environment]::NewLine)
+        }
+    } finally {
+        Pop-Location
+    }
+}
+
 if (-not $SkipCliChecks) {
     Write-Info "running petiglyph CLI smoke checks"
     Assert-Success (Invoke-Petiglyph -Args @("--help")) "petiglyph --help"
@@ -58,49 +83,63 @@ if (-not $SkipCliChecks) {
         Fail "petiglyph doctor --json did not report ok=true"
     }
     Write-Ok "doctor payload contains ok=true"
-}
 
-$payload = "petiglyph-clipboard-smoke-$([DateTimeOffset]::UtcNow.ToUnixTimeSeconds())-$PID"
-$providers = @("powershell", "clip.exe")
-
-$selected = $null
-Write-Info ("running clipboard provider chain: " + ($providers -join ", "))
-
-foreach ($provider in $providers) {
-    try {
-        switch ($provider) {
-            "powershell" {
-                $payload | powershell -NoProfile -Command "Set-Clipboard -Value ([Console]::In.ReadToEnd())" | Out-Null
-            }
-            "clip.exe" {
-                $payload | clip.exe
-            }
-            default {
-                throw "unsupported provider: $provider"
-            }
-        }
-        $selected = $provider
-        Write-Ok "copied payload with $selected"
-        break
-    } catch {
-        Write-Host "[WARN] provider failed: $provider ($($_.Exception.Message))"
+    $tui = Invoke-PetiglyphTuiNoTty
+    if ($tui.ExitCode -eq 0) {
+        Fail "petiglyph tui should fail without a TTY"
     }
-}
-
-if ($null -eq $selected) {
-    Fail "no clipboard provider succeeded"
-}
-
-if (-not $NoReadbackVerify) {
-    try {
-        $readback = Get-Clipboard -Raw
-        if ($readback -ne $payload) {
-            Fail "clipboard readback mismatch for $selected"
-        }
-        Write-Ok "clipboard readback matched payload"
-    } catch {
-        Write-Host "[WARN] readback skipped ($($_.Exception.Message))"
+    if ($tui.Output -notmatch "(?i)requires a terminal") {
+        Write-Host $tui.Output
+        Fail "non-TTY TUI failure message did not include terminal-required guidance"
     }
+    Write-Ok "petiglyph tui non-TTY guard"
+}
+
+if (-not $SkipClipboardChecks) {
+    $payload = "petiglyph-clipboard-smoke-$([DateTimeOffset]::UtcNow.ToUnixTimeSeconds())-$PID"
+    $providers = @("powershell", "clip.exe")
+
+    $selected = $null
+    Write-Info ("running clipboard provider chain: " + ($providers -join ", "))
+
+    foreach ($provider in $providers) {
+        try {
+            switch ($provider) {
+                "powershell" {
+                    $payload | powershell -NoProfile -Command "Set-Clipboard -Value ([Console]::In.ReadToEnd())" | Out-Null
+                }
+                "clip.exe" {
+                    $payload | clip.exe
+                }
+                default {
+                    throw "unsupported provider: $provider"
+                }
+            }
+            $selected = $provider
+            Write-Ok "copied payload with $selected"
+            break
+        } catch {
+            Write-Host "[WARN] provider failed: $provider ($($_.Exception.Message))"
+        }
+    }
+
+    if ($null -eq $selected) {
+        Fail "no clipboard provider succeeded"
+    }
+
+    if (-not $NoReadbackVerify) {
+        try {
+            $readback = Get-Clipboard -Raw
+            if ($readback -ne $payload) {
+                Fail "clipboard readback mismatch for $selected"
+            }
+            Write-Ok "clipboard readback matched payload"
+        } catch {
+            Write-Host "[WARN] readback skipped ($($_.Exception.Message))"
+        }
+    }
+} else {
+    Write-Ok "clipboard checks skipped"
 }
 
 Write-Ok "clipboard smoke test finished"

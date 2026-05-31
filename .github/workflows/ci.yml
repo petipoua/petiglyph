@@ -94,3 +94,45 @@ jobs:
 
       - name: Run creation-workflow popup journeys
         run: ./scripts/tui_e2e_hty.sh --journey 8,9,10
+
+  runtime-smoke:
+    name: runtime-smoke-${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+
+      - name: Runtime smoke (Linux/macOS)
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          set -euo pipefail
+          export HOME="$(mktemp -d)"
+          export XDG_CONFIG_HOME="$HOME/.config"
+          export XDG_DATA_HOME="$HOME/.local/share"
+          mkdir -p "$XDG_CONFIG_HOME" "$XDG_DATA_HOME"
+          ./scripts/clipboard_smoke.sh --skip-clipboard-checks
+
+      - name: Runtime smoke (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $root = Join-Path $env:RUNNER_TEMP ("petiglyph-runtime-" + [Guid]::NewGuid().ToString("N"))
+          $home = Join-Path $root "home"
+          $local = Join-Path $root "localappdata"
+          $temp = Join-Path $root "tmp"
+          New-Item -ItemType Directory -Force -Path $home,$local,$temp | Out-Null
+          $env:HOME = $home
+          $env:USERPROFILE = $home
+          $env:LOCALAPPDATA = $local
+          $env:APPDATA = Join-Path $home "AppData\\Roaming"
+          $env:TEMP = $temp
+          $env:TMP = $temp
+          New-Item -ItemType Directory -Force -Path $env:APPDATA | Out-Null
+          pwsh -File .\scripts\clipboard_smoke.ps1 -SkipClipboardChecks

@@ -4,6 +4,7 @@ set -euo pipefail
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 petiglyph_bin=""
 skip_cli_checks=0
+skip_clipboard_checks=0
 verify_readback=1
 
 usage() {
@@ -14,6 +15,8 @@ Usage:
 Options:
   --bin <path>          Use an already-built petiglyph binary (skip cargo run)
   --skip-cli-checks     Skip petiglyph command checks; run clipboard checks only
+  --skip-clipboard-checks
+                        Skip clipboard checks; run petiglyph CLI checks only
   --no-readback-verify  Skip clipboard readback verification
   -h, --help            Show this help
 
@@ -41,6 +44,10 @@ while [[ $# -gt 0 ]]; do
       ;;
     --skip-cli-checks)
       skip_cli_checks=1
+      shift
+      ;;
+    --skip-clipboard-checks)
+      skip_clipboard_checks=1
       shift
       ;;
     --no-readback-verify)
@@ -151,6 +158,11 @@ main() {
     fi
     rm -f "$tui_out"
     log "OK" "petiglyph tui non-TTY guard"
+  fi
+
+  if [[ $skip_clipboard_checks -eq 1 ]]; then
+    log "OK" "clipboard checks skipped"
+    return 0
   fi
 
   local -a providers
