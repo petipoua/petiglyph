@@ -1113,6 +1113,12 @@ fn run_cli(cli: Cli) -> std::result::Result<(), CliRunError> {
             let current_dir = std::env::current_dir()
                 .context("failed to read current directory")
                 .map_err(CliRunError::Plain)?;
+            if !io::stdin().is_terminal() || !io::stdout().is_terminal() {
+                return Err(CliRunError::Plain(anyhow::anyhow!(
+                    "interactive petiglyph TUI requires a terminal in {}",
+                    current_dir.display()
+                )));
+            }
             match manifest {
                 Some(path) => tui(path, input_dir, threshold, glyph_size, codepoint_start)
                     .map_err(CliRunError::Plain),
@@ -1127,12 +1133,6 @@ fn run_cli(cli: Cli) -> std::result::Result<(), CliRunError> {
                     {
                         return Err(CliRunError::Plain(anyhow::anyhow!(
                             "--input-dir/--threshold/--glyph-size/--codepoint-start require a concrete project; choose a project in Welcome first or pass --manifest"
-                        )));
-                    }
-                    if !io::stdin().is_terminal() || !io::stdout().is_terminal() {
-                        return Err(CliRunError::Plain(anyhow::anyhow!(
-                            "interactive petiglyph TUI requires a terminal in {}",
-                            current_dir.display()
                         )));
                     }
                     tui_workspace(

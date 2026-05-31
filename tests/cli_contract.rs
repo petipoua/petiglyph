@@ -1020,7 +1020,10 @@ fn cli_unsupported_import_file_errors_for_create_workflows() {
         None,
         None,
     );
-    assert!(!anim_grid.status.success(), "animation create-grid should fail");
+    assert!(
+        !anim_grid.status.success(),
+        "animation create-grid should fail"
+    );
     let anim_grid_payload = parse_json_stdout(&anim_grid);
     assert_api_envelope(&anim_grid_payload, "animation.create-grid", false);
     assert!(
@@ -1053,7 +1056,10 @@ fn cli_doctor_repair_json_removes_stale_project_lock() {
         Some(&home),
         None,
     );
-    assert!(output.status.success(), "doctor --repair --json should succeed");
+    assert!(
+        output.status.success(),
+        "doctor --repair --json should succeed"
+    );
     let payload = parse_json_stdout(&output);
     assert_api_envelope(&payload, "doctor", true);
     assert!(
@@ -1073,7 +1079,12 @@ fn cli_doctor_repair_json_removes_stale_project_lock() {
 #[test]
 fn cli_create_non_interactive_without_no_launch_skips_tui() {
     let workspace = make_temp_dir("create-non-interactive");
-    let output = run_petiglyph(&workspace, &["create", "create-no-launch-implicit"], None, None);
+    let output = run_petiglyph(
+        &workspace,
+        &["create", "create-no-launch-implicit"],
+        None,
+        None,
+    );
     assert!(
         output.status.success(),
         "create should succeed without --no-launch in non-tty contexts"
@@ -1575,8 +1586,12 @@ fn cli_install_and_uninstall_json_lifecycle_is_idempotent_macos() {
         "second identical install should keep immutable artifact without replacement"
     );
 
-    let uninstall_1 =
-        run_petiglyph(&project_dir, &["uninstall-font", "--json"], Some(&home), None);
+    let uninstall_1 = run_petiglyph(
+        &project_dir,
+        &["uninstall-font", "--json"],
+        Some(&home),
+        None,
+    );
     assert!(
         uninstall_1.status.success(),
         "first uninstall should succeed"
@@ -1592,8 +1607,12 @@ fn cli_install_and_uninstall_json_lifecycle_is_idempotent_macos() {
         Some(1)
     );
 
-    let uninstall_2 =
-        run_petiglyph(&project_dir, &["uninstall-font", "--json"], Some(&home), None);
+    let uninstall_2 = run_petiglyph(
+        &project_dir,
+        &["uninstall-font", "--json"],
+        Some(&home),
+        None,
+    );
     assert!(
         uninstall_2.status.success(),
         "second uninstall should succeed"
@@ -1677,8 +1696,12 @@ fn cli_install_and_uninstall_json_lifecycle_is_idempotent_windows() {
         "second identical install should keep immutable artifact without replacement"
     );
 
-    let uninstall_1 =
-        run_petiglyph(&project_dir, &["uninstall-font", "--json"], Some(&home), None);
+    let uninstall_1 = run_petiglyph(
+        &project_dir,
+        &["uninstall-font", "--json"],
+        Some(&home),
+        None,
+    );
     assert!(
         uninstall_1.status.success(),
         "first uninstall should succeed"
@@ -1694,8 +1717,12 @@ fn cli_install_and_uninstall_json_lifecycle_is_idempotent_windows() {
         Some(1)
     );
 
-    let uninstall_2 =
-        run_petiglyph(&project_dir, &["uninstall-font", "--json"], Some(&home), None);
+    let uninstall_2 = run_petiglyph(
+        &project_dir,
+        &["uninstall-font", "--json"],
+        Some(&home),
+        None,
+    );
     assert!(
         uninstall_2.status.success(),
         "second uninstall should succeed"
