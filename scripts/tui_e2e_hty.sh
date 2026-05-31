@@ -5,6 +5,9 @@ repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
 hty_bin="${HTY_BIN:-hty}"
 petiglyph_bin="${PETIGLYPH_BIN:-}"
+hty_runtime_dir="${HTY_RUNTIME_DIR:-}"
+hty_state_home="${HTY_STATE_HOME:-}"
+child_xdg_runtime_dir="${XDG_RUNTIME_DIR:-}"
 
 rows=42
 cols=140
@@ -27,6 +30,7 @@ declare -a temp_dirs=()
 declare -a selected_journeys=()
 declare -a closed_sentinel_sessions=()
 declare -a cleaned_sessions=()
+declare -a hty_env=()
 current_session=""
 
 usage() {
@@ -68,6 +72,8 @@ Options:
 
 Environment:
   HTY_BIN
+  HTY_RUNTIME_DIR
+  HTY_STATE_HOME
   PETIGLYPH_BIN
 
 Examples:
@@ -102,6 +108,45 @@ make_temp_dir() {
   dir="$(mktemp -d "/tmp/petiglyph-tui-e2e-hty-${name}-XXXXXX")"
   register_temp_dir "$dir"
   printf '%s\n' "$dir"
+}
+
+setup_hty_env() {
+  if [[ -z "$hty_runtime_dir" ]]; then
+    hty_runtime_dir="$(make_temp_dir "hty-runtime")"
+  else
+    mkdir -p "$hty_runtime_dir"
+  fi
+  if [[ -z "$hty_state_home" ]]; then
+    hty_state_home="$(make_temp_dir "hty-state")"
+  else
+    mkdir -p "$hty_state_home"
+  fi
+  chmod 700 "$hty_runtime_dir" "$hty_state_home" 2>/dev/null || true
+  hty_env=(env XDG_RUNTIME_DIR="$hty_runtime_dir" XDG_STATE_HOME="$hty_state_home")
+}
+
+run_hty() {
+  "${hty_env[@]}" "$hty_bin" "$@"
+}
+
+run_hty_timeout() {
+  local duration="$1"
+  shift
+  timeout "$duration" "${hty_env[@]}" "$hty_bin" "$@"
+}
+
+hty_command_for_shell() {
+  printf 'XDG_RUNTIME_DIR=%q XDG_STATE_HOME=%q %q' "$hty_runtime_dir" "$hty_state_home" "$hty_bin"
+}
+
+stop_hty_server() {
+  local socket="$hty_runtime_dir/hty/sock"
+  local pids
+  pids="$(ps -eo pid=,args= | awk -v sock="$socket" '$0 ~ /hty __server__/ && index($0, sock) { print $1 }')"
+  if [[ -n "$pids" ]]; then
+    # shellcheck disable=SC2086
+    kill $pids >/dev/null 2>&1 || true
+  fi
 }
 
 append_selected_journey() {
@@ -320,7 +365,7 @@ start_watch_if_enabled() {
   fi
 
   local watcher_cmd
-  watcher_cmd="$(printf '%q watch %q' "$hty_bin" "$session")"
+  watcher_cmd="$(printf '%s watch %q' "$(hty_command_for_shell)" "$session")"
   if start_watcher_terminal "$watcher_cmd" "$session"; then
     log "watcher started for '$session'"
     sleep 0.2
@@ -343,7 +388,7 @@ start_watcher_terminal() {
     case "$term" in
       ghostty)
         command -v ghostty >/dev/null 2>&1 || return 1
-        ghostty --title="$title" -e "$hty_bin" watch "$session" >/dev/null 2>&1 &
+        ghostty --title="$title" -e env XDG_RUNTIME_DIR="$hty_runtime_dir" XDG_STATE_HOME="$hty_state_home" "$hty_bin" watch "$session" >/dev/null 2>&1 &
         watch_pids+=("$!")
         return 0
         ;;
@@ -436,7 +481,7 @@ run_session() {
   current_session="$session"
   sessions+=("$session")
 
-  "$hty_bin" run \
+  run_hty run \
     --name "$session" \
     --cwd "$cwd" \
     --rows "$rows" \
@@ -444,7 +489,7 @@ run_session() {
     -- "$@" >/dev/null
 
   if ! wait_for_session_contains "$session" "petiglyph" "$startup_wait_ms"; then
-    "$hty_bin" wait "$session" --idle 500 --timeout "$startup_wait_ms" >/dev/null 2>/dev/null || true
+    run_hty wait "$session" --idle 500 --timeout "$startup_wait_ms" >/dev/null 2>/dev/null || true
   fi
   start_watch_if_enabled "$session"
 }
@@ -453,27 +498,39 @@ run_petiglyph_session() {
   local session="$1"
   local cwd="$2"
   local session_home="$3"
+  local -a child_env=(
+    env
+    HOME="$session_home"
+    XDG_CONFIG_HOME="$session_home/.config"
+    PETIGLYPH_TUI_HTY_FULL_REPAINT=1
+  )
+  if [[ -n "$child_xdg_runtime_dir" ]]; then
+    child_env+=(XDG_RUNTIME_DIR="$child_xdg_runtime_dir")
+  fi
   run_session \
     "$session" \
     "$cwd" \
-    env HOME="$session_home" XDG_CONFIG_HOME="$session_home/.config" PETIGLYPH_TUI_HTY_FULL_REPAINT=1 "$petiglyph_bin"
+    "${child_env[@]}" "$petiglyph_bin"
 }
 
 wait_exit() {
   local session="$1"
-  if "$hty_bin" wait "$session" --exit --timeout "$timeout_ms" >/dev/null 2>/dev/null; then
+  if run_hty wait "$session" --exit --timeout "$timeout_ms" >/dev/null 2>/dev/null; then
     return 0
   fi
 
   # hty v0.7.0 can keep a session marked as running after the TUI has already
   # restored the terminal and printed its shutdown sentinel.
   if session_snapshot_text "$session" | grep -Fq "tui session closed"; then
+    if run_hty wait "$session" --exit --timeout 3000 >/dev/null 2>/dev/null; then
+      return 0
+    fi
     closed_sentinel_sessions+=("$session")
-    log "session rendered TUI close sentinel before hty reported process exit"
+    log "session rendered TUI close sentinel before hty reported process exit; cleaning recorder session"
     return 0
   fi
 
-  "$hty_bin" wait "$session" --exit --timeout "$timeout_ms" >/dev/null
+  run_hty wait "$session" --exit --timeout "$timeout_ms" >/dev/null
 }
 
 session_rendered_close_sentinel() {
@@ -508,17 +565,18 @@ session_cleanup() {
     return
   fi
   if session_rendered_close_sentinel "$session"; then
-    log "warning: leaving hty session '$session' because hty did not report process exit"
+    run_hty_timeout 3s kill "$session" >/dev/null 2>&1 || true
+    stop_hty_server
     return
   fi
-  timeout 5s "$hty_bin" delete "$session" >/dev/null 2>&1 || {
+  run_hty_timeout 5s delete "$session" >/dev/null 2>&1 || {
     log "warning: hty delete timed out for '$session'"
   }
 }
 
 session_snapshot_text() {
   local session="$1"
-  "$hty_bin" snapshot "$session" --ansi 2>/dev/null \
+  run_hty snapshot "$session" --ansi 2>/dev/null \
     | perl -pe 's/\e\[[0-9;?]*[ -\/]*[@-~]//g' || true
 }
 
@@ -592,7 +650,7 @@ send_key() {
   local key="$2"
   local label="$3"
   log "send [$session] $label"
-  "$hty_bin" send "$session" --key "$key" >/dev/null
+  run_hty send "$session" --key "$key" >/dev/null
   sleep "$(awk "BEGIN { printf \"%.3f\", ${step_delay_ms}/1000 }")"
 }
 
@@ -601,7 +659,7 @@ send_key_nowait() {
   local key="$2"
   local label="$3"
   log "send [$session] $label"
-  "$hty_bin" send "$session" --key "$key" >/dev/null
+  run_hty send "$session" --key "$key" >/dev/null
 }
 
 send_raw_text() {
@@ -609,7 +667,7 @@ send_raw_text() {
   local text="$2"
   local label="$3"
   log "send [$session] $label"
-  "$hty_bin" send "$session" --raw-text "$text" >/dev/null
+  run_hty send "$session" --raw-text "$text" >/dev/null
   sleep "$(awk "BEGIN { printf \"%.3f\", ${step_delay_ms}/1000 }")"
 }
 
@@ -622,7 +680,7 @@ send_literal_keys() {
   log "send [$session] $label"
   for ((i = 0; i < ${#text}; i++)); do
     ch="${text:i:1}"
-    "$hty_bin" send "$session" --key "$ch" >/dev/null
+    run_hty send "$session" --key "$ch" >/dev/null
   done
   sleep "$(awk "BEGIN { printf \"%.3f\", ${step_delay_ms}/1000 }")"
 }
@@ -640,7 +698,7 @@ send_bracketed_paste() {
     payload_hex="$(printf '%s' "$payload" | od -An -tx1 -v | tr -d ' \n')"
   fi
   wrapper_hex="1b5b3230307e${payload_hex}1b5b3230317e"
-  "$hty_bin" send "$session" --bytes-hex "$wrapper_hex" >/dev/null
+  run_hty send "$session" --bytes-hex "$wrapper_hex" >/dev/null
   sleep "$(awk "BEGIN { printf \"%.3f\", ${step_delay_ms}/1000 }")"
 }
 
@@ -734,7 +792,7 @@ open_first_project_from_home() {
   done
   send_key "$session" "down" "$prefix: move to first project row"
   send_key "$session" "enter" "$prefix: open selected project"
-  "$hty_bin" wait "$session" --idle 300 --timeout 2000 >/dev/null 2>/dev/null || true
+  run_hty wait "$session" --idle 300 --timeout 2000 >/dev/null 2>/dev/null || true
 }
 
 delete_active_project() {
@@ -943,7 +1001,7 @@ journey_workspace_selection() {
   go_home_panel "$session"
   send_key "$session" "down" "select second project"
   send_key "$session" "enter" "open selected project"
-  "$hty_bin" wait "$session" --idle 300 --timeout "$timeout_ms" >/dev/null 2>/dev/null || true
+  run_hty wait "$session" --idle 300 --timeout "$timeout_ms" >/dev/null 2>/dev/null || true
 
   send_key_nowait "$session" "b" "build selected project"
   wait_for_path "$map_two" "$timeout_ms"
@@ -1370,21 +1428,25 @@ cleanup() {
     kill "$pid" >/dev/null 2>&1 || true
   done
 
-  for session in "${sessions[@]:-}"; do
-    session_cleanup "$session"
-  done
-
-  for dir in "${temp_dirs[@]:-}"; do
-    rm -rf "$dir" >/dev/null 2>&1 || true
-  done
-
   if (( ec != 0 )) && [[ -n "$current_session" ]]; then
+    local hty_debug_cmd
+    hty_debug_cmd="$(hty_command_for_shell)"
     echo >&2
     echo "Last active session: $current_session" >&2
     echo "Debug commands:" >&2
-    echo "  $hty_bin snapshot $current_session --ansi" >&2
-    echo "  $hty_bin logs $current_session | tail -n 120" >&2
-    echo "  $hty_bin replay $current_session" >&2
+    echo "  $hty_debug_cmd snapshot $current_session --ansi" >&2
+    echo "  $hty_debug_cmd logs $current_session | tail -n 120" >&2
+    echo "  $hty_debug_cmd replay $current_session" >&2
+  fi
+
+  if (( ec == 0 )); then
+    for session in "${sessions[@]:-}"; do
+      session_cleanup "$session"
+    done
+
+    for dir in "${temp_dirs[@]:-}"; do
+      rm -rf "$dir" >/dev/null 2>&1 || true
+    done
   fi
 }
 trap cleanup EXIT
@@ -1487,6 +1549,7 @@ case "$watch_terminal" in
 esac
 
 require_command "$hty_bin"
+setup_hty_env
 
 if [[ -z "$petiglyph_bin" ]]; then
   petiglyph_bin="$repo_root/target/debug/petiglyph"
