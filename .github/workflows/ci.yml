@@ -1,0 +1,68 @@
+name: ci
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions: {}
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  rust-quality:
+    name: rust-quality-${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+
+      - name: Show toolchain
+        shell: bash
+        run: |
+          set -euo pipefail
+          rustc --version
+          cargo --version
+
+      - name: Cargo fmt check
+        run: cargo fmt --check
+
+      - name: Cargo check
+        run: cargo check --locked
+
+      - name: Cargo clippy
+        run: cargo clippy --locked --all-targets --all-features -- -D warnings
+
+      - name: Cargo test
+        run: cargo test --locked
+
+  package-hygiene:
+    name: package-hygiene-linux
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+
+      - name: Cargo package listing
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo package --list --allow-dirty
+
+      - name: Assert release package hygiene
+        run: ./scripts/release_assert_clean_tree.sh

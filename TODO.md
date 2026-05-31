@@ -90,6 +90,8 @@ cargo test --locked
 
 ### 3. Add Real CI Before Any Release Workflow Is Trusted
 
+Status: implemented in-repo via `.github/workflows/ci.yml` with a small-project policy: require only core CI checks to pass before merge; keep additional branch rules minimal.
+
 Observation:
 
 - `.github/workflows/` currently has release and publish workflows only.
@@ -98,23 +100,25 @@ Observation:
 
 Tasks:
 
-- [ ] Add `.github/workflows/ci.yml` for PRs and pushes to `main`.
-- [ ] Run at minimum:
+- [x] Add `.github/workflows/ci.yml` for PRs and pushes to `main`.
+- [x] Run at minimum:
   - `cargo fmt --check`
   - `cargo check --locked`
   - `cargo clippy --locked --all-targets --all-features -- -D warnings`
   - `cargo test --locked`
   - `cargo package --list --allow-dirty` plus the package hygiene guard from section 1
-- [ ] Run CI on Linux, macOS, and Windows for native targets.
-- [ ] Add a fast Linux job that runs `scripts/tui_e2e_hty.sh` once `hty` installation is scripted.
-- [ ] Require this CI workflow through GitHub branch protection before tagging releases.
+- [x] Run CI on Linux, macOS, and Windows for native targets.
+- [x] Do not run `scripts/tui_e2e_hty.sh` in required CI for now; keep TUI E2E as local/manual or future non-blocking CI until timing stability is proven on hosted runners.
+- [x] Require only core CI status checks to pass before merge (small-team baseline): `rust-quality-ubuntu-latest`, `rust-quality-macos-latest`, `rust-quality-windows-latest`, `package-hygiene-linux`.
 
 Validation:
 
-- Open a PR and verify the CI matrix passes before merge.
-- Confirm branch protection requires the CI checks.
+- Open a PR and verify all four required checks pass before merge.
+- Confirm branch protection requires only the four core CI checks above.
 
 ### 4. Replace Stale Or Ambiguous GitHub Runner Labels
+
+Status: implemented for release/publish workflows. Intel macOS now uses `macos-15-intel`, Apple Silicon macOS uses `macos-15`, and Windows release/publish jobs use `windows-2025`. ARM-native runtime smoke jobs remain a future enhancement.
 
 Observation:
 
@@ -124,10 +128,10 @@ Observation:
 
 Tasks:
 
-- [ ] Replace `macos-13` with an explicit supported Intel macOS runner label.
-- [ ] Consider replacing `windows-latest` with an explicit Windows label such as `windows-2025` after confirming toolchain support.
+- [x] Replace `macos-13` with an explicit supported Intel macOS runner label.
+- [x] Consider replacing `windows-latest` with an explicit Windows label such as `windows-2025` after confirming toolchain support.
 - [ ] Consider using native `windows-11-arm` and `ubuntu-24.04-arm` jobs for arm64 runtime smoke checks when the repo is public or account limits allow it.
-- [ ] Update `CROSS-COMPATIBILITY-GUIDE.md` and `RELEASE-CHECKLIST.md` to match actual runner labels.
+- [x] Update `CROSS-COMPATIBILITY-GUIDE.md` and `RELEASE-CHECKLIST.md` to match actual runner labels.
 
 Validation:
 

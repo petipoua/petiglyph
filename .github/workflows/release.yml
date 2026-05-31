@@ -45,19 +45,19 @@ jobs:
             target: aarch64-unknown-linux-musl
             archive: tar.gz
             bin_ext: ""
-          - os: macos-13
+          - os: macos-15-intel
             target: x86_64-apple-darwin
             archive: tar.gz
             bin_ext: ""
-          - os: macos-latest
+          - os: macos-15
             target: aarch64-apple-darwin
             archive: tar.gz
             bin_ext: ""
-          - os: windows-latest
+          - os: windows-2025
             target: x86_64-pc-windows-msvc
             archive: zip
             bin_ext: ".exe"
-          - os: windows-latest
+          - os: windows-2025
             target: aarch64-pc-windows-msvc
             archive: zip
             bin_ext: ".exe"

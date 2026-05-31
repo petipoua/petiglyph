@@ -1,6 +1,6 @@
 # CROSS-COMPATIBILITY-GUIDE
 
-Last verified: 2026-05-23
+Last verified: 2026-05-31
 
 ## 1. Purpose
 
@@ -117,10 +117,10 @@ Animated media limits:
 | `aarch64-unknown-linux-gnu` | Ubuntu/cross action | `.tar.gz` |
 | `x86_64-unknown-linux-musl` | Ubuntu/cross action | `.tar.gz` |
 | `aarch64-unknown-linux-musl` | Ubuntu/cross action | `.tar.gz` |
-| `x86_64-apple-darwin` | macOS 13 | `.tar.gz` |
-| `aarch64-apple-darwin` | macOS latest | `.tar.gz` |
-| `x86_64-pc-windows-msvc` | Windows latest | `.zip` |
-| `aarch64-pc-windows-msvc` | Windows latest | `.zip` |
+| `x86_64-apple-darwin` | macOS 15 Intel | `.tar.gz` |
+| `aarch64-apple-darwin` | macOS 15 ARM | `.tar.gz` |
+| `x86_64-pc-windows-msvc` | Windows Server 2025 | `.zip` |
+| `aarch64-pc-windows-msvc` | Windows Server 2025 | `.zip` |
 
 Release archives include the binary, `README.md`, and `LICENSE`. The publish job generates `SHA256SUMS`, produces artifact attestations, and attaches assets to the GitHub Release.
 

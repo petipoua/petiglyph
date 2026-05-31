@@ -2,7 +2,7 @@
 
 Purpose: executable checklist for shipping `petiglyph` through GitHub Releases, AUR, npm, and PyPI/TestPyPI.
 
-This checklist reflects the repository state as of 2026-05-23. Use `Cargo.toml` package version as the source of truth.
+This checklist reflects the repository state as of 2026-05-31. Use `Cargo.toml` package version as the source of truth.
 
 ## 0. Current Release Surface
 
@@ -16,6 +16,13 @@ Direct GitHub archives build 8 targets:
 - `aarch64-apple-darwin`
 - `x86_64-pc-windows-msvc`
 - `aarch64-pc-windows-msvc`
+
+Release runner labels (explicitly pinned to avoid `*-latest` drift in release pipelines):
+
+- Linux targets: `ubuntu-latest`
+- `x86_64-apple-darwin`: `macos-15-intel`
+- `aarch64-apple-darwin`: `macos-15`
+- Windows targets: `windows-2025`
 
 npm publishes the `petiglyph` meta package plus 8 optional native `@petiglyph/*` packages matching the direct archive targets.
 
