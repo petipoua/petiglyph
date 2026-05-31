@@ -197,6 +197,8 @@ cargo test --locked --test cli_contract
 
 ### 7. Add Cross-Platform Runtime Smoke Checks
 
+Status: partially implemented. Added cross-platform runtime smoke CI (`runtime-smoke-${os}` in `.github/workflows/ci.yml`) and test env isolation for `HOME`/`USERPROFILE`/`LOCALAPPDATA` in `tests/cli_contract.rs`, plus macOS/Windows install lifecycle tests gated by target OS. Remaining manual OS-deep validation is still pending.
+
 Observation:
 
 - Unit tests simulate several cross-OS clipboard/provider cases.
@@ -208,8 +210,8 @@ Observation:
 
 Tasks:
 
-- [ ] Add a CI job that runs `petiglyph --help`, `petiglyph doctor --json`, and `petiglyph tui </dev/null` on Linux, macOS, and Windows.
-- [ ] Use an isolated temporary `HOME`/`USERPROFILE`/`LOCALAPPDATA` for install/uninstall tests so developer state does not affect results.
+- [x] Add a CI job that runs `petiglyph --help`, `petiglyph doctor --json`, and `petiglyph tui </dev/null` on Linux, macOS, and Windows.
+- [x] Use an isolated temporary `HOME`/`USERPROFILE`/`LOCALAPPDATA` for install/uninstall tests so developer state does not affect results.
 - [ ] Validate Windows per-user font installation on a real Windows runner or VM. If copying to `%LOCALAPPDATA%/Microsoft/Windows/Fonts/petiglyph/` plus `WM_FONTCHANGE` is insufficient, add HKCU font registry registration and uninstall cleanup.
 - [ ] Validate macOS detects fonts from `~/Library/Fonts/petiglyph/` after `atsutil databases -removeUser`; document whether terminal restart is required.
 - [ ] Validate Linux install on a minimal image where `fontconfig` may be absent.
@@ -223,6 +225,8 @@ pwsh -File .\scripts\clipboard_smoke.ps1 -PetiglyphPath .\target\release\petigly
 
 ### 8. Add Dependency, License, And Supply-Chain Checks
 
+Status: implemented. Added `deny.toml` policy, added CI `supply-chain-linux` checks in `.github/workflows/ci.yml` (`cargo deny`, `cargo audit`, `cargo tree`), and documented current dependency/cross-build-sensitive areas in `docs/dependency-supply-chain.md`.
+
 Observation:
 
 - Workflows pin GitHub Action refs to full SHAs, which is good.
@@ -231,11 +235,11 @@ Observation:
 
 Tasks:
 
-- [ ] Add `cargo audit` or equivalent advisory scanning.
-- [ ] Add `cargo deny` with explicit license and duplicate-version policy.
-- [ ] Verify all bundled sample assets under `icons/` are redistributable.
-- [ ] Run `cargo tree -e normal` and document native/cross-build-sensitive dependencies.
-- [ ] If AVIF causes cross-build instability, decide whether AVIF should be optional behind a feature or remain in the default release build.
+- [x] Add `cargo audit` or equivalent advisory scanning.
+- [x] Add `cargo deny` with explicit license and duplicate-version policy.
+- [x] Verify all bundled sample assets under `icons/` are redistributable.
+- [x] Run `cargo tree -e normal` and document native/cross-build-sensitive dependencies.
+- [x] If AVIF causes cross-build instability, decide whether AVIF should be optional behind a feature or remain in the default release build.
 
 Validation:
 
@@ -249,24 +253,26 @@ cargo tree --locked -e normal
 
 ### 9. GitHub Release Flow
 
+Status: partially implemented while private. Release artifacts now support manual dispatch, publish as a draft release by default, run per-target archive smoke checks before upload, keep `SHA256SUMS` plus attestations, and prefill release notes from `docs/release-notes-template.md`. Public-release prerequisites remain pending.
+
 Observation:
 
 - The repo is currently private.
-- `release.yml` publishes a GitHub Release directly on tag push.
+- `release.yml` now creates a draft GitHub Release on tag push (or manual dispatch), which keeps downstream publish workflows gated until a manual publish action.
 - Publishing the release fires npm and PyPI workflows via `release.published`.
-- There is no artifact unpack smoke test before the GitHub Release becomes public.
+- Artifact unpack smoke tests now run per target archive before upload.
 
 Tasks:
 
 - [ ] Make the repository public before release if npm provenance, AUR source URLs, and public GitHub release distribution are required.
-- [ ] Add a manual preflight workflow or change release artifact creation to a draft release so assets can be inspected before `release.published` triggers npm/PyPI.
-- [ ] Add per-target archive smoke checks:
+- [x] Add a manual preflight workflow or change release artifact creation to a draft release so assets can be inspected before `release.published` triggers npm/PyPI.
+- [x] Add per-target archive smoke checks:
   - unpack archive,
   - run `petiglyph --help`,
   - run `petiglyph doctor --json` in an isolated temp home/workspace,
   - run `petiglyph tui </dev/null` and verify terminal-required failure.
-- [ ] Keep artifact attestations and `SHA256SUMS`.
-- [ ] Add release notes from `docs/release-notes-template.md` before public publish.
+- [x] Keep artifact attestations and `SHA256SUMS`.
+- [x] Add release notes from `docs/release-notes-template.md` before public publish.
 
 Validation:
 

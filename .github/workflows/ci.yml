@@ -136,3 +136,39 @@ jobs:
           $env:TMP = $temp
           New-Item -ItemType Directory -Force -Path $env:APPDATA | Out-Null
           pwsh -File .\scripts\clipboard_smoke.ps1 -SkipClipboardChecks
+
+  supply-chain:
+    name: supply-chain-linux
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+
+      - name: Install cargo-deny and cargo-audit
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo install --locked cargo-deny
+          cargo install --locked cargo-audit
+
+      - name: Cargo deny check
+        run: cargo deny check
+
+      - name: Cargo audit
+        run: cargo audit
+
+      - name: Cargo tree (normal dependencies)
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo tree --locked -e normal > cargo-tree-normal.txt
+          cat cargo-tree-normal.txt
+
+      - name: Upload dependency tree
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: cargo-tree-normal
+          path: cargo-tree-normal.txt
+          if-no-files-found: error

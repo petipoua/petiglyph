@@ -71,6 +71,9 @@ cargo fmt --check
 cargo check --locked
 cargo clippy --locked --all-targets --all-features -- -D warnings
 cargo test --locked
+cargo deny check
+cargo audit
+cargo tree --locked -e normal
 cargo run -- --help
 cargo run -- tui </dev/null
 ```
@@ -189,6 +192,7 @@ git push origin v0.1.0
 ```
 
 The tag push triggers `.github/workflows/release.yml`.
+Alternative preflight: run the same workflow manually with `workflow_dispatch` and `tag=vX.Y.Z`.
 
 After workflow completion:
 
@@ -197,6 +201,12 @@ gh release view v0.1.0 --json assets
 gh release download v0.1.0 -D ./dist-release
 (cd dist-release && sha256sum -c SHA256SUMS)
 gh release verify v0.1.0
+```
+
+Confirm the release is still a draft before publishing registries:
+
+```bash
+gh release view v0.1.0 --json isDraft
 ```
 
 Validate at least one extracted archive locally:

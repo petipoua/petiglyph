@@ -4,12 +4,19 @@ on:
   push:
     tags:
       - "v*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Existing tag to package (e.g. v0.1.0)"
+        required: true
+        type: string
 
 permissions:
   contents: read
 
 env:
   CARGO_TERM_COLOR: always
+  RELEASE_TAG: ${{ github.event.inputs.tag || github.ref_name }}
 
 jobs:
   package-hygiene:
@@ -17,6 +24,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+        with:
+          ref: ${{ env.RELEASE_TAG }}
 
       - name: Assert release package hygiene
         run: ./scripts/release_assert_clean_tree.sh
@@ -64,6 +73,8 @@ jobs:
 
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+        with:
+          ref: ${{ env.RELEASE_TAG }}
 
       - name: Build
         uses: houseabsolute/actions-rust-cross@f481cb5e0110765615313e2177ce12a99bf26bbd
@@ -78,7 +89,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          base="petiglyph-${{ github.ref_name }}-${{ matrix.target }}"
+          base="petiglyph-${{ env.RELEASE_TAG }}-${{ matrix.target }}"
           pkgdir="$base"
           mkdir -p "$pkgdir"
           cp "target/${{ matrix.target }}/release/petiglyph${{ matrix.bin_ext }}" "$pkgdir/"
@@ -89,20 +100,67 @@ jobs:
         if: matrix.archive == 'zip'
         shell: pwsh
         run: |
-          $base = "petiglyph-${{ github.ref_name }}-${{ matrix.target }}"
+          $base = "petiglyph-${{ env.RELEASE_TAG }}-${{ matrix.target }}"
           New-Item -ItemType Directory -Force -Path $base | Out-Null
           Copy-Item "target/${{ matrix.target }}/release/petiglyph${{ matrix.bin_ext }}" "$base/"
           Copy-Item README.md "$base/"
           Copy-Item LICENSE "$base/"
           Compress-Archive -Path "$base/*" -DestinationPath "$base.zip" -Force
 
+      - name: Archive smoke check (unix)
+        if: matrix.archive == 'tar.gz'
+        shell: bash
+        run: |
+          set -euo pipefail
+          base="petiglyph-${{ env.RELEASE_TAG }}-${{ matrix.target }}"
+          workdir="$(mktemp -d)"
+          tar -xzf "$base.tar.gz" -C "$workdir"
+          bin="$workdir/$base/petiglyph"
+          "$bin" --help >/dev/null
+          smoke_home="$(mktemp -d)"
+          smoke_work="$(mktemp -d)"
+          doctor_json="$(HOME="$smoke_home" "$bin" doctor --json --workspace "$smoke_work")"
+          echo "$doctor_json" | grep -Eq '"ok"[[:space:]]*:[[:space:]]*true'
+          if HOME="$smoke_home" "$bin" tui </dev/null >/tmp/petiglyph-tui-smoke.log 2>&1; then
+            echo "Expected non-interactive tui invocation to fail" >&2
+            exit 1
+          fi
+          grep -Eiq "terminal|tty" /tmp/petiglyph-tui-smoke.log
+
+      - name: Archive smoke check (windows)
+        if: matrix.archive == 'zip'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $base = "petiglyph-${{ env.RELEASE_TAG }}-${{ matrix.target }}"
+          $workdir = Join-Path $env:RUNNER_TEMP "petiglyph-smoke-${{ matrix.target }}"
+          if (Test-Path $workdir) { Remove-Item -Recurse -Force $workdir }
+          New-Item -ItemType Directory -Force -Path $workdir | Out-Null
+          Expand-Archive -Path "$base.zip" -DestinationPath $workdir -Force
+          $bin = Join-Path (Join-Path $workdir $base) "petiglyph.exe"
+          & $bin --help | Out-Null
+          $smokeHome = Join-Path $env:RUNNER_TEMP "petiglyph-home-${{ matrix.target }}"
+          $smokeLocalAppData = Join-Path $smokeHome "LocalAppData"
+          $smokeWork = Join-Path $env:RUNNER_TEMP "petiglyph-work-${{ matrix.target }}"
+          New-Item -ItemType Directory -Force -Path $smokeHome, $smokeLocalAppData, $smokeWork | Out-Null
+          $env:HOME = $smokeHome
+          $env:USERPROFILE = $smokeHome
+          $env:LOCALAPPDATA = $smokeLocalAppData
+          $doctor = & $bin doctor --json --workspace $smokeWork
+          if ($doctor -notmatch '"ok"\s*:\s*true') { throw "doctor --json did not report ok=true" }
+          $tuiOutput = $null | & $bin tui 2>&1
+          if ($LASTEXITCODE -eq 0) { throw "Expected non-interactive tui invocation to fail" }
+          if (($tuiOutput | Out-String) -notmatch '(?i)terminal|tty') {
+            throw "Expected terminal-required/TTY error text for tui </dev/null equivalent"
+          }
+
       - name: Upload archive
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: release-${{ matrix.target }}
           path: |
-            petiglyph-${{ github.ref_name }}-${{ matrix.target }}.tar.gz
-            petiglyph-${{ github.ref_name }}-${{ matrix.target }}.zip
+            petiglyph-${{ env.RELEASE_TAG }}-${{ matrix.target }}.tar.gz
+            petiglyph-${{ env.RELEASE_TAG }}-${{ matrix.target }}.zip
           if-no-files-found: error
 
   publish:
@@ -119,8 +177,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          [[ "${GITHUB_REF_TYPE}" == "tag" ]] || { echo "Ref type must be tag" >&2; exit 1; }
-          [[ "${GITHUB_REF_NAME}" =~ ^v[0-9] ]] || { echo "Tag must start with v<version>" >&2; exit 1; }
+          [[ "${RELEASE_TAG}" =~ ^v[0-9] ]] || { echo "Tag must start with v<version>" >&2; exit 1; }
 
       - name: Download archives
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
@@ -144,5 +201,8 @@ jobs:
       - name: Publish GitHub release assets
         uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65
         with:
-          generate_release_notes: true
+          tag_name: ${{ env.RELEASE_TAG }}
+          draft: true
+          generate_release_notes: false
+          body_path: docs/release-notes-template.md
           files: dist/*

@@ -1,6 +1,6 @@
 # RELEASE-GUIDE
 
-Last updated: 2026-05-23
+Last updated: 2026-05-31
 
 This guide is the operator runbook for publishing `petiglyph` to:
 
@@ -14,10 +14,12 @@ It complements `RELEASE-CHECKLIST.md` and reflects the release automation now in
 ## 1. What Is Implemented In Repo
 
 - GitHub artifact release workflow: `.github/workflows/release.yml`
+  - Trigger: tag push (`v*`) or manual `workflow_dispatch` with `tag`.
   - Builds 8 targets.
   - Packages archives per target.
+  - Runs per-target archive smoke checks (`--help`, `doctor --json`, non-interactive `tui` failure).
   - Generates `SHA256SUMS`.
-  - Publishes release assets.
+  - Publishes release assets to a draft GitHub Release using `docs/release-notes-template.md`.
   - Generates GitHub artifact attestations.
   - Uses immutable full-commit SHA pins for all referenced actions.
 - npm publish workflow: `.github/workflows/npm-publish.yml`
@@ -38,6 +40,9 @@ It complements `RELEASE-CHECKLIST.md` and reflects the release automation now in
   - `scripts/release_stage_npm_artifacts.sh`
   - `scripts/release_npm_pack_test.sh`
   - `scripts/release_prepare_aur.sh`
+- Supply-chain policy and dependency notes:
+  - `deny.toml`
+  - `docs/dependency-supply-chain.md`
 - PyPI metadata: `pyproject.toml`
 - npm package layout: `npm/` (meta + 8 platform packages)
 - License file: `LICENSE`
@@ -131,7 +136,7 @@ This section describes exactly what happens when you decide a specific commit is
 Important trigger behavior:
 
 - No, it does not run on each new commit.
-- `.github/workflows/release.yml` runs only on `push` of tags matching `v*`.
+- `.github/workflows/release.yml` runs on `push` of tags matching `v*`, and can also be run manually with `workflow_dispatch` for an existing tag.
 - `.github/workflows/npm-publish.yml` and `.github/workflows/pypi-publish.yml` run only on GitHub Release event `published`.
 
 Automation boundary (critical to understand):
@@ -171,11 +176,11 @@ At this point, the release-artifacts workflow starts automatically because of th
    - uploads archive as workflow artifact.
 4. Publish job waits for all matrix jobs to complete.
 5. Publish job:
-   - validates ref context is a tag and tag naming format,
+   - validates release tag naming format,
    - downloads all build artifacts,
    - computes `SHA256SUMS`,
    - creates GitHub artifact attestations,
-   - uploads archives + `SHA256SUMS` to GitHub Release assets.
+   - uploads archives + `SHA256SUMS` to a draft GitHub Release with template-based notes.
 
 Result: GitHub Release now has canonical binaries + checksum file + attestations.
 
