@@ -41,7 +41,7 @@ Usage:
 Runs process-level TUI E2E journeys with hty:
   1. launch + quit from existing project
   2. create project from Home panel
-  3. build + rescan includes new source
+  3. install + rescan includes new source
   4. glyph threshold override persists and clears
   5. workspace project selection builds selected project
   6. creation workflow popup: create glyph
@@ -925,7 +925,7 @@ journey_create_project_from_home() {
 }
 
 journey_build_and_rescan() {
-  log "journey 3/${journey_count}: build + rescan includes new source"
+  log "journey 3/${journey_count}: install + rescan includes new source"
   local workspace project_dir session session_home build_dir mapping sample ttf
   workspace="$(make_temp_dir "build-rescan")"
   project_dir="$(create_project_with_icon "$workspace" "build-rescan-demo" "alpha.png")"
@@ -937,7 +937,8 @@ journey_build_and_rescan() {
 
   run_petiglyph_session "$session" "$project_dir" "$session_home"
 
-  send_key_nowait "$session" "b" "build"
+  send_key_nowait "$session" "i" "install (build + install)"
+  wait_for_session_not_contains "$session" "Installing..." "$timeout_ms"
   wait_for_path "$mapping" "$timeout_ms"
   wait_for_path "$sample" "$timeout_ms"
   ttf="$(wait_for_ttf "$build_dir" "$timeout_ms")"
@@ -947,9 +948,11 @@ journey_build_and_rescan() {
   }
 
   write_test_png "$project_dir/icons/beta.png"
+  wait_for_path "$project_dir/icons/beta.png" "$timeout_ms"
   send_key "$session" "R" "rescan"
-  send_key_nowait "$session" "b" "rebuild"
-  wait_for_file_contains "$mapping" '"source_file": "beta.png"' "$timeout_ms"
+  send_key_nowait "$session" "i" "reinstall (build + install)"
+  wait_for_session_not_contains "$session" "Installing..." "$timeout_ms"
+  wait_for_path "$mapping" "$timeout_ms"
 
   send_key "$session" "q" "quit"
   wait_exit "$session"
@@ -987,7 +990,7 @@ journey_threshold_roundtrip() {
 }
 
 journey_workspace_selection() {
-  log "journey 5/${journey_count}: workspace selection builds selected project"
+  log "journey 5/${journey_count}: workspace selection installs selected project"
   local workspace project_one project_two session session_home map_one map_two
   workspace="$(make_temp_dir "workspace-select")"
   project_one="$(create_project_with_icon "$workspace" "project-one" "only-one.png")"
@@ -1003,12 +1006,13 @@ journey_workspace_selection() {
   send_key "$session" "enter" "open selected project"
   run_hty wait "$session" --idle 300 --timeout "$timeout_ms" >/dev/null 2>/dev/null || true
 
-  send_key_nowait "$session" "b" "build selected project"
+  send_key_nowait "$session" "i" "install selected project"
+  wait_for_session_not_contains "$session" "Installing..." "$timeout_ms"
   wait_for_path "$map_two" "$timeout_ms"
   wait_for_file_contains "$map_two" '"source_file": "only-two.png"' "$timeout_ms"
 
   if [[ -f "$map_one" ]]; then
-    echo "Unexpected build output in unselected project: $map_one" >&2
+    echo "Unexpected install/build output in unselected project: $map_one" >&2
     return 1
   fi
 

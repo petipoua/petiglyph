@@ -802,13 +802,6 @@ fn project_actions_without_active_project_set_status_and_do_not_crash() {
     let mut app = App::new_workspace(workspace.clone(), None, TuiLaunchOverrides::default())
         .expect("workspace TUI app initializes");
 
-    handle_key(&mut app, KeyCode::Char('b')).expect("build guard succeeds");
-    assert!(
-        app.status
-            .as_deref()
-            .is_some_and(|status| status.contains("before building"))
-    );
-
     handle_key(&mut app, KeyCode::Char('i')).expect("install guard succeeds");
     assert!(
         app.status
@@ -4148,7 +4141,7 @@ fn handle_key_w_is_not_a_navigation_path() {
 }
 
 #[test]
-fn build_shortcut_rebuilds_and_clears_previous_outputs() {
+fn install_shortcut_reinstall_and_clear_previous_outputs() {
     let project_dir = make_temp_dir("font-action-buttons");
     let manifest_path = project_dir.join("petiglyph.toml");
     write_manifest(&manifest_path, &Manifest::default()).expect("manifest is written");
@@ -4174,31 +4167,31 @@ fn build_shortcut_rebuilds_and_clears_previous_outputs() {
 
     let mut app = App::new(manifest_path, config);
 
-    handle_key(&mut app, KeyCode::Char('b')).expect("key handling should succeed");
+    handle_key(&mut app, KeyCode::Char('i')).expect("i install shortcut should succeed");
     assert!(
         app.background_task_in_progress(),
-        "build should remain visible as a background task briefly"
+        "install should remain visible as a background task briefly"
     );
     wait_for_background_tasks(&mut app);
     let summary = app
         .last_build
         .as_ref()
-        .expect("build shortcut should build");
+        .expect("install shortcut should build as part of install");
     assert!(summary.ttf_path.is_file(), "ttf output should exist");
     assert!(summary.bdf_path.is_file(), "bdf output should exist");
     let stale_preview = summary.previews_dir.join("stale.png");
     fs::write(&stale_preview, b"stale").expect("stale preview is written");
 
-    handle_key(&mut app, KeyCode::Char('b')).expect("rebuild shortcut should succeed");
+    handle_key(&mut app, KeyCode::Char('i')).expect("i reinstall shortcut should succeed");
     assert!(
         app.background_task_in_progress(),
-        "rebuild should remain visible as a background task briefly"
+        "reinstall should remain visible as a background task briefly"
     );
     wait_for_background_tasks(&mut app);
     let rebuilt = app
         .last_build
         .as_ref()
-        .expect("rebuild should refresh build state");
+        .expect("reinstall should refresh build state");
     assert!(
         rebuilt.ttf_path.is_file(),
         "rebuilt ttf output should exist"
@@ -4209,13 +4202,13 @@ fn build_shortcut_rebuilds_and_clears_previous_outputs() {
     );
     assert!(
         !stale_preview.exists(),
-        "rebuild should clear stale files from the previous build output"
+        "reinstall should clear stale files from the previous build output"
     );
     assert!(
         app.status
             .as_deref()
-            .is_some_and(|status| status.contains("rebuild complete")),
-        "status should reflect rebuild, got {:?}",
+            .is_some_and(|status| status.contains("installed font to")),
+        "status should reflect install, got {:?}",
         app.status
     );
     assert_eq!(app.view, AppView::Welcome);

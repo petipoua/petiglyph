@@ -692,6 +692,7 @@ struct ProjectSwitchTaskOutput {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[allow(dead_code)]
 enum BuildTaskKind {
     Build,
     Rebuild,
@@ -2591,9 +2592,6 @@ fn handle_welcome_key(app: &mut App, key: KeyEvent) -> Result<()> {
             if app.active_project.is_some() {
                 app.reload_glyphs()?;
             }
-        }
-        KeyCode::Char('b') if !app.welcome_input_editing => {
-            trigger_build_action(app)?;
         }
         KeyCode::Char('i') if !app.welcome_input_editing => {
             trigger_install_action(app)?;
@@ -4964,6 +4962,7 @@ impl App {
         self.animation_preview = Some(preview);
     }
 
+    #[allow(dead_code)]
     fn current_project_is_built(&self) -> bool {
         self.active_project.is_some() && self.last_build.is_some()
     }
@@ -6329,6 +6328,7 @@ impl App {
         )))
     }
 
+    #[allow(dead_code)]
     fn start_build_project(&mut self) -> Result<()> {
         if self.active_project.is_none() {
             self.status = Some(
@@ -7122,6 +7122,7 @@ fn load_project_switch_task(
     })
 }
 
+#[allow(dead_code)]
 fn build_project_task(
     manifest_path: PathBuf,
     launch_overrides: TuiLaunchOverrides,
@@ -8145,9 +8146,6 @@ fn handle_key_event(app: &mut App, key: KeyEvent) -> Result<()> {
                 AppView::Glyphs
             };
         }
-        KeyCode::Char('b') => {
-            trigger_build_action(app)?;
-        }
         KeyCode::Char('i') => {
             trigger_install_action(app)?;
         }
@@ -8227,6 +8225,7 @@ fn handle_key_event(app: &mut App, key: KeyEvent) -> Result<()> {
     Ok(())
 }
 
+#[allow(dead_code)]
 fn trigger_build_action(app: &mut App) -> Result<()> {
     if app.build_in_progress() {
         app.status = Some("build already in progress".to_string());
@@ -8347,12 +8346,6 @@ fn draw_ui(frame: &mut Frame, app: &App) {
         Span::raw("rescan  "),
         Span::styled(" v ", Style::default().fg(accent)),
         Span::raw("verbose paths  "),
-        Span::styled(" b ", Style::default().fg(accent)),
-        Span::raw(if app.current_project_is_installed() {
-            "reinstall  "
-        } else {
-            "install  "
-        }),
         Span::styled(" i ", Style::default().fg(accent)),
         Span::raw(if app.current_project_is_installed() {
             "reinstall  "
