@@ -60,13 +60,15 @@ rg -n '"@petiglyph/petiglyph-[^"]+": "0\.1\.0"' npm/petiglyph/package.json
 Run from repo root:
 
 ```bash
-cargo fmt --all -- --check
-cargo check
-cargo clippy --all-targets --all-features -- -D warnings
-cargo test
+cargo fmt --check
+cargo check --locked
+cargo clippy --locked --all-targets --all-features -- -D warnings
+cargo test --locked
 cargo run -- --help
 cargo run -- tui </dev/null
 ```
+
+Toolchain policy: use the repo-pinned stable toolchain from `rust-toolchain.toml` (with `clippy` and `rustfmt` components).
 
 Expected:
 

@@ -601,23 +601,23 @@ pub(crate) fn doctor(repair: bool, manifest_arg: Option<PathBuf>) -> Result<Doct
                                     );
                                 }
 
-                                if let Some(r) = range {
-                                    if codepoint < r.start || codepoint > r.end {
-                                        is_valid = false;
-                                        push_finding(
-                                            &mut findings,
-                                            "registry_project_range_conflict",
-                                            DoctorSeverity::Error,
-                                            DoctorStatus::Issue,
-                                            format!(
-                                                "codepoint {} outside owned range U+{:04X}..U+{:04X} in {}",
-                                                entry.codepoint,
-                                                r.start,
-                                                r.end,
-                                                glyph_lock_path.display()
-                                            ),
-                                        );
-                                    }
+                                if let Some(r) = range
+                                    && (codepoint < r.start || codepoint > r.end)
+                                {
+                                    is_valid = false;
+                                    push_finding(
+                                        &mut findings,
+                                        "registry_project_range_conflict",
+                                        DoctorSeverity::Error,
+                                        DoctorStatus::Issue,
+                                        format!(
+                                            "codepoint {} outside owned range U+{:04X}..U+{:04X} in {}",
+                                            entry.codepoint,
+                                            r.start,
+                                            r.end,
+                                            glyph_lock_path.display()
+                                        ),
+                                    );
                                 }
 
                                 for (other_project, other_range) in &registry.ranges {
@@ -687,7 +687,7 @@ pub(crate) fn doctor(repair: bool, manifest_arg: Option<PathBuf>) -> Result<Doct
                     if lock_needs_repair && repair {
                         lock.entries = valid_entries;
                         if let Ok(raw) = serde_json::to_string_pretty(&lock) {
-                            if let Ok(_) = fs::write(&glyph_lock_path, raw) {
+                            if fs::write(&glyph_lock_path, raw).is_ok() {
                                 repaired += 1;
                                 push_finding(
                                     &mut findings,

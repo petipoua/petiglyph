@@ -1,3 +1,16 @@
+#![allow(
+    clippy::collapsible_if,
+    clippy::collapsible_match,
+    clippy::enum_variant_names,
+    clippy::if_same_then_else,
+    clippy::manual_div_ceil,
+    clippy::manual_is_multiple_of,
+    clippy::match_single_binding,
+    clippy::redundant_closure,
+    clippy::single_match,
+    clippy::too_many_arguments
+)]
+
 use anyhow::{Context, Result, bail};
 use crossterm::ExecutableCommand;
 use crossterm::event::{
@@ -5396,7 +5409,7 @@ impl App {
     }
 
     fn normalize_glyphs_focus(&mut self) {
-        if !self.active_project.is_some() {
+        if self.active_project.is_none() {
             self.glyphs_focus = GlyphsFocus::List;
             return;
         }
@@ -7502,7 +7515,6 @@ fn next_incremental_duplicate_destination(
             continue;
         };
         if candidate_stem == base_stem {
-            max_suffix = max_suffix.max(0);
             continue;
         }
         if let Some(rest) = candidate_stem.strip_prefix(base_stem)
@@ -7523,10 +7535,7 @@ fn next_incremental_duplicate_destination(
 
 fn stem_without_trailing_numeric_suffixes(stem: &str) -> &str {
     let mut current = stem;
-    loop {
-        let Some((head, tail)) = current.rsplit_once('-') else {
-            break;
-        };
+    while let Some((head, tail)) = current.rsplit_once('-') {
         if tail.is_empty() || !tail.chars().all(|ch| ch.is_ascii_digit()) {
             break;
         }

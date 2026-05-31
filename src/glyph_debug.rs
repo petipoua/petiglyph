@@ -313,22 +313,26 @@ fn detect_terminal_cell_geometry() -> (u32, u32, String) {
         return (w, h, format!("env:{DEBUG_CELL_ENV}"));
     }
 
-    if let Ok(size) = terminal::window_size() {
-        if size.columns > 0 && size.rows > 0 && size.width > 0 && size.height > 0 {
-            let cell_w = u32::from(size.width).checked_div(u32::from(size.columns));
-            let cell_h = u32::from(size.height).checked_div(u32::from(size.rows));
-            if let (Some(cell_w), Some(cell_h)) = (cell_w, cell_h) {
-                if cell_w > 0 && cell_h > 0 {
-                    return (
-                        cell_w,
-                        cell_h,
-                        format!(
-                            "terminal-window-size {}x{} px over {}x{} cells",
-                            size.width, size.height, size.columns, size.rows
-                        ),
-                    );
-                }
-            }
+    if let Ok(size) = terminal::window_size()
+        && size.columns > 0
+        && size.rows > 0
+        && size.width > 0
+        && size.height > 0
+    {
+        let cell_w = u32::from(size.width).checked_div(u32::from(size.columns));
+        let cell_h = u32::from(size.height).checked_div(u32::from(size.rows));
+        if let (Some(cell_w), Some(cell_h)) = (cell_w, cell_h)
+            && cell_w > 0
+            && cell_h > 0
+        {
+            return (
+                cell_w,
+                cell_h,
+                format!(
+                    "terminal-window-size {}x{} px over {}x{} cells",
+                    size.width, size.height, size.columns, size.rows
+                ),
+            );
         }
     }
 

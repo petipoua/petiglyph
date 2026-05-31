@@ -738,11 +738,10 @@ fn assign_codepoints_for_build(
             used_codepoints.insert(*codepoint);
         }
 
-        for offset in 0..plan.len {
+        for (offset, codepoint) in allocated.iter().copied().enumerate().take(plan.len) {
             let idx = plan.start_idx + offset;
             let glyph = &glyphs[idx];
             active_sources.insert(glyph.source_key.clone());
-            let codepoint = allocated[offset];
 
             let existing_old = entries_by_source
                 .get(&glyph.source_key)

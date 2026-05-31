@@ -1638,8 +1638,10 @@ fn build_outputs_composition_writes_grid_sample_and_contiguous_codepoints() {
     write_quadrant_png(&input_dir.join("logo.png"), 80);
 
     let manifest_path = project_dir.join("petiglyph.toml");
-    let mut manifest = Manifest::default();
-    manifest.project_id = Some("test-composition-grid-sample".to_string());
+    let mut manifest = Manifest {
+        project_id: Some("test-composition-grid-sample".to_string()),
+        ..Manifest::default()
+    };
     manifest.compositions.insert(
         "logo.png".to_string(),
         CompositionDef {
@@ -1982,8 +1984,10 @@ fn build_outputs_composition_preserves_tile_offsets_in_ttf() {
     write_split_edge_dots_png(&input_dir.join("split.png"), 32);
 
     let manifest_path = project_dir.join("petiglyph.toml");
-    let mut manifest = Manifest::default();
-    manifest.project_id = Some("test-composition-ttf-offsets".to_string());
+    let mut manifest = Manifest {
+        project_id: Some("test-composition-ttf-offsets".to_string()),
+        ..Manifest::default()
+    };
     manifest.compositions.insert(
         "split.png".to_string(),
         CompositionDef {
@@ -2054,8 +2058,10 @@ fn build_outputs_composition_bleeds_internal_ttf_edges() {
         .expect("seam image is written");
 
     let manifest_path = project_dir.join("petiglyph.toml");
-    let mut manifest = Manifest::default();
-    manifest.project_id = Some("test-composition-ttf-overlap".to_string());
+    let mut manifest = Manifest {
+        project_id: Some("test-composition-ttf-overlap".to_string()),
+        ..Manifest::default()
+    };
     manifest.compositions.insert(
         "seam.png".to_string(),
         CompositionDef {
@@ -2151,8 +2157,10 @@ fn build_outputs_composition_can_disable_horizontal_ttf_bleed() {
         .expect("seam image is written");
 
     let manifest_path = project_dir.join("petiglyph.toml");
-    let mut manifest = Manifest::default();
-    manifest.project_id = Some("test-composition-ttf-no-horizontal-bleed".to_string());
+    let mut manifest = Manifest {
+        project_id: Some("test-composition-ttf-no-horizontal-bleed".to_string()),
+        ..Manifest::default()
+    };
     manifest.compositions.insert(
         "seam.png".to_string(),
         CompositionDef {
@@ -2228,8 +2236,10 @@ fn build_outputs_composition_overlaps_internal_ttf_edges_vertically() {
         .expect("vertical seam image is written");
 
     let manifest_path = project_dir.join("petiglyph.toml");
-    let mut manifest = Manifest::default();
-    manifest.project_id = Some("test-composition-ttf-overlap-vertical".to_string());
+    let mut manifest = Manifest {
+        project_id: Some("test-composition-ttf-overlap-vertical".to_string()),
+        ..Manifest::default()
+    };
     manifest.compositions.insert(
         "vseam.png".to_string(),
         CompositionDef {
@@ -2306,8 +2316,10 @@ fn build_outputs_composition_can_disable_vertical_ttf_bleed() {
         .expect("vertical seam image is written");
 
     let manifest_path = project_dir.join("petiglyph.toml");
-    let mut manifest = Manifest::default();
-    manifest.project_id = Some("test-composition-ttf-no-vertical-bleed".to_string());
+    let mut manifest = Manifest {
+        project_id: Some("test-composition-ttf-no-vertical-bleed".to_string()),
+        ..Manifest::default()
+    };
     manifest.compositions.insert(
         "vseam.png".to_string(),
         CompositionDef {
@@ -2379,8 +2391,10 @@ fn build_outputs_empty_composition_tile_keeps_ttf_advance() {
         .expect("empty-middle image is written");
 
     let manifest_path = project_dir.join("petiglyph.toml");
-    let mut manifest = Manifest::default();
-    manifest.project_id = Some("test-composition-empty-advance".to_string());
+    let mut manifest = Manifest {
+        project_id: Some("test-composition-empty-advance".to_string()),
+        ..Manifest::default()
+    };
     manifest.compositions.insert(
         "empty-middle.png".to_string(),
         CompositionDef {
@@ -2432,8 +2446,10 @@ fn build_outputs_remaps_noncontiguous_composition_lock_into_contiguous_run() {
     write_quadrant_png(&input_dir.join("icon.png"), 64);
 
     let manifest_path = project_dir.join("petiglyph.toml");
-    let mut manifest = Manifest::default();
-    manifest.project_id = Some("test-composition-lock-remap".to_string());
+    let mut manifest = Manifest {
+        project_id: Some("test-composition-lock-remap".to_string()),
+        ..Manifest::default()
+    };
     manifest.compositions.insert(
         "icon.png".to_string(),
         CompositionDef {

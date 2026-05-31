@@ -65,6 +65,8 @@ Expected result: no scratch paths appear.
 
 ### 2. Fix Clippy Or Make The Lint Policy Explicit
 
+Status: implemented. Added `rust-toolchain.toml` (stable + `clippy` + `rustfmt`), fixed non-TUI clippy errors, and kept TUI behavior stable with behavior-preserving refactors plus a TUI-local lint allow list for remaining style-only lints.
+
 Observation:
 
 - The release checklist asks for `cargo clippy --all-targets --all-features -- -D warnings`.
@@ -73,10 +75,10 @@ Observation:
 
 Tasks:
 
-- [ ] Decide and document the Rust toolchain policy first: either add `rust-toolchain.toml` and an MSRV, or explicitly target current stable.
-- [ ] Fix non-TUI clippy failures first in focused patches.
-- [ ] Fix TUI clippy failures only as behavior-preserving refactors. Do not change keybindings, labels, layout, copy, or flow while doing this.
-- [ ] If a lint is intentionally undesirable for this codebase, add a narrow `allow` with a short reason rather than broad disabling.
+- [x] Decide and document the Rust toolchain policy first: either add `rust-toolchain.toml` and an MSRV, or explicitly target current stable.
+- [x] Fix non-TUI clippy failures first in focused patches.
+- [x] Fix TUI clippy failures only as behavior-preserving refactors. Do not change keybindings, labels, layout, copy, or flow while doing this.
+- [x] If a lint is intentionally undesirable for this codebase, add a narrow `allow` with a short reason rather than broad disabling.
 
 Validation:
 

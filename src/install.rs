@@ -852,9 +852,7 @@ fn range_len(start: u32, end: u32) -> u32 {
 }
 
 fn clamp_to_pua_start(value: u32) -> u32 {
-    value
-        .max(SUPPLEMENTARY_PUA_START)
-        .min(SUPPLEMENTARY_PUA_END)
+    value.clamp(SUPPLEMENTARY_PUA_START, SUPPLEMENTARY_PUA_END)
 }
 
 fn compute_range_span(
@@ -1872,12 +1870,13 @@ pub(crate) fn install_built_font(
         .with_context(|| format!("failed to write {}", metadata_path.display()))?;
 
     let mut replaced_previous_ttf_count = 0usize;
-    if let Some(previous) = previous_installed_ttf {
-        if previous != install_path && previous.is_file() {
-            fs::remove_file(&previous)
-                .with_context(|| format!("failed to remove {}", previous.display()))?;
-            replaced_previous_ttf_count += 1;
-        }
+    if let Some(previous) = previous_installed_ttf
+        && previous != install_path
+        && previous.is_file()
+    {
+        fs::remove_file(&previous)
+            .with_context(|| format!("failed to remove {}", previous.display()))?;
+        replaced_previous_ttf_count += 1;
     }
 
     let legacy_path = install_dir.join(font_file_name(font_name));
@@ -2141,8 +2140,8 @@ fn uninstall_tool_state_for_font_root(font_root: &Path) -> Result<ToolUninstallR
     let platform = current_platform()?;
     fs::create_dir_all(font_root)
         .with_context(|| format!("failed to create {}", font_root.display()))?;
-    let _guard = acquire_file_lock(&install_lock_path(&font_root), "font install metadata")?;
-    let install_dir = install_dir_for_project(&font_root);
+    let _guard = acquire_file_lock(&install_lock_path(font_root), "font install metadata")?;
+    let install_dir = install_dir_for_project(font_root);
 
     if !install_dir.exists() {
         update_fontconfig_petiglyph_alias(&install_dir, platform)?;
@@ -2214,7 +2213,7 @@ fn uninstall_tool_state_for_font_root(font_root: &Path) -> Result<ToolUninstallR
 
     update_fontconfig_petiglyph_alias(&install_dir, platform)?;
     if removed_ttf_count > 0 {
-        refresh_font_cache(&font_root, platform)?;
+        refresh_font_cache(font_root, platform)?;
     }
 
     if fs::read_dir(&install_dir)
