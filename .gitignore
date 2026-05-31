@@ -21,3 +21,21 @@
 /test_parse*
 /test_ws*
 /pp-*/
+
+# npm/PyPI local packaging artifacts
+/petiglyph-*.tgz
+/npm/petiglyph/*.tgz
+/*.whl
+
+# Staged native npm release binaries (keep placeholders)
+/npm/petiglyph-*/bin/*
+!/npm/petiglyph-*/bin/.gitkeep
+
+# Common local caches
+/node_modules/
+/.venv/
+/venv/
+/.pytest_cache/
+/.mypy_cache/
+/.ruff_cache/
+/**/__pycache__/
