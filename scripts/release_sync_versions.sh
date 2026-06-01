@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+# Release version sync helper.
+# Keeps Cargo/PKGBUILD/.SRCINFO/npm versions aligned so multi-channel releases
+# do not drift due to partial manual edits.
 set -euo pipefail
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"

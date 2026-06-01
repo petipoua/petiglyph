@@ -1,6 +1,10 @@
 #!/usr/bin/env bash
 # Preflight checks to run before pushing commits.
 # Mirrors the main CI checks in a local fail-fast sequence.
+# Purpose:
+# - Catch contract and packaging drift early in local development.
+# - Includes distribution matrix sync checks; intentionally excludes clean-tree assertion
+#   so local pre-commit runs are not blocked by unrelated working-tree changes.
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"

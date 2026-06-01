@@ -1,5 +1,11 @@
 #!/usr/bin/env python3
-"""Canonical distribution-target helper and drift checker."""
+"""Canonical distribution-target helper and drift checker.
+
+This script prevents release drift across:
+- canonical target matrix vs release workflows,
+- Cargo package version vs npm package versions,
+- npm meta-package optional dependency pins vs Cargo version.
+"""
 
 from __future__ import annotations
 

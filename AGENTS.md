@@ -140,6 +140,9 @@
 - Before changing behavior, validate against the current CLI contract above.
 - Keep project outputs self-contained; do not introduce system-wide scattered asset storage for user projects.
 - Preserve automation contract semantics (`--json` envelope fields and non-zero exit behavior on failures).
+- Do not silently swallow recoverable discovery/read failures in user-facing commands; surface them as findings/warnings in both human and JSON outputs.
+- Prefer structured contract assertions in tests (parse TOML/JSON and assert key paths/values) instead of weak substring checks.
+- For `hty` E2E synchronization, wait for state-specific UI markers and avoid border-glyph-dependent selectors.
 - For packaging-related work, prefer `scripts/aur.sh` and keep `PKGBUILD` aligned with `Cargo.toml` version.
 - For release-prep work, use `scripts/release_sync_versions.sh`, `scripts/release_prepare_aur.sh`, `scripts/release_stage_npm_artifacts.sh`, and `scripts/release_npm_pack_test.sh` instead of editing generated release state by hand.
 - When checking the codebase, avoid accidentally editing generated files under `.makepkg/`.
