@@ -48,9 +48,6 @@ jobs:
       - name: Cargo fmt check
         run: cargo fmt --check
 
-      - name: Cargo check
-        run: cargo check --locked
-
       - name: Cargo clippy
         run: cargo clippy --locked --all-targets --all-features -- -D warnings
 
