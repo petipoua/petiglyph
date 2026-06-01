@@ -218,11 +218,10 @@ fn cli_list_json_returns_projects_and_fonts() {
         .as_array()
         .expect("projects array");
     assert_eq!(projects.len(), 1, "should detect the created project");
-    assert_eq!(
+    assert!(
         projects[0]["manifest_path"]
             .as_str()
             .is_some_and(|value| same_path(Path::new(value), &manifest_path)),
-        true,
         "manifest path should match"
     );
     assert!(payload["data"]["installed_fonts"].as_array().is_some());
@@ -1129,11 +1128,10 @@ fn cli_nested_manifest_autodetection_works_for_single_project() {
 
     let payload = parse_json_stdout(&output);
     assert_api_envelope(&payload, "uninstall-font", true);
-    assert_eq!(
+    assert!(
         payload["data"]["manifest"]
             .as_str()
             .is_some_and(|value| same_path(Path::new(value), &manifest_path)),
-        true,
         "autodetected manifest should point to nested project"
     );
 
