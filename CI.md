@@ -17,11 +17,13 @@ Concurrency is enabled (`ci-${workflow}-${ref}`), so older in-progress runs on t
 Intent: keep core Rust quality bar consistent across major OS runners.
 
 Runs:
+
 - `cargo fmt --check`
 - `cargo clippy --locked --all-targets --all-features -- -D warnings`
 - `cargo test --locked`
 
 Cache guardrails:
+
 - caches Cargo registry/git sources and `target/` with `actions/cache`
 - key includes OS, workflow identity, `Cargo.lock` hash, and toolchain file hash (`rust-toolchain.toml` / `rust-toolchain` when present)
 - cache restore/save is non-fatal; misses fall back to cold build automatically
@@ -31,6 +33,7 @@ Cache guardrails:
 Intent: ensure the package/release tree is clean and shippable.
 
 Runs:
+
 - `cargo package --list --allow-dirty`
 - `./scripts/release_assert_clean_tree.sh`
 
@@ -39,6 +42,7 @@ Runs:
 Intent: catch interactive TUI regressions with process-level journeys.
 
 Runs:
+
 - install `hty` in CI
 - `hty --help`
 - `./scripts/tui_e2e_hty.sh --journey 1,2,3,4,5,6,7`
@@ -49,6 +53,7 @@ Runs:
 Intent: validate cross-platform runtime behavior in isolated home/config dirs.
 
 Runs:
+
 - Linux/macOS: `./scripts/clipboard_smoke.sh --skip-clipboard-checks`
 - Windows: `./scripts/clipboard_smoke.ps1 -SkipClipboardChecks`
 
@@ -57,6 +62,7 @@ Runs:
 Intent: enforce dependency/security policy and export review artifact.
 
 Runs:
+
 - `cargo deny check`
 - `cargo audit`
 - `cargo tree --locked -e normal` (uploaded as artifact)
@@ -81,7 +87,7 @@ cargo tree --locked -e normal
 
 ### Manual cache maintenance
 
-When CI performance or behavior suggests stale cache state, use:
+When CI performance or behavior suggests stale cache state use:
 
 ```bash
 # list rust-quality caches for this repo
@@ -95,16 +101,19 @@ When CI performance or behavior suggests stale cache state, use:
 ```
 
 Notes:
+
 - script requires authenticated `gh` CLI with `repo` scope
 - use `--dry-run` first if you want to preview deletes
 
 Use this section as operational memory when a CI failure is not immediately explained by the failing command output. Several commits after `bdf42556f0f0` through `9c75ea4e1a70` fixed runner-only failures that were not always reproducible locally.
 
 General policy:
+
 - Prefer CI-only/headless-only adaptations over weakening local E2E coverage or assertions.
 - Reproduce the exact failing gate locally when possible, then check whether clean checkout, runner OS, headless execution, or package contents differ from local state.
 
 TUI and headless runner behavior:
+
 - For TUI E2E issues, verify `hty` behavior first (`hty --help`, `hty help run/send/wait`).
 - Timing assertions around transient background-task UI state are flaky on shared runners.
   - Symptom: assertions expecting a short-lived “background task visible” state failed remotely.
@@ -120,6 +129,7 @@ TUI and headless runner behavior:
   - Fix used: made the test flow more defensive while preserving functional assertions (`f2d4fe9`).
 
 Platform-specific behavior:
+
 - Cross-platform lint/test imports must be gated precisely, not broadly.
   - Symptom: `#[cfg(unix)]` import logic caused issues in non-Linux CI contexts.
   - Fix used: narrowed permission import gates to `#[cfg(target_os = "linux")]` (`085a732`).
@@ -134,18 +144,21 @@ Platform-specific behavior:
   - Fix used: explicitly ignore non-ownership fallback fonts during external scan (`7e747cb`).
 
 Packaging, fixtures, and release hygiene:
+
 - For packaging drift, run `./scripts/release_assert_clean_tree.sh` and re-check version sync with `./scripts/release_sync_versions.sh`.
 - Test fixtures must not match throwaway-project ignore rules.
   - Symptom: clean CI clones failed tests that referenced `test-assets/` because `/test-*/` ignored the fixture directory locally.
   - Fix used: explicitly unignore `/test-assets/` and commit the redistributable fixtures used by unit and integration-style tests.
 
 Dependency and supply-chain checks:
+
 - For dependency/security failures, inspect the `cargo-tree-normal.txt` artifact and `docs/dependency-supply-chain.md`.
 - Native codec dependencies can break hosted runners even when local builds succeed.
   - Symptom: transitive native dependency pressure from the `image` AVIF native stack (`dav1d`/`dav1d-sys`) increased CI fragility.
   - Fix used: removed `avif-native` from `image` features (`8c4e7bc`), keeping AVIF support without requiring that native dependency chain on CI.
 
 CLI output hygiene:
+
 - Commands that print to stdout can corrupt JSON-mode CLI output in CI checks.
   - Symptom: refresh commands writing to stdout leaked into JSON responses and broke parsers.
   - Fix used: switched refresh execution from `.status()` to `.output()`, suppressing successful output and only surfacing stdout/stderr on error (`9c75ea4`).
