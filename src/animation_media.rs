@@ -538,7 +538,8 @@ fn split_drop_payload_tokens(payload: &str) -> Vec<String> {
     let mut in_double_quote = false;
     let mut escaped = false;
 
-    for ch in normalized.chars() {
+    let mut chars = normalized.chars().peekable();
+    while let Some(ch) = chars.next() {
         if escaped {
             current.push(ch);
             escaped = false;
@@ -546,8 +547,16 @@ fn split_drop_payload_tokens(payload: &str) -> Vec<String> {
         }
 
         if ch == '\\' && !in_single_quote {
-            escaped = true;
-            continue;
+            match chars.peek().copied() {
+                Some(' ') | Some('\t') | Some('"') | Some('\'') | Some('\\') => {
+                    escaped = true;
+                    continue;
+                }
+                _ => {
+                    current.push(ch);
+                    continue;
+                }
+            }
         }
 
         if ch == '\'' && !in_double_quote {
@@ -835,6 +844,20 @@ mod tests {
         assert_eq!(second.imported_source_keys, vec!["frame.png".to_string()]);
 
         fs::remove_dir_all(dir).expect("temp dir removed");
+    }
+
+    #[test]
+    fn drop_payload_split_preserves_windows_path_separators() {
+        let payload = r#"C:\Users\petiglyph\frame.png "C:\Users\petiglyph\space frame.png""#;
+        let tokens = super::split_drop_payload_tokens(payload);
+
+        assert_eq!(
+            tokens,
+            vec![
+                r"C:\Users\petiglyph\frame.png".to_string(),
+                r"C:\Users\petiglyph\space frame.png".to_string(),
+            ]
+        );
     }
 
     #[test]

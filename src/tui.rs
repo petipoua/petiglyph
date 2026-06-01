@@ -11377,7 +11377,8 @@ fn split_shell_like_tokens(input: &str) -> Vec<String> {
     let mut in_single_quote = false;
     let mut in_double_quote = false;
 
-    for ch in input.chars() {
+    let mut chars = input.chars().peekable();
+    while let Some(ch) = chars.next() {
         if escaped {
             current.push(ch);
             escaped = false;
@@ -11385,8 +11386,16 @@ fn split_shell_like_tokens(input: &str) -> Vec<String> {
         }
 
         if ch == '\\' && !in_single_quote {
-            escaped = true;
-            continue;
+            match chars.peek().copied() {
+                Some(' ') | Some('\t') | Some('"') | Some('\'') | Some('\\') => {
+                    escaped = true;
+                    continue;
+                }
+                _ => {
+                    current.push(ch);
+                    continue;
+                }
+            }
         }
 
         if ch == '\'' && !in_double_quote {
@@ -12100,7 +12109,8 @@ mod tests {
         installed_animation_blocks_for_definition, installed_animation_frame_index,
         installed_animation_source_block, persist_composition_definition, preview_leftmost_control,
         preview_lines, prune_static_sample_blocks, scrollbar_thumb_geometry,
-        selected_threshold_sources, step_animation_preview, visible_window_bounds,
+        selected_threshold_sources, split_shell_like_tokens, step_animation_preview,
+        visible_window_bounds,
     };
     use crate::animation_media;
     use crate::build::{CompositionTileInfo, PreprocessedGlyph};
@@ -14662,6 +14672,20 @@ mod tests {
         assert!(paths.contains(&second));
 
         fs::remove_dir_all(project_dir).expect("temp dir is removed");
+    }
+
+    #[test]
+    fn shell_token_split_preserves_windows_path_separators() {
+        let payload = r#"C:\Users\petiglyph\frame.png "C:\Users\petiglyph\space frame.png""#;
+        let tokens = split_shell_like_tokens(payload);
+
+        assert_eq!(
+            tokens,
+            vec![
+                r"C:\Users\petiglyph\frame.png".to_string(),
+                r"C:\Users\petiglyph\space frame.png".to_string(),
+            ]
+        );
     }
 
     #[test]

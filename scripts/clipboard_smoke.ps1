@@ -15,10 +15,10 @@ function Fail($msg) {
 }
 
 function Invoke-Petiglyph {
-    param([string[]]$Args)
+    param([string[]]$CliArgs)
 
     if ($PetiglyphPath -ne "") {
-        $output = & $PetiglyphPath @Args 2>&1
+        $output = & $PetiglyphPath @CliArgs 2>&1
         $exitCode = $LASTEXITCODE
         return [PSCustomObject]@{
             ExitCode = $exitCode
@@ -29,7 +29,7 @@ function Invoke-Petiglyph {
     $repoRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
     Push-Location $repoRoot
     try {
-        $output = & cargo run --quiet -- @Args 2>&1
+        $output = & cargo run --quiet -- @CliArgs 2>&1
         $exitCode = $LASTEXITCODE
         return [PSCustomObject]@{
             ExitCode = $exitCode
@@ -74,9 +74,9 @@ function Invoke-PetiglyphTuiNoTty {
 
 if (-not $SkipCliChecks) {
     Write-Info "running petiglyph CLI smoke checks"
-    Assert-Success (Invoke-Petiglyph -Args @("--help")) "petiglyph --help"
+    Assert-Success (Invoke-Petiglyph -CliArgs @("--help")) "petiglyph --help"
 
-    $doctor = Invoke-Petiglyph -Args @("doctor", "--json")
+    $doctor = Invoke-Petiglyph -CliArgs @("doctor", "--json")
     Assert-Success $doctor "petiglyph doctor --json"
     if ($doctor.Output -notmatch '"ok"\s*:\s*true') {
         Write-Host $doctor.Output

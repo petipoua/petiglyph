@@ -665,6 +665,12 @@ fn is_supported_font_file(path: &Path) -> bool {
         })
 }
 
+fn is_non_ownership_fallback_font(path: &Path) -> bool {
+    path.file_stem()
+        .and_then(|stem| stem.to_str())
+        .is_some_and(|stem| stem.eq_ignore_ascii_case("lastresort"))
+}
+
 fn collect_pua_codepoints_from_face(face: &ttf_parser::Face<'_>, occupied: &mut BTreeSet<u32>) {
     let Some(cmap) = face.tables().cmap else {
         return;
@@ -753,6 +759,11 @@ fn collect_external_supplementary_pua_codepoints(
                 continue;
             }
             if path.starts_with(managed_install_dir) {
+                continue;
+            }
+            // LastResort advertises fallback coverage; it does not mean those PUA slots
+            // are owned by an installed icon font.
+            if is_non_ownership_fallback_font(path) {
                 continue;
             }
             let path_key = path.display().to_string();
@@ -2432,6 +2443,16 @@ vertical_bleed = "off"
     fn immutable_ttf_file_name_uses_plain_name_for_zero_suffix_length() {
         let name = immutable_ttf_file_name("Test Font", 0x1234_5678_9abc_def0, 0);
         assert_eq!(name, "test_font.ttf");
+    }
+
+    #[test]
+    fn external_scan_ignores_lastresort_fallback_fonts() {
+        assert!(super::is_non_ownership_fallback_font(&PathBuf::from(
+            "/System/Library/Fonts/LastResort.otf"
+        )));
+        assert!(!super::is_non_ownership_fallback_font(&PathBuf::from(
+            "/Library/Fonts/UsefulIconFont.otf"
+        )));
     }
 
     #[test]
