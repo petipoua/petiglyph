@@ -74,35 +74,33 @@ cargo audit
 cargo tree --locked -e normal
 ```
 
-## Quick Troubleshooting
+## CI Debugging Notes
 
-- If CI-only flakiness appears, prefer CI-only/headless-only adaptations over weakening local E2E semantics.
+Use this section as operational memory when a CI failure is not immediately explained by the failing command output. Several commits after `bdf42556f0f0` through `9c75ea4e1a70` fixed runner-only failures that were not always reproducible locally.
+
+General policy:
+- Prefer CI-only/headless-only adaptations over weakening local E2E coverage or assertions.
+- Reproduce the exact failing gate locally when possible, then check whether clean checkout, runner OS, headless execution, or package contents differ from local state.
+
+TUI and headless runner behavior:
 - For TUI E2E issues, verify `hty` behavior first (`hty --help`, `hty help run/send/wait`).
-- For dependency/security failures, inspect `cargo-tree-normal.txt` artifact and `docs/dependency-supply-chain.md`.
-- For packaging drift, run `./scripts/release_assert_clean_tree.sh` and re-check version sync with `./scripts/release_sync_versions.sh`.
-
-## Good To Know
-
-The commits after `bdf42556f0f0` through `9c75ea4e1a70` fixed CI-only failures that were not always reproducible locally. Keep these runner-specific behaviors in mind when debugging new CI failures:
-
-- Native codec dependencies can break hosted runners even when local builds succeed.
-  - Symptom: transitive native dependency pressure from the `image` AVIF native stack (`dav1d`/`dav1d-sys`) increased CI fragility.
-  - Fix used: removed `avif-native` from `image` features (`8c4e7bc`), keeping AVIF support without requiring that native dependency chain on CI.
-- Cross-platform lint/test imports must be gated precisely, not broadly.
-  - Symptom: `#[cfg(unix)]` import logic caused issues in non-Linux CI contexts.
-  - Fix used: narrowed permission import gates to `#[cfg(target_os = "linux")]` (`085a732`).
 - Timing assertions around transient background-task UI state are flaky on shared runners.
   - Symptom: assertions expecting a short-lived “background task visible” state failed remotely.
   - Fix used: removed those timing-sensitive assertions and waited for task completion instead (`80a5ee9`).
+- `hty` E2E transitions need explicit retry/wait logic on runners.
+  - Symptom: transition from tweak step to “Create Animation” occasionally missed on CI PTY scheduling.
+  - Fix used: added a retry helper and CI-only safer defaults for timeout and step delay when running under `GITHUB_ACTIONS` (`cc3c49a`).
 - Clipboard availability is inconsistent on CI; tests must tolerate unavailable providers.
   - Symptom: copy-related TUI tests and status checks were brittle when no clipboard backend was usable.
   - Fixes used: accepted either successful copy notification or explicit clipboard failure status (`f2d4fe9`), then added `PETIGLYPH_MOCK_CLIPBOARD=1` for CI clipboard writes (`483c3fc`).
 - Install-flow state transitions can race in CI.
   - Symptom: reinstall shortcut path and stale-output cleanup assertions intermittently failed due to focus/step variability.
   - Fix used: made the test flow more defensive while preserving functional assertions (`f2d4fe9`).
-- `hty` E2E transitions need explicit retry/wait logic on runners.
-  - Symptom: transition from tweak step to “Create Animation” occasionally missed on CI PTY scheduling.
-  - Fix used: added a retry helper and CI-only safer defaults for timeout and step delay when running under `GITHUB_ACTIONS` (`cc3c49a`).
+
+Platform-specific behavior:
+- Cross-platform lint/test imports must be gated precisely, not broadly.
+  - Symptom: `#[cfg(unix)]` import logic caused issues in non-Linux CI contexts.
+  - Fix used: narrowed permission import gates to `#[cfg(target_os = "linux")]` (`085a732`).
 - Windows path parsing must preserve backslashes unless they escape a known token delimiter.
   - Symptom: shell/drop payload tokenization and unescape logic consumed backslashes in Windows paths, causing CI-only Windows failures.
   - Fix used: updated token split/unescape logic in `src/tui.rs` and `src/animation_media.rs` to only treat backslash as an escape before space, tab, quote, or backslash (`0f17634`, `7e747cb`).
@@ -112,9 +110,20 @@ The commits after `bdf42556f0f0` through `9c75ea4e1a70` fixed CI-only failures t
 - System fallback fonts can pollute ownership scans on runner images.
   - Symptom: `LastResort`-style fallback fonts advertised broad coverage and could be misinterpreted as owned PUA occupancy.
   - Fix used: explicitly ignore non-ownership fallback fonts during external scan (`7e747cb`).
-- Commands that print to stdout can corrupt JSON-mode CLI output in CI checks.
-  - Symptom: refresh commands writing to stdout leaked into JSON responses and broke parsers.
-  - Fix used: switched refresh execution from `.status()` to `.output()`, suppressing successful output and only surfacing stdout/stderr on error (`9c75ea4`).
+
+Packaging, fixtures, and release hygiene:
+- For packaging drift, run `./scripts/release_assert_clean_tree.sh` and re-check version sync with `./scripts/release_sync_versions.sh`.
 - Test fixtures must not match throwaway-project ignore rules.
   - Symptom: clean CI clones failed tests that referenced `test-assets/` because `/test-*/` ignored the fixture directory locally.
   - Fix used: explicitly unignore `/test-assets/` and commit the redistributable fixtures used by unit and integration-style tests.
+
+Dependency and supply-chain checks:
+- For dependency/security failures, inspect the `cargo-tree-normal.txt` artifact and `docs/dependency-supply-chain.md`.
+- Native codec dependencies can break hosted runners even when local builds succeed.
+  - Symptom: transitive native dependency pressure from the `image` AVIF native stack (`dav1d`/`dav1d-sys`) increased CI fragility.
+  - Fix used: removed `avif-native` from `image` features (`8c4e7bc`), keeping AVIF support without requiring that native dependency chain on CI.
+
+CLI output hygiene:
+- Commands that print to stdout can corrupt JSON-mode CLI output in CI checks.
+  - Symptom: refresh commands writing to stdout leaked into JSON responses and broke parsers.
+  - Fix used: switched refresh execution from `.status()` to `.output()`, suppressing successful output and only surfacing stdout/stderr on error (`9c75ea4`).
