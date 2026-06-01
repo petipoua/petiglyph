@@ -15,6 +15,9 @@ concurrency:
 
 env:
   CARGO_TERM_COLOR: always
+  CARGO_DENY_VERSION: "0.19.8"
+  CARGO_AUDIT_VERSION: "0.22.1"
+  CARGO_BINSTALL_VERSION: "1.12.7"
 
 jobs:
   rust-quality:
@@ -150,12 +153,31 @@ jobs:
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
 
-      - name: Install cargo-deny and cargo-audit
+      - name: Cache cargo tooling
+        uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae
+        with:
+          path: |
+            ~/.cargo/bin
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+          key: ${{ runner.os }}-cargo-tools-v1-${{ env.CARGO_BINSTALL_VERSION }}-${{ env.CARGO_DENY_VERSION }}-${{ env.CARGO_AUDIT_VERSION }}
+
+      - name: Install cargo-binstall
         shell: bash
         run: |
           set -euo pipefail
-          cargo install --locked cargo-deny
-          cargo install --locked cargo-audit
+          if ! command -v cargo-binstall >/dev/null 2>&1; then
+            cargo install --locked cargo-binstall --version "${CARGO_BINSTALL_VERSION}"
+          fi
+
+      - name: Install cargo-deny and cargo-audit (binstall)
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo binstall --no-confirm --locked \
+            "cargo-deny@${CARGO_DENY_VERSION}" \
+            "cargo-audit@${CARGO_AUDIT_VERSION}"
 
       - name: Cargo deny check
         run: cargo deny check
