@@ -649,21 +649,25 @@ fn hex_value(value: u8) -> Option<u8> {
 
 fn unescape_backslashes(value: &str) -> String {
     let mut out = String::with_capacity(value.len());
-    let mut escaped = false;
+    let mut chars = value.chars().peekable();
 
-    for ch in value.chars() {
-        if escaped {
+    while let Some(ch) = chars.next() {
+        if ch != '\\' {
             out.push(ch);
-            escaped = false;
-        } else if ch == '\\' {
-            escaped = true;
-        } else {
-            out.push(ch);
+            continue;
         }
-    }
 
-    if escaped {
-        out.push('\\');
+        match chars.peek().copied() {
+            Some(' ') | Some('\t') | Some('"') | Some('\'') | Some('\\') => {
+                out.push(chars.next().expect("peeked a char"));
+            }
+            Some(next) => {
+                out.push('\\');
+                out.push(next);
+                chars.next();
+            }
+            None => out.push('\\'),
+        }
     }
     out
 }
@@ -831,5 +835,13 @@ mod tests {
         assert_eq!(second.imported_source_keys, vec!["frame.png".to_string()]);
 
         fs::remove_dir_all(dir).expect("temp dir removed");
+    }
+
+    #[test]
+    fn unescape_backslashes_preserves_windows_path_separators() {
+        assert_eq!(
+            super::unescape_backslashes(r"C:\Users\alice\icons\frame.png"),
+            r"C:\Users\alice\icons\frame.png"
+        );
     }
 }

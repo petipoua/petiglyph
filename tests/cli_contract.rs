@@ -65,20 +65,32 @@ fn run_petiglyph(
     let mut cmd = Command::new(env!("CARGO_BIN_EXE_petiglyph"));
     cmd.current_dir(cwd).args(args);
 
-    if let Some(home) = home_override {
-        cmd.env("HOME", home);
-        cmd.env("USERPROFILE", home);
-        cmd.env("LOCALAPPDATA", home.join("AppData/Local"));
-        cmd.env("APPDATA", home.join("AppData/Roaming"));
-        cmd.env("XDG_CONFIG_HOME", home.join(".config"));
-        cmd.env("XDG_DATA_HOME", home.join(".local/share"));
-    }
+    let default_home = cwd.join(".petiglyph-test-home");
+    let home = home_override.unwrap_or(default_home.as_path());
+    fs::create_dir_all(home).expect("home dir is created");
+    cmd.env("HOME", home);
+    cmd.env("USERPROFILE", home);
+    cmd.env("LOCALAPPDATA", home.join("AppData/Local"));
+    cmd.env("APPDATA", home.join("AppData/Roaming"));
+    cmd.env("XDG_CONFIG_HOME", home.join(".config"));
+    cmd.env("XDG_DATA_HOME", home.join(".local/share"));
+    cmd.env("PWD", cwd);
 
     if let Some(path) = path_override {
         cmd.env("PATH", path);
     }
 
     cmd.output().expect("petiglyph command should run")
+}
+
+fn same_path(left: &Path, right: &Path) -> bool {
+    if left == right {
+        return true;
+    }
+
+    let left_canonical = left.canonicalize().ok();
+    let right_canonical = right.canonicalize().ok();
+    matches!((left_canonical, right_canonical), (Some(a), Some(b)) if a == b)
 }
 
 fn parse_json_stdout(output: &Output) -> Value {
@@ -207,8 +219,10 @@ fn cli_list_json_returns_projects_and_fonts() {
         .expect("projects array");
     assert_eq!(projects.len(), 1, "should detect the created project");
     assert_eq!(
-        projects[0]["manifest_path"].as_str(),
-        Some(manifest_path.to_string_lossy().as_ref()),
+        projects[0]["manifest_path"]
+            .as_str()
+            .is_some_and(|value| same_path(Path::new(value), &manifest_path)),
+        true,
         "manifest path should match"
     );
     assert!(payload["data"]["installed_fonts"].as_array().is_some());
@@ -1116,8 +1130,10 @@ fn cli_nested_manifest_autodetection_works_for_single_project() {
     let payload = parse_json_stdout(&output);
     assert_api_envelope(&payload, "uninstall-font", true);
     assert_eq!(
-        payload["data"]["manifest"].as_str(),
-        Some(manifest_path.to_string_lossy().as_ref()),
+        payload["data"]["manifest"]
+            .as_str()
+            .is_some_and(|value| same_path(Path::new(value), &manifest_path)),
+        true,
         "autodetected manifest should point to nested project"
     );
 
