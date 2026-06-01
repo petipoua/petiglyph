@@ -21,7 +21,12 @@ if ! command -v cargo >/dev/null 2>&1; then
   report_failure "cargo is required to inspect package contents"
 else
   package_list="$(cargo package --list --allow-dirty)"
-  scratch_paths="$(printf '%s\n' "$package_list" | grep -E '^(test-[^/]*|test[0-9][^/]*|test_parse[^/]*|test_ws[^/]*)(/|$)' || true)"
+  scratch_paths="$(
+    printf '%s\n' "$package_list" \
+      | grep -E '^(test-[^/]*|test[0-9][^/]*|test_parse[^/]*|test_ws[^/]*)(/|$)' \
+      | grep -Ev '^test-assets(/|$)' \
+      || true
+  )"
   if [[ -n "$scratch_paths" ]]; then
     report_failure "cargo package would include scratch paths"
     printf '%s\n' "$scratch_paths" >&2
