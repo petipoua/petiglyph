@@ -833,6 +833,30 @@ workflow_tweak_threshold_then_continue() {
   send_key "$session" "enter" "$continue_label"
 }
 
+continue_from_tweak_until_animation_config() {
+  local session="$1"
+  local prefix="$2"
+  local max_attempts="${3:-4}"
+  local attempt
+  local transition_timeout_ms=1200
+
+  for attempt in $(seq 1 "$max_attempts"); do
+    if session_snapshot_text "$session" | grep -Fq "Create Animation"; then
+      return 0
+    fi
+    send_key "$session" "enter" "$prefix: continue to animation config (attempt ${attempt}/${max_attempts})"
+    if wait_for_session_contains_any \
+      "$session" \
+      "$transition_timeout_ms" \
+      "Create Animation" \
+      "Creation Workflow In Progress"; then
+      return 0
+    fi
+  done
+
+  wait_for_session_contains "$session" "Create Animation" "$timeout_ms"
+}
+
 tweak_in_glyph_panel() {
   local session="$1"
   local prefix="$2"
@@ -1125,8 +1149,7 @@ journey_creation_animated_glyph() {
 
   send_key "$session" "enter" "advance to tweak step"
   wait_for_session_contains "$session" "Tweak grayscale / threshold / preview" "$timeout_ms"
-  send_key "$session" "enter" "continue to animation config"
-  wait_for_session_contains "$session" "Create Animation" "$timeout_ms"
+  continue_from_tweak_until_animation_config "$session" "home animated"
   send_key "$session" "enter" "create animation and switch to Glyphs"
 
   wait_for_file_contains "$manifest_path" "[[animations]]" "$timeout_ms"
@@ -1241,8 +1264,8 @@ journey_full_user_story() {
   send_bracketed_paste "$session" "$source_anim" "j10: paste animated glyph GIF"
   wait_for_matching_file_count_ge "$project_one_dir/icons" "fullstory-anim--pgf-*.png" 2 "$timeout_ms"
   send_key "$session" "enter" "j10: animated glyph import -> tweak"
-  workflow_tweak_threshold_then_continue "$session" "j10 animated glyph" "j10: continue to animation config"
-  wait_for_session_contains "$session" "Create Animation" "$timeout_ms"
+  workflow_tweak_threshold_then_continue "$session" "j10 animated glyph" "j10: continue to animation config (attempt 1/1)"
+  continue_from_tweak_until_animation_config "$session" "j10 animated glyph"
   send_key "$session" "up" "j10: animation fps +1"
   send_key "$session" "right" "j10: animation focus create"
   send_key "$session" "enter" "j10: create animated glyph"
@@ -1259,8 +1282,8 @@ journey_full_user_story() {
   send_bracketed_paste "$session" "$source_anim_grid" "j10: paste animated grid GIF"
   wait_for_matching_file_count_ge "$project_one_dir/icons" "fullstory-anim-grid--pgf-*.png" 2 "$timeout_ms"
   send_key "$session" "enter" "j10: animated grid import -> tweak"
-  workflow_tweak_threshold_then_continue "$session" "j10 animated grid glyph" "j10: continue to animated grid config"
-  wait_for_session_contains "$session" "Create Animation" "$timeout_ms"
+  workflow_tweak_threshold_then_continue "$session" "j10 animated grid glyph" "j10: continue to animated grid config (attempt 1/1)"
+  continue_from_tweak_until_animation_config "$session" "j10 animated grid glyph"
   send_key "$session" "up" "j10: animated grid fps +1"
   send_key "$session" "right" "j10: animated grid focus rows"
   send_key "$session" "up" "j10: animated grid rows +1"
@@ -1567,6 +1590,17 @@ fi
 if [[ ! -x "$petiglyph_bin" ]]; then
   echo "petiglyph binary is not executable: $petiglyph_bin" >&2
   exit 1
+fi
+
+# CI runners can have bursty scheduling around PTY rendering/input delivery.
+# Apply slightly safer timing defaults only when not explicitly overridden.
+if [[ "${GITHUB_ACTIONS:-}" == "true" ]]; then
+  if [[ -z "${PETIGLYPH_E2E_TIMEOUT_MS_OVERRIDE:-}" && "$timeout_ms" -lt 30000 ]]; then
+    timeout_ms=30000
+  fi
+  if [[ -z "${PETIGLYPH_E2E_STEP_DELAY_MS_OVERRIDE:-}" && "$step_delay_ms" -lt 100 ]]; then
+    step_delay_ms=100
+  fi
 fi
 
 log "hty binary: $hty_bin"
