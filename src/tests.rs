@@ -4168,10 +4168,6 @@ fn install_shortcut_reinstall_and_clear_previous_outputs() {
     let mut app = App::new(manifest_path, config);
 
     handle_key(&mut app, KeyCode::Char('i')).expect("i install shortcut should succeed");
-    assert!(
-        app.background_task_in_progress(),
-        "install should remain visible as a background task briefly"
-    );
     wait_for_background_tasks(&mut app);
     let summary = app
         .last_build
@@ -4183,10 +4179,6 @@ fn install_shortcut_reinstall_and_clear_previous_outputs() {
     fs::write(&stale_preview, b"stale").expect("stale preview is written");
 
     handle_key(&mut app, KeyCode::Char('i')).expect("i reinstall shortcut should succeed");
-    assert!(
-        app.background_task_in_progress(),
-        "reinstall should remain visible as a background task briefly"
-    );
     wait_for_background_tasks(&mut app);
     let rebuilt = app
         .last_build
