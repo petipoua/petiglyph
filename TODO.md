@@ -407,6 +407,8 @@ rg -n 'npm install|pipx|AUR|GitHub Releases|ffmpeg|support matrix' README.md REL
 
 ### 14. Add Public-Repo Hygiene Files
 
+Status: implemented with a minimal small-project baseline. Added `SECURITY.md`, `CONTRIBUTING.md`, and one bug template; kept release history policy lightweight via GitHub-generated notes plus `docs/release-notes-template.md` (no mandatory manual changelog yet).
+
 Observation:
 
 - `LICENSE` exists.
@@ -415,16 +417,16 @@ Observation:
 
 Tasks:
 
-- [ ] Add a short `SECURITY.md` with:
-  - private reporting path (email or GitHub private advisory),
+- [x] Add a short `SECURITY.md` with:
+  - private reporting path (GitHub private advisory),
   - latest-version-only support policy,
   - best-effort response timeline.
-- [ ] Add a short `CONTRIBUTING.md` with:
+- [x] Add a short `CONTRIBUTING.md` with:
   - local validation commands (`fmt`, `clippy -D warnings`, `test`),
   - reminder of the TUI change guardrail from `AGENTS.md`,
   - small PR expectations (tests/docs when behavior changes).
-- [ ] Add one lightweight bug-report issue template (`.github/ISSUE_TEMPLATE/bug_report.yml`) with fields for expected/actual behavior, reproduction steps, environment, and logs.
-- [ ] Keep changelog process minimal: use GitHub-generated release notes plus `docs/release-notes-template.md` (do not require maintaining a full manual `CHANGELOG.md` for now).
+- [x] Add one lightweight bug-report issue template (`.github/ISSUE_TEMPLATE/bug_report.yml`) with fields for expected/actual behavior, reproduction steps, environment, and logs.
+- [x] Keep changelog process minimal: use GitHub-generated release notes plus `docs/release-notes-template.md` (do not require maintaining a full manual `CHANGELOG.md` for now).
 
 Validation:
 
