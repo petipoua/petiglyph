@@ -74,7 +74,6 @@ const INSTALL_SPINNER_FRAMES: [&str; 4] = ["-", "\\", "|", "/"];
 const UNINSTALL_SPINNER_FRAMES: [&str; 4] = ["/", "|", "\\", "-"];
 const ANIMATION_IMPORT_SPINNER_FRAMES: [&str; 4] = ["-", "\\", "|", "/"];
 const FONT_TASK_SPINNER_FRAME_MS: u64 = 43;
-const BUILD_TASK_MIN_VISIBLE_MS: u64 = 100;
 const WELCOME_SAMPLE_LIMIT: usize = 15;
 const WELCOME_INPUT_WIDTH: usize = 15;
 const SWITCH_NOTICE_MS: u64 = 2500;
@@ -239,7 +238,6 @@ pub(crate) fn tui_workspace(
     let mut session = TerminalSession::start()?;
     let mut log_next_draw_after_esc = false;
     while !app.quit {
-        app.poll_build_task();
         app.poll_font_task();
         app.poll_project_switch_task();
         app.poll_animation_import_task();
@@ -540,7 +538,6 @@ pub(crate) struct App {
     renaming_original: Option<String>,
     first_install_notice_open: bool,
     launch_overrides: TuiLaunchOverrides,
-    build_task: Option<BuildTask>,
     install_task: Option<InstallTask>,
     project_switch_task: Option<ProjectSwitchTask>,
     animation_import_task: Option<AnimationImportTask>,
@@ -598,15 +595,6 @@ struct TerminalSession {
     bracketed_paste_enabled: bool,
 }
 
-struct BuildTask {
-    kind: BuildTaskKind,
-    receiver: Receiver<Result<BuildTaskOutput, String>>,
-    spinner_index: usize,
-    spinner_last_frame_at: Instant,
-    started_at: Instant,
-    pending_result: Option<Result<BuildTaskOutput, String>>,
-}
-
 struct InstallTask {
     kind: FontTaskKind,
     receiver: Receiver<Result<InstallTaskOutput, String>>,
@@ -631,12 +619,6 @@ struct HomeImportTask {
     receiver: Receiver<Result<DropImportResult, String>>,
     spinner_index: usize,
     spinner_last_frame_at: Instant,
-}
-
-#[derive(Debug, Clone)]
-struct BuildTaskOutput {
-    summary: BuildSummary,
-    sample: String,
 }
 
 #[derive(Debug, Clone)]
@@ -689,29 +671,6 @@ struct ProjectSwitchTaskOutput {
     last_build: Option<BuildSummary>,
     last_sample: Option<String>,
     installed_font_path: Option<PathBuf>,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[allow(dead_code)]
-enum BuildTaskKind {
-    Build,
-    Rebuild,
-}
-
-impl BuildTaskKind {
-    fn footer_label(&self) -> &'static str {
-        match self {
-            Self::Build => "building project...",
-            Self::Rebuild => "rebuilding project...",
-        }
-    }
-
-    fn completion_verb(&self) -> &'static str {
-        match self {
-            Self::Build => "build",
-            Self::Rebuild => "rebuild",
-        }
-    }
 }
 
 #[derive(Debug, Clone)]
@@ -1700,7 +1659,7 @@ pub(crate) fn should_dispatch_key_kind(kind: KeyEventKind) -> bool {
 
 fn app_debug_state(app: &App) -> String {
     format!(
-        "view={:?} welcome_focus={:?} glyphs_focus={:?} grid_config={} selecting_for_grid={} selected_project={} editing={} verbose_paths={} input={:?} cursor={} visual_cursor={} build_task={} install_task={} project_switch_task={} delete_confirm_selection={:?} renaming={} status={:?} quit={}",
+        "view={:?} welcome_focus={:?} glyphs_focus={:?} grid_config={} selecting_for_grid={} selected_project={} editing={} verbose_paths={} input={:?} cursor={} visual_cursor={} install_task={} project_switch_task={} delete_confirm_selection={:?} renaming={} status={:?} quit={}",
         app.view,
         app.welcome_focus,
         app.glyphs_focus,
@@ -1712,7 +1671,6 @@ fn app_debug_state(app: &App) -> String {
         app.create_input.value(),
         app.create_input.cursor(),
         app.create_input.visual_cursor(),
-        app.build_task.is_some(),
         app.install_task.is_some(),
         app.project_switch_task.is_some(),
         app.delete_project_confirm_selection,
@@ -2582,7 +2540,7 @@ fn handle_welcome_key(app: &mut App, key: KeyEvent) -> Result<()> {
             );
         }
         KeyCode::Char('R') if !app.welcome_input_editing => {
-            if app.build_in_progress() || app.install_in_progress() {
+            if app.install_in_progress() {
                 app.status =
                     Some("a background task is in progress; wait before rescanning".to_string());
                 return Ok(());
@@ -4176,19 +4134,18 @@ fn draw_welcome_view(
         .bg(Color::Black)
         .add_modifier(Modifier::DIM);
 
-    let install_button_style =
-        if app.active_project.is_none() && !app.install_in_progress() && !app.build_in_progress() {
-            disabled_button_style
-        } else if let Some(FontTaskKind::Install) = app.font_task_kind() {
-            app.font_task_button_style()
-                .unwrap_or(disabled_button_style)
-        } else if app.install_in_progress() || app.build_in_progress() {
-            disabled_button_style
-        } else if app.welcome_focus == WelcomeFocus::InstallButton {
-            selected_button_style
-        } else {
-            idle_button_style
-        };
+    let install_button_style = if app.active_project.is_none() && !app.install_in_progress() {
+        disabled_button_style
+    } else if let Some(FontTaskKind::Install) = app.font_task_kind() {
+        app.font_task_button_style()
+            .unwrap_or(disabled_button_style)
+    } else if app.install_in_progress() {
+        disabled_button_style
+    } else if app.welcome_focus == WelcomeFocus::InstallButton {
+        selected_button_style
+    } else {
+        idle_button_style
+    };
     let install_label = match (app.font_task_kind(), app.font_task_spinner_frame()) {
         (Some(FontTaskKind::Install), Some(spinner)) => format!(" {spinner} Installing... "),
         _ => format!(
@@ -4197,10 +4154,7 @@ fn draw_welcome_view(
         ),
     };
 
-    let delete_button_style = if !app.active_project_can_be_deleted()
-        || app.install_in_progress()
-        || app.build_in_progress()
-    {
+    let delete_button_style = if !app.active_project_can_be_deleted() || app.install_in_progress() {
         disabled_button_style
     } else if app.welcome_focus == WelcomeFocus::DeleteProjectButton {
         Style::default()
@@ -4441,7 +4395,7 @@ fn draw_welcome_view(
                     if app.is_selected_font_uninstall_in_progress(&font.path) {
                         app.font_task_button_style()
                             .unwrap_or(disabled_button_style)
-                    } else if app.install_in_progress() || app.build_in_progress() {
+                    } else if app.install_in_progress() {
                         disabled_button_style
                     } else if is_focused && app.installed_font_horizontal_focus_uninstall {
                         selected_button_style
@@ -4962,11 +4916,6 @@ impl App {
         self.animation_preview = Some(preview);
     }
 
-    #[allow(dead_code)]
-    fn current_project_is_built(&self) -> bool {
-        self.active_project.is_some() && self.last_build.is_some()
-    }
-
     fn current_project_is_installed(&self) -> bool {
         self.active_project.is_some() && self.installed_font_path.is_some()
     }
@@ -5067,7 +5016,6 @@ impl App {
             renaming_original: None,
             first_install_notice_open: false,
             launch_overrides,
-            build_task: None,
             install_task: None,
             project_switch_task: None,
             animation_import_task: None,
@@ -5154,7 +5102,6 @@ impl App {
             renaming_original: None,
             first_install_notice_open: false,
             launch_overrides,
-            build_task: None,
             install_task: None,
             project_switch_task: None,
             animation_import_task: None,
@@ -5477,7 +5424,7 @@ impl App {
     }
 
     fn begin_delete_project_confirmation(&mut self) -> Result<()> {
-        if self.install_in_progress() || self.build_in_progress() {
+        if self.install_in_progress() {
             self.status = Some(
                 "a background task is in progress; wait before deleting a project".to_string(),
             );
@@ -5615,7 +5562,7 @@ impl App {
             return Ok(());
         }
 
-        if self.install_in_progress() || self.build_in_progress() {
+        if self.install_in_progress() {
             self.status = Some(
                 "a background task is in progress; wait before switching projects".to_string(),
             );
@@ -5636,10 +5583,7 @@ impl App {
         manifest_path: PathBuf,
         project_name: String,
     ) -> Result<()> {
-        if self.install_in_progress()
-            || self.build_in_progress()
-            || self.project_switch_task.is_some()
-        {
+        if self.install_in_progress() || self.project_switch_task.is_some() {
             self.status = Some(
                 "a background task is in progress; wait before switching projects".to_string(),
             );
@@ -5666,10 +5610,7 @@ impl App {
     }
 
     fn set_active_project(&mut self, manifest_path: PathBuf) -> Result<()> {
-        if self.install_in_progress()
-            || self.build_in_progress()
-            || self.project_switch_task.is_some()
-        {
+        if self.install_in_progress() || self.project_switch_task.is_some() {
             self.status = Some(
                 "a background task is in progress; wait before switching projects".to_string(),
             );
@@ -5908,8 +5849,7 @@ impl App {
     }
 
     fn import_dropped_images(&mut self, payload: &str) -> Result<()> {
-        if self.build_in_progress()
-            || self.install_in_progress()
+        if self.install_in_progress()
             || self.animation_import_task.is_some()
             || self.home_import_task.is_some()
         {
@@ -6328,65 +6268,12 @@ impl App {
         )))
     }
 
-    #[allow(dead_code)]
-    fn start_build_project(&mut self) -> Result<()> {
-        if self.active_project.is_none() {
-            self.status = Some(
-                "create a project in Home or relaunch with --manifest before building".to_string(),
-            );
-            return Ok(());
-        }
-
-        if self.build_in_progress() {
-            self.status = Some("build already in progress".to_string());
-            return Ok(());
-        }
-
-        self.reload_config()?;
-        if self.config.glyph_size == 0 {
-            bail!("glyph_size must be > 0");
-        }
-
-        let rebuilding = self.current_project_is_built();
-
-        let kind = if rebuilding {
-            BuildTaskKind::Rebuild
-        } else {
-            BuildTaskKind::Build
-        };
-        let manifest_path = self.manifest_path.clone();
-        let launch_overrides = self.launch_overrides.clone();
-        let (sender, receiver) = mpsc::channel();
-        thread::spawn(move || {
-            let result =
-                build_project_task(manifest_path, launch_overrides).map_err(|err| err.to_string());
-            let _ = sender.send(result);
-        });
-
-        let now = Instant::now();
-        self.build_task = Some(BuildTask {
-            kind,
-            receiver,
-            spinner_index: 0,
-            spinner_last_frame_at: now,
-            started_at: now,
-            pending_result: None,
-        });
-        self.status = None;
-        Ok(())
-    }
-
     fn start_install_font(&mut self) {
         if self.active_project.is_none() {
             self.status = Some(
                 "create a project in Home or relaunch with --manifest before installing"
                     .to_string(),
             );
-            return;
-        }
-
-        if self.build_in_progress() {
-            self.status = Some("build is in progress; wait before installing".to_string());
             return;
         }
 
@@ -6414,11 +6301,6 @@ impl App {
     }
 
     fn start_uninstall_selected_installed_font(&mut self) -> Result<()> {
-        if self.build_in_progress() {
-            self.status = Some("build is in progress; wait before uninstalling".to_string());
-            return Ok(());
-        }
-
         if self.install_in_progress() {
             self.status =
                 Some("font operation is in progress; wait before uninstalling".to_string());
@@ -6451,69 +6333,6 @@ impl App {
         });
         self.status = None;
         Ok(())
-    }
-
-    fn poll_build_task(&mut self) {
-        let mut disconnected = false;
-        let mut completed_result = None;
-
-        if let Some(task) = self.build_task.as_mut() {
-            let frame_duration = Duration::from_millis(FONT_TASK_SPINNER_FRAME_MS);
-            let now = Instant::now();
-            while now.duration_since(task.spinner_last_frame_at) >= frame_duration {
-                task.spinner_index = (task.spinner_index + 1) % INSTALL_SPINNER_FRAMES.len();
-                task.spinner_last_frame_at += frame_duration;
-            }
-
-            if task.pending_result.is_none() {
-                match task.receiver.try_recv() {
-                    Ok(result) => task.pending_result = Some(result),
-                    Err(TryRecvError::Empty) => {}
-                    Err(TryRecvError::Disconnected) => disconnected = true,
-                }
-            }
-
-            if now.duration_since(task.started_at)
-                >= Duration::from_millis(BUILD_TASK_MIN_VISIBLE_MS)
-            {
-                completed_result = task.pending_result.take();
-            }
-        }
-
-        if disconnected {
-            self.build_task = None;
-            self.status = Some("build task terminated unexpectedly".to_string());
-            return;
-        }
-
-        let Some(result) = completed_result else {
-            return;
-        };
-
-        let kind = self
-            .build_task
-            .as_ref()
-            .map(|task| task.kind)
-            .unwrap_or(BuildTaskKind::Build);
-        self.build_task = None;
-
-        match result {
-            Ok(BuildTaskOutput { summary, sample }) => {
-                self.last_sample = Some(sample);
-                self.last_build = Some(summary.clone());
-                self.status = Some(format!(
-                    "{} complete: {} glyph{} into {}",
-                    kind.completion_verb(),
-                    summary.glyph_count,
-                    if summary.glyph_count == 1 { "" } else { "s" },
-                    summary.out_dir().display()
-                ));
-            }
-            Err(err) => {
-                self.status = Some(format_status_from_error(&self.manifest_path, &err));
-                let _ = self.reload_config();
-            }
-        }
     }
 
     fn poll_font_task(&mut self) {
@@ -6811,16 +6630,6 @@ impl App {
         }
     }
 
-    fn build_task_kind(&self) -> Option<BuildTaskKind> {
-        self.build_task.as_ref().map(|task| task.kind)
-    }
-
-    fn build_task_spinner_frame(&self) -> Option<&'static str> {
-        self.build_task
-            .as_ref()
-            .map(|task| INSTALL_SPINNER_FRAMES[task.spinner_index % INSTALL_SPINNER_FRAMES.len()])
-    }
-
     fn font_task_kind(&self) -> Option<&FontTaskKind> {
         self.install_task.as_ref().map(|task| &task.kind)
     }
@@ -6873,14 +6682,9 @@ impl App {
         self.install_task.is_some()
     }
 
-    fn build_in_progress(&self) -> bool {
-        self.build_task.is_some()
-    }
-
     #[cfg(test)]
     pub(crate) fn background_task_in_progress(&self) -> bool {
-        self.build_in_progress()
-            || self.install_in_progress()
+        self.install_in_progress()
             || self.project_switch_task.is_some()
             || self.animation_import_task.is_some()
             || self.home_import_task.is_some()
@@ -6888,7 +6692,6 @@ impl App {
 
     #[cfg(test)]
     pub(crate) fn poll_background_tasks_for_test(&mut self) {
-        self.poll_build_task();
         self.poll_font_task();
         self.poll_project_switch_task();
         self.poll_animation_import_task();
@@ -7068,12 +6871,6 @@ fn animation_frame_source_for_preview(
         .cloned()
 }
 
-impl BuildSummary {
-    fn out_dir(&self) -> &Path {
-        self.ttf_path.parent().unwrap_or_else(|| Path::new("."))
-    }
-}
-
 fn inactive_runtime_config(workspace_root: &Path) -> RuntimeConfig {
     RuntimeConfig {
         project_dir: workspace_root.to_path_buf(),
@@ -7119,33 +6916,6 @@ fn load_project_switch_task(
         last_build,
         last_sample,
         installed_font_path,
-    })
-}
-
-#[allow(dead_code)]
-fn build_project_task(
-    manifest_path: PathBuf,
-    launch_overrides: TuiLaunchOverrides,
-) -> Result<BuildTaskOutput> {
-    let config = load_runtime_config(
-        &manifest_path,
-        launch_overrides.input_dir,
-        None,
-        launch_overrides.threshold,
-        launch_overrides.glyph_size,
-        launch_overrides.codepoint_start,
-    )?;
-    if config.glyph_size == 0 {
-        bail!("glyph_size must be > 0");
-    }
-
-    let summary = build_outputs(&config)?;
-    let sample = fs::read_to_string(&summary.sample_path)
-        .with_context(|| format!("failed to read {}", summary.sample_path.display()))?;
-
-    Ok(BuildTaskOutput {
-        summary,
-        sample: sample.trim_end().to_string(),
     })
 }
 
@@ -8131,7 +7901,7 @@ fn handle_key_event(app: &mut App, key: KeyEvent) -> Result<()> {
             }
         }
         KeyCode::Char('R') => {
-            if app.build_in_progress() || app.install_in_progress() {
+            if app.install_in_progress() {
                 app.status =
                     Some("a background task is in progress; wait before rescanning".to_string());
                 tui_debug_log("handle_key_event.exit_global", app_debug_state(app));
@@ -8225,24 +7995,7 @@ fn handle_key_event(app: &mut App, key: KeyEvent) -> Result<()> {
     Ok(())
 }
 
-#[allow(dead_code)]
-fn trigger_build_action(app: &mut App) -> Result<()> {
-    if app.build_in_progress() {
-        app.status = Some("build already in progress".to_string());
-        return Ok(());
-    }
-    if app.install_in_progress() {
-        app.status = Some("font operation is in progress; wait for it to finish".to_string());
-        return Ok(());
-    }
-    app.start_build_project()
-}
-
 fn trigger_install_action(app: &mut App) -> Result<()> {
-    if app.build_in_progress() {
-        app.status = Some("build is in progress; wait for it to finish".to_string());
-        return Ok(());
-    }
     app.start_install_font();
     Ok(())
 }
@@ -8438,15 +8191,7 @@ fn draw_ui(frame: &mut Frame, app: &App) {
         ));
     }
 
-    if let (Some(spinner), Some(kind)) = (app.build_task_spinner_frame(), app.build_task_kind()) {
-        footer_spans.push(Span::styled(" | ", Style::default().fg(muted)));
-        footer_spans.push(Span::styled(
-            format!("{spinner} {}", kind.footer_label()),
-            Style::default().fg(accent),
-        ));
-    } else if let (Some(spinner), Some(kind)) =
-        (app.font_task_spinner_frame(), app.font_task_kind())
-    {
+    if let (Some(spinner), Some(kind)) = (app.font_task_spinner_frame(), app.font_task_kind()) {
         footer_spans.push(Span::styled(" | ", Style::default().fg(muted)));
         footer_spans.push(Span::styled(
             format!("{spinner} {}", kind.footer_label()),

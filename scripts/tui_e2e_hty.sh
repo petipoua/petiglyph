@@ -946,6 +946,7 @@ journey_build_and_rescan() {
     echo "Expected .ttf output missing in $build_dir" >&2
     return 1
   }
+  send_key "$session" "space" "dismiss first-install guidance"
 
   write_test_png "$project_dir/icons/beta.png"
   wait_for_path "$project_dir/icons/beta.png" "$timeout_ms"
@@ -953,6 +954,7 @@ journey_build_and_rescan() {
   send_key_nowait "$session" "i" "reinstall (build + install)"
   wait_for_session_not_contains "$session" "Installing..." "$timeout_ms"
   wait_for_path "$mapping" "$timeout_ms"
+  send_key "$session" "space" "dismiss first-install guidance after reinstall"
 
   send_key "$session" "q" "quit"
   wait_exit "$session"

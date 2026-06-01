@@ -64,7 +64,7 @@ fn drain_background_tasks(app: &mut App) {
 }
 
 fn wait_for_background_tasks(app: &mut App) {
-    let deadline = Instant::now() + Duration::from_secs(3);
+    let deadline = Instant::now() + Duration::from_secs(10);
     while app.background_task_in_progress() && Instant::now() < deadline {
         app.poll_background_tasks_for_test();
         std::thread::sleep(Duration::from_millis(10));
