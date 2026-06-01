@@ -410,19 +410,29 @@ rg -n 'npm install|pipx|AUR|GitHub Releases|ffmpeg|support matrix' README.md REL
 Observation:
 
 - `LICENSE` exists.
-- Public repo basics such as `SECURITY.md`, `CONTRIBUTING.md`, issue templates, and a changelog are absent or minimal.
+- This is a small solo/low-maintainer project; hygiene should be lightweight and low-maintenance, not enterprise/LTS-heavy.
+- Minimal public-repo basics are still useful so outside users know how to report bugs, where to send security issues, and what local checks to run before opening changes.
 
 Tasks:
 
-- [ ] Add `SECURITY.md` with vulnerability reporting instructions.
-- [ ] Add `CONTRIBUTING.md` with the local validation commands and TUI guardrail.
-- [ ] Add issue templates for bug reports and release-blocking packaging reports.
-- [ ] Add a `CHANGELOG.md` or use GitHub generated notes plus `docs/release-notes-template.md` consistently.
+- [ ] Add a short `SECURITY.md` with:
+  - private reporting path (email or GitHub private advisory),
+  - latest-version-only support policy,
+  - best-effort response timeline.
+- [ ] Add a short `CONTRIBUTING.md` with:
+  - local validation commands (`fmt`, `clippy -D warnings`, `test`),
+  - reminder of the TUI change guardrail from `AGENTS.md`,
+  - small PR expectations (tests/docs when behavior changes).
+- [ ] Add one lightweight bug-report issue template (`.github/ISSUE_TEMPLATE/bug_report.yml`) with fields for expected/actual behavior, reproduction steps, environment, and logs.
+- [ ] Keep changelog process minimal: use GitHub-generated release notes plus `docs/release-notes-template.md` (do not require maintaining a full manual `CHANGELOG.md` for now).
 
 Validation:
 
 ```bash
-rg --files .github docs | sort
+test -f SECURITY.md
+test -f CONTRIBUTING.md
+test -f .github/ISSUE_TEMPLATE/bug_report.yml
+rg -n 'release notes template|GitHub-generated release notes|latest.*version|best-effort|cargo fmt --check|cargo clippy --locked --all-targets --all-features -- -D warnings|cargo test --locked' SECURITY.md CONTRIBUTING.md TODO.md
 ```
 
 ### 15. Decide How Aggressive The FFmpeg Auto-Install Prompt Should Be
