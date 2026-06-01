@@ -23,6 +23,7 @@ run_step "cargo check --locked" cargo check --locked
 run_step "cargo clippy --locked --all-targets --all-features -- -D warnings" \
   cargo clippy --locked --all-targets --all-features -- -D warnings
 run_step "cargo test --locked" cargo test --locked
+run_step "distribution matrix sync check" ./scripts/distribution_matrix.py --check-sync
 run_step "runtime smoke (linux/macos)" ./scripts/clipboard_smoke.sh --skip-clipboard-checks
 run_step "tui e2e hty journeys 1..10" ./scripts/tui_e2e_hty.sh --journey 1,2,3,4,5,6,7,8,9,10
 

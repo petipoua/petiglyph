@@ -98,6 +98,11 @@ fn parse_json_stdout(output: &Output) -> Value {
     serde_json::from_str(stdout.trim()).expect("stdout is valid json")
 }
 
+fn parse_manifest_toml(manifest_path: &Path) -> toml::Value {
+    let manifest_content = fs::read_to_string(manifest_path).expect("manifest should be readable");
+    toml::from_str(&manifest_content).expect("manifest should be valid toml")
+}
+
 fn assert_api_envelope(payload: &Value, command: &str, ok: bool) {
     assert_eq!(payload["ok"].as_bool(), Some(ok), "ok should match");
     assert_eq!(
@@ -121,20 +126,23 @@ fn cli_help_describes_polished_command_surface() {
     assert!(top.status.success(), "top-level help should succeed");
     let top_stdout = String::from_utf8_lossy(&top.stdout);
     assert!(
-        top_stdout.contains("set-threshold    Shortcut for `glyph set-threshold`"),
+        top_stdout.contains("set-threshold")
+            && top_stdout.contains("Shortcut for `glyph set-threshold`"),
         "top-level threshold command should be described as a shortcut: {top_stdout}"
     );
     assert!(
-        top_stdout.contains(
-            "sample           Build, install, refresh font cache, and print the sample private-use string"
-        ),
+        top_stdout.contains("sample")
+            && top_stdout.contains(
+                "Build, install, refresh font cache, and print the sample private-use string"
+            ),
         "sample help should describe its install/cache behavior: {top_stdout}"
     );
     assert!(
-        top_stdout.contains(
-            "nuke-everything  Remove all petiglyph-managed user state (fonts, registry, and metadata)"
-        ),
-        "nuke-everything name should be kept with clear wording: {top_stdout}"
+        top_stdout.contains("uninstall-all-fonts")
+            && top_stdout.contains(
+                "Remove all managed installed petiglyph fonts and install metadata for the current user"
+            ),
+        "uninstall-all-fonts help should keep clear wording: {top_stdout}"
     );
     assert!(
         top_stdout.contains("--ffmpeg-auto-install"),
@@ -144,15 +152,21 @@ fn cli_help_describes_polished_command_surface() {
     let animation = run_petiglyph(&workspace, &["animation", "--help"], None, None);
     assert!(animation.status.success(), "animation help should succeed");
     let animation_stdout = String::from_utf8_lossy(&animation.stdout);
-    for expected in [
-        "create-standard  Import media frames and create a standard animation",
-        "create-grid      Import media frames and create a grid animation",
-        "set-fps          Update an animation's frames-per-second value",
-        "delete           Delete an animation definition from the project manifest",
-    ] {
+    for expected in ["create-standard", "create-grid", "set-fps", "delete"] {
         assert!(
             animation_stdout.contains(expected),
             "animation help should contain `{expected}`: {animation_stdout}"
+        );
+    }
+    for expected in [
+        "Import media frames and create a standard animation",
+        "Import media frames and create a grid animation",
+        "Update an animation's frames-per-second value",
+        "Delete an animation definition from the project manifest",
+    ] {
+        assert!(
+            animation_stdout.contains(expected),
+            "animation help should contain description fragment `{expected}`: {animation_stdout}"
         );
     }
 
@@ -235,6 +249,56 @@ fn cli_list_json_returns_projects_and_fonts() {
 }
 
 #[test]
+fn cli_list_json_reports_malformed_manifests_as_warnings() {
+    let workspace = make_temp_dir("list-json-malformed-manifest");
+    let home = workspace.join("home");
+    fs::create_dir_all(&home).expect("home dir is created");
+
+    let (project_dir, manifest_path) = create_project_with_icon(&workspace, "list-valid");
+    let broken_dir = workspace.join("list-broken");
+    fs::create_dir_all(&broken_dir).expect("broken project dir is created");
+    let broken_manifest = broken_dir.join("petiglyph.toml");
+    fs::write(&broken_manifest, "this is not valid toml = [").expect("broken manifest is written");
+
+    let output = run_petiglyph(&workspace, &["list", "--json"], Some(&home), None);
+    assert!(output.status.success(), "list --json should succeed");
+
+    let payload = parse_json_stdout(&output);
+    assert_api_envelope(&payload, "list", true);
+
+    let projects = payload["data"]["projects"]
+        .as_array()
+        .expect("projects array");
+    assert!(
+        projects.iter().any(|project| {
+            project["manifest_path"]
+                .as_str()
+                .is_some_and(|value| same_path(Path::new(value), &manifest_path))
+        }),
+        "valid project should still be listed"
+    );
+
+    let warnings = payload["data"]["warnings"]
+        .as_array()
+        .expect("warnings array");
+    assert!(
+        warnings.iter().any(|warning| {
+            warning["code"].as_str() == Some("manifest_read_failed")
+                && warning["manifest_path"]
+                    .as_str()
+                    .is_some_and(|value| same_path(Path::new(value), &broken_manifest))
+                && warning["message"]
+                    .as_str()
+                    .is_some_and(|message| message.contains("failed to parse"))
+        }),
+        "malformed manifest warning should be present"
+    );
+
+    fs::remove_dir_all(project_dir).expect("project dir is removed");
+    fs::remove_dir_all(workspace).expect("temp dir is removed");
+}
+
+#[test]
 fn cli_delete_json_removes_project() {
     let workspace = make_temp_dir("delete-json");
     let (project_dir, manifest_path) = create_project_with_icon(&workspace, "delete-demo");
@@ -270,6 +334,37 @@ fn cli_delete_json_removes_project() {
 }
 
 #[test]
+fn cli_delete_rejects_relative_manifest_when_called_inside_project_dir() {
+    let workspace = make_temp_dir("delete-inside-project");
+    let (project_dir, _) = create_project_with_icon(&workspace, "delete-guard-demo");
+
+    let output = run_petiglyph(
+        &project_dir,
+        &["delete", "--manifest", "petiglyph.toml", "--json"],
+        None,
+        None,
+    );
+    assert!(
+        !output.status.success(),
+        "delete should fail when called from inside the project directory"
+    );
+
+    let payload = parse_json_stdout(&output);
+    assert_api_envelope(&payload, "delete", false);
+    let message = payload["error"]["message"].as_str().expect("error message");
+    assert!(
+        message.contains("refusing to delete project root from inside that project directory"),
+        "unexpected error message: {message}"
+    );
+    assert!(
+        project_dir.exists(),
+        "project dir should remain after guarded delete attempt"
+    );
+
+    fs::remove_dir_all(workspace).expect("temp dir is removed");
+}
+
+#[test]
 fn cli_set_threshold_json_updates_manifest() {
     let workspace = make_temp_dir("set-threshold-json");
     let (project_dir, manifest_path) = create_project_with_icon(&workspace, "threshold-demo");
@@ -290,14 +385,52 @@ fn cli_set_threshold_json_updates_manifest() {
     assert_eq!(payload["data"]["image_name"].as_str(), Some("alpha.png"));
     assert_eq!(payload["data"]["threshold"].as_u64(), Some(128));
 
-    let manifest_content = fs::read_to_string(&manifest_path).expect("manifest should be readable");
-    assert!(
-        manifest_content.contains("\"alpha.png\" = 128"),
-        "manifest should contain the override"
+    let manifest = parse_manifest_toml(&manifest_path);
+    assert_eq!(
+        manifest
+            .get("threshold_overrides")
+            .and_then(|v| v.get("alpha.png"))
+            .and_then(|v| v.as_integer()),
+        Some(128),
+        "manifest should contain the threshold override at threshold_overrides.alpha.png"
     );
 
     fs::remove_dir_all(project_dir).expect("project dir is removed");
     fs::remove_dir_all(workspace).expect("temp dir is removed");
+}
+
+#[test]
+fn cli_glyph_create_json_fails_when_grayscale_processing_fails() {
+    let workspace = make_temp_dir("glyph-create-grayscale-failure-json");
+    let (project_dir, _) = create_project_with_icon(&workspace, "glyph-gray-fail-demo");
+    let invalid_png = workspace.join("invalid.png");
+    fs::write(&invalid_png, b"not-a-real-image").expect("invalid png bytes are written");
+
+    let output = run_petiglyph(
+        &project_dir,
+        &[
+            "glyph",
+            "create",
+            "--input",
+            invalid_png.to_str().expect("path should be utf8"),
+            "--grayscale-enabled",
+            "--json",
+        ],
+        None,
+        None,
+    );
+    assert!(
+        !output.status.success(),
+        "glyph create should fail when grayscale processing fails"
+    );
+
+    let payload = parse_json_stdout(&output);
+    assert_api_envelope(&payload, "glyph.create", false);
+    let message = payload["error"]["message"].as_str().expect("error message");
+    assert!(
+        message.contains("failed to apply grayscale processing to imported file"),
+        "unexpected error message: {message}"
+    );
 }
 
 #[test]
@@ -330,10 +463,13 @@ fn cli_clear_threshold_json_updates_manifest() {
     assert_eq!(payload["data"]["image_name"].as_str(), Some("alpha.png"));
     assert_eq!(payload["data"]["was_present"].as_bool(), Some(true));
 
-    let manifest_content = fs::read_to_string(&manifest_path).expect("manifest should be readable");
+    let manifest = parse_manifest_toml(&manifest_path);
     assert!(
-        !manifest_content.contains("\"alpha.png\" = 128"),
-        "manifest should no longer contain the override"
+        manifest
+            .get("threshold_overrides")
+            .and_then(|v| v.get("alpha.png"))
+            .is_none(),
+        "manifest should no longer contain threshold_overrides.alpha.png"
     );
 
     fs::remove_dir_all(project_dir).expect("project dir is removed");
@@ -490,10 +626,20 @@ fn cli_animation_create_set_fps_delete_json_updates_manifest() {
     assert_api_envelope(&set_fps_payload, "animation.set-fps", true);
     assert_eq!(set_fps_payload["data"]["fps"].as_u64(), Some(10));
 
-    let manifest_after_set = fs::read_to_string(&manifest_path).expect("manifest readable");
-    assert!(
-        manifest_after_set.contains("name = \"walk\"") && manifest_after_set.contains("fps = 10"),
-        "manifest should reflect updated fps"
+    let manifest_after_set = parse_manifest_toml(&manifest_path);
+    let walk_after_set = manifest_after_set
+        .get("animations")
+        .and_then(|v| v.as_array())
+        .and_then(|animations| {
+            animations
+                .iter()
+                .find(|entry| entry.get("name").and_then(|v| v.as_str()) == Some("walk"))
+        })
+        .expect("walk animation should exist after set-fps");
+    assert_eq!(
+        walk_after_set.get("fps").and_then(|v| v.as_integer()),
+        Some(10),
+        "manifest should reflect updated fps for walk"
     );
 
     let delete_output = run_petiglyph(
@@ -509,11 +655,16 @@ fn cli_animation_create_set_fps_delete_json_updates_manifest() {
     let delete_payload = parse_json_stdout(&delete_output);
     assert_api_envelope(&delete_payload, "animation.delete", true);
 
-    let manifest_after_delete = fs::read_to_string(&manifest_path).expect("manifest readable");
-    assert!(
-        !manifest_after_delete.contains("name = \"walk\""),
-        "animation should be removed from manifest"
-    );
+    let manifest_after_delete = parse_manifest_toml(&manifest_path);
+    let has_walk = manifest_after_delete
+        .get("animations")
+        .and_then(|v| v.as_array())
+        .is_some_and(|animations| {
+            animations
+                .iter()
+                .any(|entry| entry.get("name").and_then(|v| v.as_str()) == Some("walk"))
+        });
+    assert!(!has_walk, "walk animation should be removed from manifest");
 }
 
 #[test]
@@ -772,10 +923,13 @@ fn cli_legacy_and_nested_threshold_commands_match_manifest_mutation() {
     let clear_nested_payload = parse_json_stdout(&clear_nested_output);
     assert_api_envelope(&clear_nested_payload, "glyph.clear-threshold", true);
 
-    let manifest_content = fs::read_to_string(&manifest_path).expect("manifest should be readable");
+    let manifest = parse_manifest_toml(&manifest_path);
     assert!(
-        !manifest_content.contains("\"alpha.png\" = 141"),
-        "clear-threshold alias should remove the override"
+        manifest
+            .get("threshold_overrides")
+            .and_then(|v| v.get("alpha.png"))
+            .is_none(),
+        "clear-threshold alias should remove threshold_overrides.alpha.png"
     );
 }
 
@@ -812,7 +966,7 @@ fn cli_hidden_uninstall_stub_returns_guidance_and_non_zero() {
         "stderr should explain ambiguity: {stderr}"
     );
     assert!(
-        stderr.contains("uninstall-font") && stderr.contains("nuke-everything"),
+        stderr.contains("uninstall-font") && stderr.contains("uninstall-all-fonts"),
         "stderr should include both guidance commands: {stderr}"
     );
 }
@@ -901,36 +1055,6 @@ fn cli_json_commands_do_not_trigger_ffmpeg_prompt_or_state() {
     assert!(
         !state_path.exists(),
         "json commands should not write ffmpeg prompt state"
-    );
-}
-
-#[test]
-fn cli_ffmpeg_prompt_state_not_written_for_non_tty_create() {
-    let workspace = make_temp_dir("non-tty-no-ffmpeg-prompt");
-    let home = workspace.join("home");
-    fs::create_dir_all(&home).expect("home dir is created");
-    let fake_path = fake_path_without_ffmpeg(&workspace);
-
-    let output = run_petiglyph(
-        &workspace,
-        &["create", "non-tty-create-demo"],
-        Some(&home),
-        Some(&fake_path),
-    );
-    assert!(
-        output.status.success(),
-        "create should succeed in non-interactive mode"
-    );
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(
-        stdout.contains("non-interactive shell detected; skipping automatic TUI launch"),
-        "create should explicitly skip automatic TUI launch in non-tty mode: {stdout}"
-    );
-
-    let state_path = ffmpeg_prompt_state_path(&home);
-    assert!(
-        !state_path.exists(),
-        "non-tty runs should not write ffmpeg prompt state"
     );
 }
 
@@ -1096,11 +1220,14 @@ fn cli_doctor_repair_json_removes_stale_project_lock() {
 #[test]
 fn cli_create_non_interactive_without_no_launch_skips_tui() {
     let workspace = make_temp_dir("create-non-interactive");
+    let home = workspace.join("home");
+    fs::create_dir_all(&home).expect("home dir is created");
+    let fake_path = fake_path_without_ffmpeg(&workspace);
     let output = run_petiglyph(
         &workspace,
         &["create", "create-no-launch-implicit"],
-        None,
-        None,
+        Some(&home),
+        Some(&fake_path),
     );
     assert!(
         output.status.success(),
@@ -1116,6 +1243,11 @@ fn cli_create_non_interactive_without_no_launch_skips_tui() {
             .join("create-no-launch-implicit/petiglyph.toml")
             .exists(),
         "project manifest should be created"
+    );
+    let state_path = ffmpeg_prompt_state_path(&home);
+    assert!(
+        !state_path.exists(),
+        "non-tty create should not write ffmpeg prompt state"
     );
 }
 
@@ -1140,6 +1272,34 @@ fn cli_nested_manifest_autodetection_works_for_single_project() {
     );
 
     fs::remove_dir_all(project_dir).expect("project dir is removed");
+    fs::remove_dir_all(workspace).expect("temp dir is removed");
+}
+
+#[test]
+fn cli_nested_manifest_autodetection_fails_for_ambiguous_workspace() {
+    let workspace = make_temp_dir("nested-autodetect-ambiguous");
+    let (project_dir_one, _) = create_project_with_icon(&workspace, "demo-font-one");
+    let (project_dir_two, _) = create_project_with_icon(&workspace, "demo-font-two");
+
+    let output = run_petiglyph(&workspace, &["uninstall-font", "--json"], None, None);
+    assert!(
+        !output.status.success(),
+        "uninstall-font --json should fail when multiple nested manifests exist"
+    );
+
+    let payload = parse_json_stdout(&output);
+    assert_api_envelope(&payload, "uninstall-font", false);
+    let message = payload["error"]["message"]
+        .as_str()
+        .expect("error message should be present");
+    assert!(
+        message.contains("multiple petiglyph projects detected")
+            && message.contains("pass --manifest to choose one"),
+        "ambiguous autodetection should provide manifest guidance: {message}"
+    );
+
+    fs::remove_dir_all(project_dir_one).expect("first project dir is removed");
+    fs::remove_dir_all(project_dir_two).expect("second project dir is removed");
     fs::remove_dir_all(workspace).expect("temp dir is removed");
 }
 
@@ -1265,6 +1425,50 @@ fn cli_doctor_json_reports_global_health_without_manifest() {
     fs::remove_dir_all(workspace).expect("temp dir is removed");
 }
 
+#[cfg(target_os = "linux")]
+#[test]
+fn cli_doctor_json_reports_manifest_discovery_failure() {
+    let workspace = make_temp_dir("doctor-json-discovery-failure");
+    let locked_dir = workspace.join("locked-cwd");
+    let home = workspace.join("home");
+    fs::create_dir_all(&locked_dir).expect("locked dir is created");
+    fs::create_dir_all(&home).expect("home dir is created");
+
+    let mut perms = fs::metadata(&locked_dir)
+        .expect("locked dir metadata")
+        .permissions();
+    perms.set_mode(0o111);
+    fs::set_permissions(&locked_dir, perms).expect("locked dir permissions are restricted");
+
+    let output = run_petiglyph(&locked_dir, &["doctor", "--json"], Some(&home), None);
+
+    let mut restore_perms = fs::metadata(&locked_dir)
+        .expect("locked dir metadata for restore")
+        .permissions();
+    restore_perms.set_mode(0o755);
+    fs::set_permissions(&locked_dir, restore_perms).expect("locked dir permissions are restored");
+
+    assert!(
+        output.status.success(),
+        "doctor --json should still succeed"
+    );
+    let payload = parse_json_stdout(&output);
+    assert_api_envelope(&payload, "doctor", true);
+    let findings = payload["data"]["findings"]
+        .as_array()
+        .expect("findings array");
+    assert!(
+        findings.iter().any(|finding| {
+            finding["code"].as_str() == Some("manifest_discovery_failed")
+                && finding["severity"].as_str() == Some("warning")
+                && finding["status"].as_str() == Some("issue")
+        }),
+        "doctor findings should report manifest discovery failures"
+    );
+
+    fs::remove_dir_all(workspace).expect("temp dir is removed");
+}
+
 #[test]
 fn cli_tool_uninstall_json_is_idempotent() {
     let workspace = make_temp_dir("tool-uninstall-json");
@@ -1273,21 +1477,21 @@ fn cli_tool_uninstall_json_is_idempotent() {
 
     let output = run_petiglyph(
         &workspace,
-        &["nuke-everything", "--json"],
+        &["uninstall-all-fonts", "--json"],
         Some(&home),
         None,
     );
     assert!(
         output.status.success(),
-        "nuke-everything --json should succeed"
+        "uninstall-all-fonts --json should succeed"
     );
     assert!(
         output.stderr.is_empty(),
-        "nuke-everything --json should keep stderr clean on success"
+        "uninstall-all-fonts --json should keep stderr clean on success"
     );
 
     let payload = parse_json_stdout(&output);
-    assert_api_envelope(&payload, "nuke-everything", true);
+    assert_api_envelope(&payload, "uninstall-all-fonts", true);
     assert_eq!(payload["data"]["outcome"].as_str(), Some("already_absent"));
     assert_eq!(payload["data"]["removed_ttf_count"].as_u64(), Some(0));
     assert_eq!(payload["data"]["removed_metadata_count"].as_u64(), Some(0));
@@ -1321,21 +1525,21 @@ fn cli_tool_uninstall_json_removes_managed_install_state() {
 
     let uninstall = run_petiglyph(
         &workspace,
-        &["nuke-everything", "--json"],
+        &["uninstall-all-fonts", "--json"],
         Some(&home),
         Some(&fake_path),
     );
     assert!(
         uninstall.status.success(),
-        "nuke-everything --json should succeed"
+        "uninstall-all-fonts --json should succeed"
     );
     assert!(
         uninstall.stderr.is_empty(),
-        "nuke-everything --json should keep stderr clean on success"
+        "uninstall-all-fonts --json should keep stderr clean on success"
     );
 
     let payload = parse_json_stdout(&uninstall);
-    assert_api_envelope(&payload, "nuke-everything", true);
+    assert_api_envelope(&payload, "uninstall-all-fonts", true);
     assert_eq!(payload["data"]["outcome"].as_str(), Some("removed"));
     assert!(
         payload["data"]["removed_ttf_count"].as_u64().unwrap_or(0) >= 1,

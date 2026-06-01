@@ -420,22 +420,38 @@ pub(crate) fn doctor(repair: bool, manifest_arg: Option<PathBuf>) -> Result<Doct
         },
         None => {
             let current_dir = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
-            if let Ok(discovered) = crate::project::discover_project_manifests(&current_dir) {
-                if discovered.is_empty() {
-                    match manifest_path_from_option(None) {
-                        Ok(path) => resolved_manifests.push(path),
-                        Err(err) => {
-                            push_finding(
-                                &mut findings,
-                                "manifest_auto_detect",
-                                DoctorSeverity::Warning,
-                                DoctorStatus::Issue,
-                                format!("no project context selected for project checks: {err}"),
-                            );
+            match crate::project::discover_project_manifests(&current_dir) {
+                Ok(discovered) => {
+                    if discovered.is_empty() {
+                        match manifest_path_from_option(None) {
+                            Ok(path) => resolved_manifests.push(path),
+                            Err(err) => {
+                                push_finding(
+                                    &mut findings,
+                                    "manifest_auto_detect",
+                                    DoctorSeverity::Warning,
+                                    DoctorStatus::Issue,
+                                    format!(
+                                        "no project context selected for project checks: {err}"
+                                    ),
+                                );
+                            }
                         }
+                    } else {
+                        resolved_manifests = discovered;
                     }
-                } else {
-                    resolved_manifests = discovered;
+                }
+                Err(err) => {
+                    push_finding(
+                        &mut findings,
+                        "manifest_discovery_failed",
+                        DoctorSeverity::Warning,
+                        DoctorStatus::Issue,
+                        format!(
+                            "failed to discover project manifests in {}: {err:#}",
+                            current_dir.display()
+                        ),
+                    );
                 }
             }
         }

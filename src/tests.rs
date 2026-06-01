@@ -549,6 +549,48 @@ fn verbose_toggle_left_jumps_to_top_of_project_list() {
 }
 
 #[test]
+fn unified_tui_malformed_project_is_listed_but_cannot_be_opened() {
+    let workspace = make_temp_dir("unified-malformed-project");
+
+    let valid_dir = workspace.join("a-valid");
+    fs::create_dir_all(valid_dir.join("icons")).expect("valid icons dir is created");
+    write_manifest(&valid_dir.join("petiglyph.toml"), &Manifest::default())
+        .expect("valid manifest is written");
+
+    let broken_dir = workspace.join("b-broken");
+    fs::create_dir_all(&broken_dir).expect("broken dir is created");
+    fs::write(
+        broken_dir.join("petiglyph.toml"),
+        "this is definitely not valid toml = [",
+    )
+    .expect("broken manifest is written");
+
+    let mut app = App::new_workspace(workspace.clone(), None, TuiLaunchOverrides::default())
+        .expect("workspace TUI app initializes with malformed projects present");
+    assert_eq!(
+        app.projects.len(),
+        2,
+        "both projects should be discoverable"
+    );
+    assert_eq!(app.active_project, None);
+
+    app.welcome_focus = WelcomeFocus::ProjectList;
+    app.selected_project = 1;
+    handle_key(&mut app, KeyCode::Enter).expect("enter should not crash on malformed project");
+
+    assert_eq!(app.active_project, None, "malformed project must not open");
+    assert!(
+        app.status
+            .as_deref()
+            .is_some_and(|status| status.contains("manifest is malformed")),
+        "status should explain malformed manifest block, got: {:?}",
+        app.status
+    );
+
+    fs::remove_dir_all(workspace).expect("temp workspace is removed");
+}
+
+#[test]
 fn unified_tui_multiple_projects_can_be_selected_from_home() {
     let workspace = make_temp_dir("unified-multi-project");
     for name in ["project-a", "project-b"] {

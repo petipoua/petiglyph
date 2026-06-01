@@ -36,7 +36,7 @@ Current distribution channels:
 Runtime tools:
 
 - `ffmpeg` is required for video import and animated media expansion.
-- Packaged Arch installs declare `ffmpeg` as a runtime dependency.
+- Packaged Arch installs declare `ffmpeg` and `fontconfig` as runtime dependencies.
 - Interactive runs offer a one-time OS-aware `ffmpeg` setup hint when `ffmpeg` is missing and the command is not running in JSON mode.
 - By default, petiglyph only shows the suggested install command and does not execute package-manager commands.
 - To opt in to automatic command execution for that run, pass `--ffmpeg-auto-install`.
@@ -150,8 +150,8 @@ petiglyph uninstall-font
 petiglyph uninstall-font --json
 
 # uninstall petiglyph tool state for current user (all managed petiglyph fonts + registry/metadata)
-petiglyph nuke-everything
-petiglyph nuke-everything --json
+petiglyph uninstall-all-fonts
+petiglyph uninstall-all-fonts --json
 
 # inspect lock/registry health
 petiglyph doctor
@@ -182,7 +182,7 @@ Project-scoped commands accept `--manifest` to target a specific project:
 - `uninstall-font`
 - `doctor`
 
-`list` is workspace/global-state scoped and does not accept `--manifest`. `nuke-everything` is current-user tool-state cleanup and does not accept `--manifest`.
+`list` is workspace/global-state scoped and does not accept `--manifest`. `uninstall-all-fonts` is current-user tool-state cleanup and does not accept `--manifest`.
 
 `petiglyph` (no subcommand) and `petiglyph tui` require an interactive terminal (TTY).
 
@@ -192,7 +192,7 @@ For project-scoped commands, when `--manifest` is omitted, petiglyph checks `./p
 - if none or multiple projects are found, automation commands fail with guidance to pass `--manifest`
 - if none or multiple projects are found, `petiglyph` / `petiglyph tui` start on the integrated Home panel where you can create or select a project folder
 
-`petiglyph uninstall` is intentionally ambiguous and exits with guidance to use either `uninstall-font` or `nuke-everything`.
+`petiglyph uninstall` is intentionally ambiguous and exits with guidance to use either `uninstall-font` or `uninstall-all-fonts`.
 
 ## Automation API Contract
 
@@ -217,7 +217,7 @@ For project-scoped commands, when `--manifest` is omitted, petiglyph checks `./p
 - `sample`
 - `install-font`
 - `uninstall-font`
-- `nuke-everything`
+- `uninstall-all-fonts`
 - `doctor`
 
 When `--json` is enabled, stdout is a single machine-readable envelope:
@@ -262,7 +262,7 @@ petiglyph install-font --json | jq -r '.data.installed_ttf'
 petiglyph uninstall-font --manifest ./petiglyph.toml --json
 
 # Uninstall all petiglyph-managed user state before removing the petiglyph tool itself
-petiglyph nuke-everything --json
+petiglyph uninstall-all-fonts --json
 ```
 
 ### Node.js
@@ -322,7 +322,7 @@ Install artifacts are immutable per build:
 
 `uninstall-font` removes the active immutable artifact for the current manifest font identity.
 
-`nuke-everything` is tool-level cleanup for the current user:
+`uninstall-all-fonts` is tool-level cleanup for the current user:
 - removes all managed petiglyph TTFs in the managed install directory
 - removes petiglyph install metadata and machine state files
 - removes the managed `petiglyph` install directory when empty
@@ -434,7 +434,7 @@ cargo run -- sample --manifest /tmp/petiglyph-smoke/petiglyph.toml
 cargo run -- tui --manifest /tmp/petiglyph-smoke/petiglyph.toml
 cargo run -- install-font --manifest /tmp/petiglyph-smoke/petiglyph.toml --json
 cargo run -- uninstall-font --manifest /tmp/petiglyph-smoke/petiglyph.toml --json
-cargo run -- nuke-everything --json
+cargo run -- uninstall-all-fonts --json
 cargo run -- doctor --manifest /tmp/petiglyph-smoke/petiglyph.toml --json
 ```
 
@@ -519,7 +519,7 @@ Use this script from repo root to simulate the AUR flow locally on Arch:
 
 `scripts/aur.sh` builds in an isolated `.makepkg/` workspace so it does not touch your repo `src/` tree.
 By default (`./scripts/aur.sh`), it performs a full reinstall cycle (remove, rebuild, install). Use `./scripts/aur.sh uninstall` for uninstall-only.
-The uninstall step now attempts `petiglyph nuke-everything --json` first to clean current-user Petiglyph state, then runs `pacman -Rns`.
+The uninstall step now attempts `petiglyph uninstall-all-fonts --json` first to clean current-user Petiglyph state, then runs `pacman -Rns`.
 Source tarballs are created from your current working tree snapshot (tracked + untracked, excluding ignored files), so uncommitted local changes are included in package test builds.
 
 ## Manifest

@@ -15,6 +15,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 MATRIX_PATH = REPO_ROOT / "scripts" / "distribution-targets.json"
 RELEASE_WORKFLOW_PATH = REPO_ROOT / ".github" / "workflows" / "release.yml"
 PYPI_WORKFLOW_PATH = REPO_ROOT / ".github" / "workflows" / "pypi-publish.yml"
+CARGO_TOML_PATH = REPO_ROOT / "Cargo.toml"
 NPM_META_PACKAGE_PATH = REPO_ROOT / "npm" / "petiglyph" / "package.json"
 
 
@@ -98,6 +99,14 @@ def parse_pypi_workflow_matrix() -> list[tuple[str, str, str | None]]:
     ]
 
 
+def load_cargo_version() -> str:
+    text = CARGO_TOML_PATH.read_text(encoding="utf-8")
+    match = re.search(r'(?m)^version\s*=\s*"([^"]+)"\s*$', text)
+    if not match:
+        raise ValueError(f"could not parse package version from {CARGO_TOML_PATH}")
+    return match.group(1)
+
+
 def check_release_sync(matrix: dict[str, Any]) -> list[str]:
     canonical = {
         (
@@ -155,10 +164,18 @@ def check_pypi_sync(matrix: dict[str, Any]) -> list[str]:
 
 def check_npm_sync(matrix: dict[str, Any]) -> list[str]:
     errors: list[str] = []
+    cargo_version = load_cargo_version()
     expected_packages = [entry["npm_package"] for entry in iter_targets(matrix)]
     expected_package_set = set(expected_packages)
 
     meta = json.loads(NPM_META_PACKAGE_PATH.read_text(encoding="utf-8"))
+    meta_version = meta.get("version")
+    if meta_version != cargo_version:
+        errors.append(
+            "npm/petiglyph/package.json version mismatch: "
+            f"expected {cargo_version}, got {meta_version}"
+        )
+
     optional_deps = meta.get("optionalDependencies")
     if not isinstance(optional_deps, dict):
         errors.append("npm/petiglyph/package.json missing optionalDependencies object")
@@ -172,6 +189,14 @@ def check_npm_sync(matrix: dict[str, Any]) -> list[str]:
             errors.append("npm optionalDependencies missing packages: " + ", ".join(missing))
         if extra:
             errors.append("npm optionalDependencies has extra packages: " + ", ".join(extra))
+    else:
+        for package_name in expected_packages:
+            pin = optional_deps.get(package_name)
+            if pin != cargo_version:
+                errors.append(
+                    "npm optionalDependencies version mismatch for "
+                    f"{package_name}: expected {cargo_version}, got {pin}"
+                )
 
     for entry in iter_targets(matrix):
         pkg_dir = REPO_ROOT / entry["npm_dir"]
@@ -184,6 +209,11 @@ def check_npm_sync(matrix: dict[str, Any]) -> list[str]:
         if name != entry["npm_package"]:
             errors.append(
                 f"npm package name mismatch for {pkg_json}: expected {entry['npm_package']}, got {name}"
+            )
+        version = payload.get("version")
+        if version != cargo_version:
+            errors.append(
+                f"npm package version mismatch for {pkg_json}: expected {cargo_version}, got {version}"
             )
 
     return errors

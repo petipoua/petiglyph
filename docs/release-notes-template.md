@@ -19,18 +19,11 @@
 
 ## JSON API Schema Changes
 
-Commands with JSON support:
+Canonical command coverage for `--json` (including nested command families like `glyph`, `grid`, `composition`, and `animation`) is defined in:
 
-- `list`
-- `delete`
-- `set-threshold`
-- `clear-threshold`
-- `build`
-- `sample`
-- `install-font`
-- `uninstall-font`
-- `nuke-everything`
-- `doctor`
+- `README.md` -> `Automation API Contract`
+
+Release notes should not duplicate that command list. Instead, document only what changed in this release relative to the canonical contract.
 
 Top-level envelope fields (must remain):
 
@@ -68,7 +61,7 @@ Attach prebuilt binaries for:
 
 Distribution callouts:
 
-- AUR package requires `ffmpeg`.
+- AUR package requires `ffmpeg` and `fontconfig`.
 - npm publishes `petiglyph` plus all `@petiglyph/*` platform packages.
 - PyPI publishes Linux GNU manylinux, macOS, and Windows wheels plus sdist.
 - macOS and Windows artifacts are unsigned unless this release explicitly states otherwise.

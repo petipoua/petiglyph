@@ -276,17 +276,35 @@ pub(crate) fn delete_project_for_manifest(manifest_path: &Path) -> Result<PathBu
             manifest_path.display()
         );
     };
-    if project_dir == Path::new(".") {
-        bail!("refusing to delete current directory project root");
-    }
-
-    fs::remove_dir_all(project_dir).with_context(|| {
+    let normalized_project_dir = if project_dir.as_os_str().is_empty() {
+        Path::new(".")
+    } else {
+        project_dir
+    };
+    let canonical_project_dir = fs::canonicalize(normalized_project_dir).with_context(|| {
         format!(
-            "failed to delete project directory {}",
-            project_dir.display()
+            "failed to resolve project directory {}",
+            normalized_project_dir.display()
         )
     })?;
-    Ok(project_dir.to_path_buf())
+    let canonical_current_dir = env::current_dir().context("failed to read current directory")?;
+    let canonical_current_dir = fs::canonicalize(&canonical_current_dir).with_context(|| {
+        format!(
+            "failed to resolve current directory {}",
+            canonical_current_dir.display()
+        )
+    })?;
+    if canonical_current_dir.starts_with(&canonical_project_dir) {
+        bail!("refusing to delete project root from inside that project directory");
+    }
+
+    fs::remove_dir_all(normalized_project_dir).with_context(|| {
+        format!(
+            "failed to delete project directory {}",
+            normalized_project_dir.display()
+        )
+    })?;
+    Ok(normalized_project_dir.to_path_buf())
 }
 
 pub(crate) fn create_project(project_name: &str, no_launch: bool) -> Result<()> {

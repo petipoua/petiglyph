@@ -59,7 +59,7 @@ Linux-only fontconfig behavior:
 Managed state:
 
 - Immutable installed TTF artifacts, metadata, first-install state, the Unicode registry, and registry/install locks live under the managed `petiglyph/` font directory.
-- `nuke-everything` removes managed petiglyph fonts, metadata, machine state, registry files, and the managed directory when empty.
+- `uninstall-all-fonts` removes managed petiglyph fonts, metadata, machine state, registry files, and the managed directory when empty.
 - Install and Unicode registry writes are file-lock protected and stale locks are repairable with `doctor --repair`.
 
 ## 4. External Runtime Tools
@@ -169,7 +169,7 @@ The current PyPI workflow does not build musllinux wheels. Musl binaries are cur
 - Automation commands that need a project fail on zero or multiple detected projects unless `--manifest` is passed.
 - `doctor` can run global checks without a manifest and adds project checks when a project can be resolved.
 - `list` is workspace/global-state scoped and has no `--manifest` option.
-- `nuke-everything` is current-user tool-state cleanup and has no `--manifest` option.
+- `uninstall-all-fonts` is current-user tool-state cleanup and has no `--manifest` option.
 
 ## 8. Validation Commands
 

@@ -720,15 +720,22 @@ go_home_panel() {
 
 go_glyphs_panel() {
   local session="$1"
-  if session_snapshot_text "$session" | grep -Fq "╭ Glyphs"; then
+  local snapshot
+
+  glyphs_panel_visible() {
+    snapshot="$(session_snapshot_text "$session")"
+    [[ "$snapshot" == *"Threshold:"* ]] && [[ "$snapshot" == *"Invert:"* ]]
+  }
+
+  if glyphs_panel_visible; then
     return 0
   fi
   send_key "$session" "tab" "normalize to Glyphs panel (tab 1/2)"
-  if session_snapshot_text "$session" | grep -Fq "╭ Glyphs"; then
+  if glyphs_panel_visible; then
     return 0
   fi
   send_key "$session" "tab" "normalize to Glyphs panel (tab 2/2)"
-  if session_snapshot_text "$session" | grep -Fq "╭ Glyphs"; then
+  if glyphs_panel_visible; then
     return 0
   fi
   send_raw_text "$session" "2" "normalize to Glyphs panel fallback"
@@ -839,22 +846,25 @@ continue_from_tweak_until_animation_config() {
   local max_attempts="${3:-4}"
   local attempt
   local transition_timeout_ms=1200
+  local snapshot
+
+  animation_config_visible() {
+    snapshot="$(session_snapshot_text "$session")"
+    [[ "$snapshot" == *"Create Animation"* ]] && [[ "$snapshot" == *"FPS:"* ]]
+  }
 
   for attempt in $(seq 1 "$max_attempts"); do
-    if session_snapshot_text "$session" | grep -Fq "Create Animation"; then
+    if animation_config_visible; then
       return 0
     fi
     send_key "$session" "enter" "$prefix: continue to animation config (attempt ${attempt}/${max_attempts})"
-    if wait_for_session_contains_any \
-      "$session" \
-      "$transition_timeout_ms" \
-      "Create Animation" \
-      "Creation Workflow In Progress"; then
+    if wait_for_session_contains "$session" "Create Animation" "$transition_timeout_ms" && animation_config_visible; then
       return 0
     fi
   done
 
   wait_for_session_contains "$session" "Create Animation" "$timeout_ms"
+  wait_for_session_contains "$session" "FPS:" "$timeout_ms"
 }
 
 tweak_in_glyph_panel() {

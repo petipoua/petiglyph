@@ -116,6 +116,7 @@ pub(crate) struct TuiLaunchOverrides {
 pub(crate) struct WelcomeProject {
     manifest_path: PathBuf,
     font_name: String,
+    manifest_warning: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -783,17 +784,26 @@ impl Drop for TerminalSession {
 fn scan_projects_in_folder(folder: &Path) -> Result<Vec<WelcomeProject>> {
     discover_project_manifests(folder)?
         .into_iter()
-        .map(|manifest_path| {
-            let manifest = read_manifest(&manifest_path).with_context(|| {
-                format!(
-                    "failed to read project manifest {}",
-                    manifest_path.display()
-                )
-            })?;
-            Ok(WelcomeProject {
+        .map(|manifest_path| match read_manifest(&manifest_path) {
+            Ok(manifest) => Ok(WelcomeProject {
                 manifest_path,
                 font_name: manifest.font_name,
-            })
+                manifest_warning: None,
+            }),
+            Err(_) => {
+                let fallback_name = manifest_path
+                    .parent()
+                    .and_then(|path| path.file_name())
+                    .and_then(|name| name.to_str())
+                    .map(|name| name.replace(['-', '_'], " "))
+                    .filter(|name| !name.trim().is_empty())
+                    .unwrap_or_else(|| "Unknown project".to_string());
+                Ok(WelcomeProject {
+                    manifest_path,
+                    font_name: fallback_name,
+                    manifest_warning: Some("malformed manifest".to_string()),
+                })
+            }
         })
         .collect()
 }
@@ -2837,6 +2847,13 @@ fn handle_welcome_key(app: &mut App, key: KeyEvent) -> Result<()> {
                     return Ok(());
                 }
                 if let Some(project) = app.projects.get(app.selected_project) {
+                    if project.manifest_warning.is_some() {
+                        app.status = Some(
+                            "cannot open project: manifest is malformed; fix petiglyph.toml"
+                                .to_string(),
+                        );
+                        return Ok(());
+                    }
                     let is_active = app
                         .active_project
                         .as_ref()
@@ -3898,6 +3915,13 @@ fn draw_welcome_view(
                     row.push(Span::styled(
                         " loading...",
                         Style::default().fg(Color::Yellow),
+                    ));
+                } else if let Some(warning) = &project.manifest_warning {
+                    row.push(Span::styled(
+                        format!("  {warning}"),
+                        Style::default()
+                            .fg(Color::Yellow)
+                            .add_modifier(Modifier::BOLD),
                     ));
                 }
             }
@@ -11005,7 +11029,7 @@ fn composition_preview_lines_stable_frame(
         }
     }
 
-    render_binary_preview_lines(&matrix, width, height, max_w, max_h, true, false, false)
+    render_binary_preview_lines(&matrix, width, height, max_w, max_h, true, false, true)
 }
 
 fn crop_binary_matrix_to_active_bounds(
@@ -11206,7 +11230,7 @@ fn preview_lines(
         return vec![Line::from("    [No visible pixels at threshold]")];
     };
 
-    render_binary_preview_lines(&cropped, crop_w, crop_h, max_w, max_h, true, true, false)
+    render_binary_preview_lines(&cropped, crop_w, crop_h, max_w, max_h, true, true, true)
 }
 
 fn preview_lines_stable_frame(
@@ -11232,7 +11256,7 @@ fn preview_lines_stable_frame(
         }
     }
 
-    render_binary_preview_lines(&matrix, src_w, src_h, max_w, max_h, true, false, false)
+    render_binary_preview_lines(&matrix, src_w, src_h, max_w, max_h, true, false, true)
 }
 
 fn preview_lines_from_coverage_stable_frame(
@@ -12644,7 +12668,7 @@ mod tests {
     }
 
     #[test]
-    fn standard_preview_upscales_cropped_cell_to_preview_viewport() {
+    fn standard_preview_preserves_aspect_ratio_in_square_viewport() {
         let mut coverage = vec![0; 32 * 64];
         for y in 15..49 {
             for x in 0..32 {
@@ -12674,10 +12698,10 @@ mod tests {
             })
             .collect::<Vec<_>>();
 
-        assert_eq!(rendered.len(), 37);
+        assert_eq!(rendered.len(), 35);
         assert!(
             rendered.iter().all(|line| line.chars().count() == 70),
-            "37-cell preview width with x compensation should render as 4 spaces + 33 block pairs"
+            "aspect-fit preview should preserve width while reducing height to avoid stretching"
         );
     }
 

@@ -28,10 +28,10 @@
   - `petiglyph sample`
   - `petiglyph install-font`
   - `petiglyph uninstall-font`
-  - `petiglyph nuke-everything`
+  - `petiglyph uninstall-all-fonts`
   - `petiglyph doctor`
 - If no subcommand is provided, `petiglyph` launches the interactive workspace TUI.
-- `petiglyph uninstall` is a hidden, intentionally ambiguous stub that exits with guidance to use `uninstall-font` or `nuke-everything`.
+- `petiglyph uninstall` is a hidden, intentionally ambiguous stub that exits with guidance to use `uninstall-font` or `uninstall-all-fonts`.
 - In non-interactive contexts (no TTY), TUI launch fails with an explicit terminal-required error.
 - Manifest auto-detection when `--manifest` is omitted checks:
   - `./petiglyph.toml` first
@@ -43,7 +43,7 @@
   - `out_dir = "build"`
   - `codepoint_start = "U+100000"`
 - Manifests may be mutated by normal reads/builds to add a missing `project_id` or normalized animation bleed defaults.
-- `list` and `nuke-everything` are not manifest-scoped. Do not document or test `--manifest` for those commands.
+- `list` and `uninstall-all-fonts` are not manifest-scoped. Do not document or test `--manifest` for those commands.
 
 ### Code Layout (Important)
 

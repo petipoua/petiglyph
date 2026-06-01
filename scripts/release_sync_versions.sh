@@ -12,6 +12,7 @@ Usage:
 Behavior:
   - If VERSION is provided, update Cargo.toml package.version first.
   - Sync PKGBUILD pkgver and npm package versions to Cargo.toml version.
+  - Regenerate .SRCINFO from PKGBUILD.
   - Sync optionalDependencies pins in npm/petiglyph/package.json.
   - Sync README JSON envelope sample version.
 USAGE
@@ -44,6 +45,13 @@ if [[ -z "$version" ]]; then
 fi
 
 VERSION="$version" perl -i -pe 's/^pkgver=.*/pkgver=$ENV{VERSION}/m' PKGBUILD
+
+if ! command -v makepkg >/dev/null 2>&1; then
+  echo "makepkg is required to regenerate .SRCINFO during release sync." >&2
+  exit 1
+fi
+
+makepkg --printsrcinfo > .SRCINFO
 
 for pkg in npm/*/package.json; do
   VERSION="$version" perl -i -pe 's/("version"\s*:\s*")[^"]+(",)/$1$ENV{VERSION}$2/' "$pkg"

@@ -16,9 +16,8 @@
 /build/
 /icons/
 
-# Local throwaway petiglyph projects (kept out of git by naming convention)
-/test[0-9]*/
-/test-*/
+# Local throwaway petiglyph projects
+/.scratch/
 !/test-assets/
 /test_parse*
 /test_ws*
