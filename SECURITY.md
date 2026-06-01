@@ -11,9 +11,7 @@ petiglyph is a small, best-effort OSS project.
 
 Please do not open public issues for suspected security vulnerabilities.
 
-Report privately using one of these channels:
-- GitHub Security Advisory (preferred): use the repository's private vulnerability reporting flow.
-- Direct email to the maintainer: security reports can be sent to `petiglyph@proton.me`.
+Report privately through GitHub Security Advisory (preferred): use the repository's private vulnerability reporting flow.
 
 Include:
 - what you found,
