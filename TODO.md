@@ -520,3 +520,13 @@ Expected result before first publish: npm/PyPI return 404 and AUR returns `resul
 - PyPI pending trusted publishers: https://docs.pypi.org/trusted-publishers/creating-a-project-through-oidc/
 - AUR submission guidelines: https://wiki.archlinux.org/title/AUR_submission_guidelines
 - hty docs: https://hty.sh and https://github.com/LatentEvals/hty
+
+## Supplementary Tasks
+
+- [ ] Reorg the commits like this:
+  1. Keep core architectural commits.
+  2. Squash local noise (wip, fix typo, "oops").
+  3. Rewrite messages to be clear and technical.
+  4. Ensure no secrets/artifacts in history.
+  5. Tag first public version.
+- [ ] Finish the rest of the unfinished TODO.md tasks and publish the packages.
