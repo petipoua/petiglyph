@@ -686,7 +686,9 @@ fn maybe_offer_first_run_ffmpeg_setup(cli: &Cli) {
                     println!("FFmpeg install completed and is now available on PATH.");
                     "auto_install_success"
                 } else {
-                    println!("FFmpeg install command completed, but `ffmpeg` is still not on PATH.");
+                    println!(
+                        "FFmpeg install command completed, but `ffmpeg` is still not on PATH."
+                    );
                     println!("You may need to restart your terminal session.");
                     "auto_install_not_on_path"
                 }
@@ -2824,9 +2826,17 @@ mod tests {
     #[test]
     fn ffmpeg_prompt_disable_env_parsing() {
         assert!(!ffmpeg_prompt_globally_disabled_from_env(None));
-        assert!(!ffmpeg_prompt_globally_disabled_from_env(Some(OsString::from(""))));
-        assert!(!ffmpeg_prompt_globally_disabled_from_env(Some(OsString::from("0"))));
-        assert!(ffmpeg_prompt_globally_disabled_from_env(Some(OsString::from("1"))));
-        assert!(ffmpeg_prompt_globally_disabled_from_env(Some(OsString::from("true"))));
+        assert!(!ffmpeg_prompt_globally_disabled_from_env(Some(
+            OsString::from("")
+        )));
+        assert!(!ffmpeg_prompt_globally_disabled_from_env(Some(
+            OsString::from("0")
+        )));
+        assert!(ffmpeg_prompt_globally_disabled_from_env(Some(
+            OsString::from("1")
+        )));
+        assert!(ffmpeg_prompt_globally_disabled_from_env(Some(
+            OsString::from("true")
+        )));
     }
 }
