@@ -79,6 +79,7 @@ const WELCOME_INPUT_WIDTH: usize = 15;
 const SWITCH_NOTICE_MS: u64 = 2500;
 const EVENT_POLL_MS: u64 = 33;
 const TUI_DEBUG_LOG_ENV: &str = "PETIGLYPH_TUI_DEBUG_LOG";
+const MOCK_CLIPBOARD_ENV: &str = "PETIGLYPH_MOCK_CLIPBOARD";
 const TUI_DEBUG_LOG_FILE_NAME: &str = "petiglyph-tui-debug.log";
 const TUI_MIN_WIDTH: u16 = 96;
 const TUI_MIN_HEIGHT: u16 = 40;
@@ -653,7 +654,7 @@ struct AnimationImportTaskOutput {
 #[derive(Debug, Clone)]
 enum InstallTaskOutput {
     Install {
-        summary: BuildSummary,
+        summary: Box<BuildSummary>,
         sample: Option<String>,
         installed_path: PathBuf,
         first_install_on_machine: bool,
@@ -1935,6 +1936,9 @@ where
 }
 
 fn copy_to_clipboard(text: &str) -> Result<()> {
+    if env::var_os(MOCK_CLIPBOARD_ENV).is_some() {
+        return Ok(());
+    }
     let providers = clipboard_providers_for_current_platform();
     copy_to_clipboard_with_runner(text, providers, execute_clipboard_provider)
 }
@@ -6382,7 +6386,7 @@ impl App {
                 installed_path,
                 first_install_on_machine,
             }) => {
-                self.last_build = Some(summary);
+                self.last_build = Some(*summary);
                 self.last_sample = sample;
                 self.installed_font_path = Some(installed_path.clone());
                 if let Err(err) = self.refresh_workspace_discovery() {
@@ -6955,7 +6959,7 @@ fn build_and_install(
     };
 
     Ok(InstallTaskOutput::Install {
-        summary,
+        summary: Box::new(summary),
         sample,
         installed_path: installed.install_path,
         first_install_on_machine: installed.first_install_on_machine,
