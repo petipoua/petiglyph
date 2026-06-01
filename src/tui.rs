@@ -4,7 +4,6 @@
     clippy::enum_variant_names,
     clippy::if_same_then_else,
     clippy::manual_div_ceil,
-    clippy::manual_is_multiple_of,
     clippy::match_single_binding,
     clippy::redundant_closure,
     clippy::single_match,
@@ -13612,8 +13611,9 @@ mod tests {
 
     #[test]
     fn create_workflow_tweaking_popup_previews_copilot_svg_fixture() {
-        let fixture = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("icons/copilot.svg");
-        assert!(fixture.is_file(), "copilot svg fixture should exist");
+        let fixture =
+            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("test-assets/images/diamond-128.svg");
+        assert!(fixture.is_file(), "svg fixture should exist");
 
         let project_dir = make_temp_dir("create-workflow-copilot-svg-preview");
         let manifest_path = project_dir.join("petiglyph.toml");
@@ -13645,14 +13645,14 @@ mod tests {
         let (title, lines) = home_workflow_preview_lines(&app, HomeCreationKind::Glyph, 32, 32);
         let rendered = format!("{lines:?}");
 
-        assert_eq!(title, "Source: copilot.svg");
+        assert_eq!(title, "Source: diamond-128.svg");
         assert!(
             !rendered.contains("Preview not available yet"),
-            "copilot svg should render a live preview in the tweaking popup"
+            "svg fixture should render a live preview in the tweaking popup"
         );
         assert!(
             rendered.contains("█") || rendered.contains("▄") || rendered.contains("▀"),
-            "copilot svg preview should contain rendered semi-block glyphs"
+            "svg fixture preview should contain rendered semi-block glyphs"
         );
         assert!(
             lines

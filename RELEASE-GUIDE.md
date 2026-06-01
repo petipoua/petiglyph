@@ -1,6 +1,6 @@
 # RELEASE-GUIDE
 
-Last updated: 2026-05-31
+Last updated: 2026-06-01
 
 This guide is the operator runbook for publishing `petiglyph` to:
 
@@ -113,21 +113,28 @@ ssh aur@aur.archlinux.org help
 ```
 
 2. Validate working tree/tests.
-3. Commit.
-4. Assert the committed release tree is clean and packageable:
+3. Refresh the third-party license inventory artifact:
+
+```bash
+./scripts/generate_third_party_licenses.sh
+```
+
+4. If `docs/THIRD_PARTY_LICENSES.md` changed, include it in the release prep commit.
+5. Commit.
+6. Assert the committed release tree is clean and packageable:
 
 ```bash
 ./scripts/release_assert_clean_tree.sh
 ```
 
-5. Create signed annotated tag:
+7. Create signed annotated tag:
 
 ```bash
 git tag -s v0.1.0 -m "petiglyph v0.1.0"
 git push origin v0.1.0
 ```
 
-6. The tag push triggers `.github/workflows/release.yml`.
+8. The tag push triggers `.github/workflows/release.yml`.
 
 ## 3.1 Technical Execution Timeline (From Commit To Registries)
 

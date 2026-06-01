@@ -1,3 +1,5 @@
+#![allow(clippy::collapsible_else_if, clippy::uninlined_format_args)]
+
 mod animation_media;
 mod artifact_warning;
 mod build;

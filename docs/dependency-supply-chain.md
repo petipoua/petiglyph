@@ -1,6 +1,6 @@
 # Dependency And Supply-Chain Notes
 
-Last updated: 2026-05-31
+Last updated: 2026-06-01
 
 This file records the dependency checks required by TODO item 8.
 
@@ -15,11 +15,11 @@ This file records the dependency checks required by TODO item 8.
 - `cargo tree --locked -e normal` is kept as a release input for dependency review.
 - Temporary exception: `RUSTSEC-2024-0436` (`paste`) is ignored in `deny.toml` because it is transitively pulled by AVIF encoding (`rav1e` via `ravif`) with no drop-in upgrade path from `image` yet.
 
-## Sample Asset Redistribution
+## Repository Asset Redistribution
 
-- `icons/` sample assets are included as repository fixtures for local demos/tests.
-- Before public release, confirm each file in `icons/` has explicit redistribution permission or replace it with an internally created equivalent.
-- Do not publish a release if any `icons/` source license/provenance is unknown.
+- The repository fixtures live under `test-assets/` (not `icons/`).
+- Asset provenance and license notes are tracked in `docs/assets-provenance.md`.
+- Do not publish a release if any repository fixture has unknown provenance.
 
 ## Native/Cross-Build-Sensitive Dependency Areas
 

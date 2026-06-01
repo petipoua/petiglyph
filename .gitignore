@@ -14,6 +14,7 @@
 /src/petiglyph-*.tar.gz
 
 /build/
+/icons/
 
 # Local throwaway petiglyph projects (kept out of git by naming convention)
 /test[0-9]*/

@@ -11,8 +11,8 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use crate::artifact_warning::{INCOMPATIBLE_ARTIFACT_PREFIX, incompatible_artifact_warning};
 use crate::build::{
     BuildOptions, CompositionTileInfo, GlyphBitmap, MappingEntry, PreprocessedGlyph,
-    bitmap_to_bdf_rows, build_outputs, build_outputs_with_options, collect_source_files,
-    coverage_map, glyph_sample_string, is_supported_source, preprocess_sources_with_compositions,
+    bitmap_to_bdf_rows, build_outputs, build_outputs_with_options, coverage_map,
+    glyph_sample_string, is_supported_source, preprocess_sources_with_compositions,
     preprocess_sources_with_compositions_and_standard_sources,
 };
 use crate::cli::{
@@ -1562,10 +1562,17 @@ fn supported_source_extensions_include_avif() {
 #[test]
 fn build_outputs_generates_non_empty_repo_icon_font() {
     let out_dir = make_temp_dir("icons-e2e");
+    let input_dir = out_dir.join("icons");
+    fs::create_dir_all(&input_dir).expect("icons dir is created");
+    let fixture_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("test-assets/images");
+    for name in ["diamond-128.png", "ring-128.png", "triangle-128.png"] {
+        fs::copy(fixture_dir.join(name), input_dir.join(name))
+            .unwrap_or_else(|err| panic!("copy fixture {name}: {err}"));
+    }
     let config = RuntimeConfig {
         project_dir: out_dir.clone(),
         project_id: "test-icons-e2e".to_string(),
-        input_dir: PathBuf::from("icons"),
+        input_dir: input_dir.clone(),
         out_dir: out_dir.clone(),
         font_name: "Petiglyph".to_string(),
         glyph_size: 64,
@@ -1577,22 +1584,22 @@ fn build_outputs_generates_non_empty_repo_icon_font() {
         codepoint_start: 0x10_0000,
     };
 
+    let expected_sources = 3usize;
     let summary = build_outputs(&config).expect("build succeeds");
     let mapping_json = fs::read_to_string(&summary.mapping_path).expect("glyph map is written");
     let mapping: Vec<MappingEntry> = serde_json::from_str(&mapping_json).expect("glyph map parses");
     let bdf = fs::read_to_string(&summary.bdf_path).expect("bdf is written");
     let ttf = fs::read(&summary.ttf_path).expect("ttf is written");
     let sample = fs::read_to_string(&summary.sample_path).expect("sample is written");
-    let sources = collect_source_files(Path::new("icons")).expect("icons are readable");
     let face = ttf_parser::Face::parse(&ttf, 0).expect("ttf parses");
 
-    assert_eq!(summary.glyph_count, sources.len());
-    assert_eq!(mapping.len(), sources.len());
-    assert!(bdf.contains(&format!("CHARS {}", sources.len())));
-    assert_eq!(face.number_of_glyphs(), sources.len() as u16 + 2);
+    assert_eq!(summary.glyph_count, expected_sources);
+    assert_eq!(mapping.len(), expected_sources);
+    assert!(bdf.contains(&format!("CHARS {expected_sources}")));
+    assert_eq!(face.number_of_glyphs(), expected_sources as u16 + 2);
     assert_eq!(
         sample.trim_end(),
-        glyph_sample_string(config.codepoint_start, sources.len())
+        glyph_sample_string(config.codepoint_start, expected_sources)
     );
     let space_id = face.glyph_index(' ').expect("space glyph should exist");
     assert_eq!(

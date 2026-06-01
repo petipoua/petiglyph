@@ -1,70 +1,37 @@
 # RELEASE-CHECKLIST
 
-Purpose: executable checklist for shipping `petiglyph` through GitHub Releases, AUR, npm, and PyPI/TestPyPI.
+Purpose: short execution checklist for shipping `petiglyph` through GitHub Releases, AUR, npm, and PyPI/TestPyPI.
 
-This checklist reflects the repository state as of 2026-05-31. Use `Cargo.toml` package version as the source of truth.
+Canonical runbook: [RELEASE-GUIDE.md](RELEASE-GUIDE.md)
 
-## 0. Current Release Surface
+This checklist reflects repository state as of 2026-06-01. `Cargo.toml` package version is the release source of truth.
 
-Direct GitHub archives build 8 targets:
+## 1. Version + Tree Prep
 
-- `x86_64-unknown-linux-gnu`
-- `aarch64-unknown-linux-gnu`
-- `x86_64-unknown-linux-musl`
-- `aarch64-unknown-linux-musl`
-- `x86_64-apple-darwin`
-- `aarch64-apple-darwin`
-- `x86_64-pc-windows-msvc`
-- `aarch64-pc-windows-msvc`
-
-Release runner labels (explicitly pinned to avoid `*-latest` drift in release pipelines):
-
-- Linux targets: `ubuntu-latest`
-- `x86_64-apple-darwin`: `macos-15-intel`
-- `aarch64-apple-darwin`: `macos-15`
-- Windows targets: `windows-2025`
-
-npm publishes the `petiglyph` meta package plus 8 optional native `@petiglyph/*` packages matching the direct archive targets.
-
-PyPI/TestPyPI publishes Linux GNU manylinux, macOS, and Windows wheels plus an sdist. It does not currently publish musllinux wheels.
-
-AUR is manual: prepare `PKGBUILD`/`.SRCINFO`, validate locally, then push to the AUR package repository.
-
-Runtime dependency policy:
-
-- `ffmpeg` is required for video/animated media import workflows.
-- Arch packaging declares `depends=('ffmpeg' 'fontconfig')`.
-- Other package channels do not bundle `ffmpeg`; docs and runtime prompt must make that explicit.
-
-Trust/signing policy:
-
-- GitHub release assets include checksums and artifact attestations.
-- npm and PyPI use trusted publishing through protected GitHub environments.
-- macOS and Windows artifacts are unsigned unless a release explicitly says otherwise.
-- macOS and Windows ARM64 artifacts should be marked limited-runtime-validation/unstable until directly runtime-tested.
-
-## 1. Version Sync
-
-1. Choose the release version, for example `0.1.0`.
-2. Sync repo versions:
+- [ ] Choose version `X.Y.Z`.
+- [ ] Run version sync:
 
 ```bash
-./scripts/release_sync_versions.sh 0.1.0
+./scripts/release_sync_versions.sh X.Y.Z
 ```
 
-3. Verify synchronized metadata:
+- [ ] Verify synchronized metadata:
 
 ```bash
 cargo metadata --no-deps --format-version 1 | jq -r '.packages[] | select(.name == "petiglyph") | .version'
 rg -n '^(pkgver=|\s*"version":|version = )' Cargo.toml PKGBUILD npm/*/package.json
-rg -n '"@petiglyph/petiglyph-[^"]+": "0\.1\.0"' npm/petiglyph/package.json
 ```
 
-4. Confirm README JSON envelope sample version matches the release version.
+- [ ] Commit release-prep changes.
+- [ ] Ensure clean/packageable tree:
+
+```bash
+./scripts/release_assert_clean_tree.sh
+```
 
 ## 2. Local Quality Gates
 
-Run from repo root:
+- [ ] Run core gates:
 
 ```bash
 cargo fmt --check
@@ -74,161 +41,62 @@ cargo test --locked
 cargo deny check
 cargo audit
 cargo tree --locked -e normal
+./scripts/generate_third_party_licenses.sh
 cargo run -- --help
 cargo run -- tui </dev/null
 ```
 
-Toolchain policy: use the repo-pinned stable toolchain from `rust-toolchain.toml` (with `clippy` and `rustfmt` components).
+- [ ] If `docs/THIRD_PARTY_LICENSES.md` changed, commit it in the release prep commit.
 
-Expected:
+- [ ] Use pinned Rust toolchain from `rust-toolchain.toml` (`1.88.0`, with `clippy` and `rustfmt`).
+- [ ] Smoke scratch project build/install/uninstall/doctor JSON flow (see runbook).
 
-- Formatting/check/clippy/test pass.
-- `cargo run -- tui </dev/null` fails cleanly with the terminal-required error.
+## 3. TUI + Runtime Smoke
 
-Smoke a scratch project before release:
-
-```bash
-rm -rf /tmp/petiglyph-release-smoke
-mkdir -p /tmp/petiglyph-release-smoke
-cp -R icons /tmp/petiglyph-release-smoke/icons
-cat > /tmp/petiglyph-release-smoke/petiglyph.toml <<'MANIFEST'
-input_dir = "icons"
-out_dir = "build"
-font_name = "Petiglyph Release Smoke"
-glyph_size = 64
-threshold = 64
-codepoint_start = "U+100000"
-MANIFEST
-
-cargo run -- build --manifest /tmp/petiglyph-release-smoke/petiglyph.toml --json
-cargo run -- sample --manifest /tmp/petiglyph-release-smoke/petiglyph.toml --json
-cargo run -- install-font --manifest /tmp/petiglyph-release-smoke/petiglyph.toml --json
-cargo run -- uninstall-font --manifest /tmp/petiglyph-release-smoke/petiglyph.toml --json
-cargo run -- doctor --manifest /tmp/petiglyph-release-smoke/petiglyph.toml --json
-```
-
-## 3. Runtime/Clipboard Smoke
-
-Linux/macOS:
+- [ ] Validate `hty` CLI and run E2E harness:
 
 ```bash
-./scripts/clipboard_smoke.sh
-./scripts/clipboard_smoke.sh --bin ./target/release/petiglyph
-./scripts/clipboard_smoke.sh --skip-cli-checks
-```
-
-Windows:
-
-```powershell
-pwsh -File .\scripts\clipboard_smoke.ps1
-pwsh -File .\scripts\clipboard_smoke.ps1 -PetiglyphPath .\target\release\petiglyph.exe
-```
-
-If `ffmpeg` is installed, also smoke one animated media import manually through the TUI. If not installed, verify the missing-`ffmpeg` prompt/error is explicit.
-
-## 4. TUI E2E
-
-Install and validate `hty` first:
-
-```bash
-curl -fsSL https://raw.githubusercontent.com/LatentEvals/hty/main/scripts/install.sh | sh
-export PATH="$HOME/.local/bin:$PATH"
 hty --help
-```
-
-Run the headless harness:
-
-```bash
 ./scripts/tui_e2e_hty.sh
 ```
 
-Run the new creation-workflow popup journeys directly when debugging:
+- [ ] Run runtime smoke scripts:
 
 ```bash
-./scripts/tui_e2e_hty.sh --journey 8,9,10
+./scripts/clipboard_smoke.sh
+pwsh -File .\scripts\clipboard_smoke.ps1
 ```
 
-Optional visible debug run:
+## 4. GitHub Release Artifacts
+
+- [ ] Create and push signed tag:
 
 ```bash
-PETIGLYPH_TUI_DEBUG=1 ./scripts/tui_e2e_hty.sh --watch --step-delay-ms 250
+git tag -s vX.Y.Z -m "petiglyph vX.Y.Z"
+git push origin vX.Y.Z
 ```
 
-Before changing the harness, check local and upstream `hty` behavior:
+- [ ] Wait for `.github/workflows/release.yml` success.
+- [ ] Verify release assets + checksums + attestations:
 
 ```bash
-hty --help
-hty help run
-hty help send
-hty help wait
-```
-
-References:
-
-- https://github.com/LatentEvals/hty
-- https://hty.sh
-
-## 5. GitHub Release Artifacts
-
-Before tagging:
-
-- [ ] Working tree is clean and release-prep changes are committed.
-- [ ] Release package hygiene passes after release-prep changes are committed:
-
-```bash
-./scripts/release_assert_clean_tree.sh
-```
-
-- [ ] `README.md`, `AGENTS.md`, `CROSS-COMPATIBILITY-GUIDE.md`, and release docs match current command/package behavior.
-- [ ] Release notes include unsigned macOS/Windows warnings where applicable.
-- [ ] Release notes identify limited-runtime-validation targets.
-
-Tag and push:
-
-```bash
-./scripts/release_assert_clean_tree.sh
-git tag -s v0.1.0 -m "petiglyph v0.1.0"
-git push origin v0.1.0
-```
-
-The tag push triggers `.github/workflows/release.yml`.
-Alternative preflight: run the same workflow manually with `workflow_dispatch` and `tag=vX.Y.Z`.
-
-After workflow completion:
-
-```bash
-gh release view v0.1.0 --json assets
-gh release download v0.1.0 -D ./dist-release
+gh release view vX.Y.Z --json assets,isDraft
+gh release download vX.Y.Z -D ./dist-release
 (cd dist-release && sha256sum -c SHA256SUMS)
-gh release verify v0.1.0
+gh release verify vX.Y.Z
 ```
 
-Confirm the release is still a draft before publishing registries:
+- [ ] Keep release as draft until artifact review is complete.
+
+## 5. AUR Publish (Manual)
+
+- [ ] Prepare release PKGBUILD/SRCINFO:
 
 ```bash
-gh release view v0.1.0 --json isDraft
+./scripts/release_prepare_aur.sh X.Y.Z
 ```
 
-Validate at least one extracted archive locally:
-
-```bash
-mkdir -p /tmp/petiglyph-asset-smoke
-cd /tmp/petiglyph-asset-smoke
-tar -xzf /path/to/dist-release/petiglyph-v0.1.0-x86_64-unknown-linux-gnu.tar.gz
-./petiglyph-v0.1.0-x86_64-unknown-linux-gnu/petiglyph --help
-./petiglyph-v0.1.0-x86_64-unknown-linux-gnu/petiglyph doctor --json
-./petiglyph-v0.1.0-x86_64-unknown-linux-gnu/petiglyph tui </dev/null
-```
-
-## 6. AUR
-
-Prepare release package metadata from the signed tag tarball:
-
-```bash
-./scripts/release_prepare_aur.sh 0.1.0
-```
-
-Validate locally on Arch:
+- [ ] Validate locally:
 
 ```bash
 makepkg -sf
@@ -236,97 +104,23 @@ namcap PKGBUILD
 namcap petiglyph-*.pkg.tar.zst
 ```
 
-Publish manually from the AUR package repository:
+- [ ] Push updated `PKGBUILD` + `.SRCINFO` to AUR repo.
 
-```bash
-cp /path/to/petiglyph/PKGBUILD .
-cp /path/to/petiglyph/.SRCINFO .
-git add PKGBUILD .SRCINFO
-git commit -m "petiglyph 0.1.0"
-git push
-```
+## 6. Registry Publish (GitHub Release Published Event)
 
-For local development packaging, use:
+- [ ] Publish GitHub Release only when ready for npm/PyPI workflows to run.
+- [ ] Approve environment gates when prompted (`npm`, `testpypi`, `pypi`).
+- [ ] For PyPI flow, run TestPyPI install validation before approving `pypi`.
 
-```bash
-./scripts/aur.sh
-./scripts/aur.sh build
-./scripts/aur.sh install
-./scripts/aur.sh uninstall
-```
+## 7. Post-Release Sanity
 
-## 7. npm
+- [ ] Verify npm package visibility and basic install (`npm view`, `petiglyph --help`).
+- [ ] Verify TestPyPI/PyPI install path and CLI startup.
+- [ ] Confirm release notes include unsigned macOS/Windows warning and ARM64 runtime-validation status.
 
-The GitHub Release `published` event triggers `.github/workflows/npm-publish.yml`.
+## 8. Rollback Quick Path
 
-Workflow order:
-
-1. Check out the release tag.
-2. Verify release integrity with `gh release verify` and `SHA256SUMS`.
-3. Verify tag/version consistency.
-4. Stage binaries into `npm/*/bin` with `scripts/release_stage_npm_artifacts.sh`.
-5. Run `npm pack --dry-run` for each package.
-6. Publish platform packages.
-7. Publish the `petiglyph` meta package.
-
-Local preflight after downloading release assets:
-
-```bash
-./scripts/release_npm_pack_test.sh dist-release
-```
-
-Post-publish checks:
-
-```bash
-npm view petiglyph version
-npm view petiglyph bin
-npm install -g petiglyph
-petiglyph --help
-```
-
-## 8. PyPI/TestPyPI
-
-The GitHub Release `published` event triggers `.github/workflows/pypi-publish.yml`.
-
-Workflow order:
-
-1. Build wheels for Linux GNU manylinux, macOS, and Windows targets.
-2. Build sdist.
-3. Publish to TestPyPI through the `testpypi` environment.
-4. Publish to PyPI through the `pypi` environment after TestPyPI succeeds.
-
-Local preflight (host-safe):
-
-```bash
-python -m pip install -U maturin twine
-maturin sdist
-twine check target/wheels/petiglyph-*.tar.gz
-```
-
-If you want local wheel validation, use a manylinux container. On a plain Linux host, `maturin build --compatibility pypi` can produce `linux_x86_64` wheels that PyPI rejects.
-
-TestPyPI install check:
-
-```bash
-python -m venv .venv-testpypi
-. .venv-testpypi/bin/activate
-pip install --index-url https://test.pypi.org/simple/ --extra-index-url https://pypi.org/simple petiglyph
-petiglyph --help
-```
-
-## 9. Manual Approval Gates
-
-Keep required reviewers enabled for these GitHub environments:
-
-- `npm`
-- `testpypi`
-- `pypi`
-
-Do not publish the GitHub Release until direct release assets, checksums, notes, and known limitations have been reviewed. Publishing the GitHub Release starts npm and PyPI workflows.
-
-## 10. Rollback Actions
-
-- GitHub assets: ship a fixed patch release; avoid mutating published assets.
-- AUR: update `PKGBUILD` and increment `pkgrel` if reusing the same upstream version.
-- npm: publish a fixed patch and deprecate the broken version.
-- PyPI: publish a fixed patch and yank the broken release if necessary.
+- [ ] GitHub assets issue: publish fixed patch release `vX.Y.(Z+1)`.
+- [ ] AUR issue: fix `PKGBUILD`, bump `pkgrel` for same upstream if needed.
+- [ ] npm issue: publish fixed patch, deprecate broken version.
+- [ ] PyPI issue: publish fixed patch, yank broken release if required.
