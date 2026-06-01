@@ -37,7 +37,10 @@ Runtime tools:
 
 - `ffmpeg` is required for video import and animated media expansion.
 - Packaged Arch installs declare `ffmpeg` as a runtime dependency.
-- Interactive runs offer a one-time OS-aware `ffmpeg` install prompt when `ffmpeg` is missing and the command is not running in JSON mode.
+- Interactive runs offer a one-time OS-aware `ffmpeg` setup hint when `ffmpeg` is missing and the command is not running in JSON mode.
+- By default, petiglyph only shows the suggested install command and does not execute package-manager commands.
+- To opt in to automatic command execution for that run, pass `--ffmpeg-auto-install`.
+- To disable the one-time setup hint globally, set `PETIGLYPH_NO_FFMPEG_PROMPT=1`.
 
 ## Quick Start
 
@@ -80,7 +83,8 @@ Animated workflow import input types:
 - GIF/video inputs are expanded into deterministic per-frame PNG files in `icons/` and selected as animation frames.
 - Video import requires `ffmpeg` available on `PATH`.
 - Per-media extraction is capped at 1200 frames, and one import is capped at 3000 extracted frames.
-- On first interactive run, if `ffmpeg` is missing, petiglyph offers a one-time OS-aware install prompt and records the outcome in managed user state.
+- On first interactive run, if `ffmpeg` is missing, petiglyph shows a one-time OS-aware setup hint and records the outcome in managed user state.
+- petiglyph never runs package-manager commands in JSON mode or non-interactive (non-TTY) execution paths.
 
 ## CLI Commands
 

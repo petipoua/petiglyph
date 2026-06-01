@@ -317,23 +317,25 @@ npm view petiglyph version
 
 ### 11. PyPI/TestPyPI Flow
 
+Status: partially implemented. `pyproject.toml` now declares `dynamic = ["version"]`, local `uvx maturin sdist` + `uvx twine check` pass without the previous missing-version warning, release docs now route host-local validation through sdist checks while treating CI manylinux wheels as release-valid, and `.github/workflows/pypi-publish.yml` now runs `twine check dist/*` before both TestPyPI and PyPI uploads.
+
 Observation:
 
-- `pyproject.toml` lacks `project.version` or `dynamic = ["version"]`; maturin warns.
+- `pyproject.toml` now uses `dynamic = ["version"]` so maturin can source version metadata from Cargo.
 - Local `maturin build --compatibility pypi` on Linux produced a `linux_x86_64` wheel and failed PyPI validation. The GitHub workflow uses maturin's manylinux mode, so the CI path may still work.
 - PyPI package name currently appears unpublished.
 - The workflow publishes to TestPyPI and then PyPI, but there is no install smoke between them.
 
 Tasks:
 
-- [ ] Fix `pyproject.toml` metadata by adding `dynamic = ["version"]` if maturin should source the version from Cargo, or by synchronizing an explicit `version`.
-- [ ] Update release docs so local Linux PyPI validation uses the correct manylinux path, container, or CI workflow instead of a command that fails on a plain host.
+- [x] Fix `pyproject.toml` metadata by adding `dynamic = ["version"]` if maturin should source the version from Cargo, or by synchronizing an explicit `version`.
+- [x] Update release docs so local Linux PyPI validation uses the correct manylinux path, container, or CI workflow instead of a command that fails on a plain host.
 - [ ] Configure pending trusted publishers for both TestPyPI and PyPI:
   - project: `petiglyph`
   - owner/repo: `petipoua/petiglyph`
   - workflow: `pypi-publish.yml`
   - environments: `testpypi` and `pypi`
-- [ ] Add `twine check dist/*` in the PyPI workflow before upload.
+- [x] Add `twine check dist/*` in the PyPI workflow before upload.
 - [ ] After TestPyPI publish, create a fresh venv, install from TestPyPI, and run `petiglyph --help`, `petiglyph doctor --json`, and the non-TTY TUI guard before allowing PyPI publish.
 - [ ] Decide whether musllinux wheels are intentionally absent, and document that limitation in package metadata and release notes.
 
@@ -352,15 +354,15 @@ Observation:
 
 - `PKGBUILD` and `.SRCINFO` are currently in sync.
 - `scripts/release_prepare_aur.sh` computes a real SHA256 from the GitHub tag tarball.
-- Runtime dependency only lists `ffmpeg`, but Linux install functionality shells out to `fc-cache`, which comes from fontconfig.
+- Runtime dependency now includes `fontconfig` alongside `ffmpeg`, matching Linux install behavior that shells out to `fc-cache`.
 - The repo is private, so the GitHub source URL in a release-grade `PKGBUILD` will not be usable by AUR users until the repo is public.
 - AUR package name currently appears unpublished.
 
 Tasks:
 
 - [ ] Make the GitHub repo public before AUR publication.
-- [ ] Add `fontconfig` to `depends` if Linux install/sample workflows require `fc-cache` to succeed.
-- [ ] Decide whether `arch=('x86_64')` is enough or whether Arch Linux ARM/aarch64 should be documented separately.
+- [x] Add `fontconfig` to `depends` if Linux install/sample workflows require `fc-cache` to succeed.
+- [x] Decide whether `arch=('x86_64')` is enough or whether Arch Linux ARM/aarch64 should be documented separately. Current decision: keep AUR package metadata at `x86_64` for initial release and document ARM as a separate manual path until validated.
 - [ ] Run `scripts/release_prepare_aur.sh <version>` only after the matching GitHub tag exists.
 - [ ] Build in a clean Arch environment and install/uninstall the package.
 - [ ] Create and push the AUR repo with at least `PKGBUILD` and `.SRCINFO`.
@@ -427,16 +429,18 @@ rg --files .github docs | sort
 
 Observation:
 
-- The CLI can offer to run OS package-manager commands interactively when `ffmpeg` is missing.
+- The CLI now defaults to "show command only" when `ffmpeg` is missing.
+- Automatic package-manager command execution is opt-in via `--ffmpeg-auto-install`.
+- Global prompt suppression is available via `PETIGLYPH_NO_FFMPEG_PROMPT=1`.
 - It is suppressed for JSON and non-TTY paths.
 - This behavior should be very clear before public release because package managers and privilege prompts are sensitive UX.
 
 Tasks:
 
-- [ ] Add tests for prompt suppression and state persistence.
-- [ ] Consider an explicit env var to disable the prompt globally, for example `PETIGLYPH_NO_FFMPEG_PROMPT=1`.
-- [ ] Consider changing the prompt to "show command only" unless the user passes an opt-in flag.
-- [ ] Ensure docs explain that `petiglyph` never runs package-manager commands in JSON or non-interactive contexts.
+- [x] Add tests for prompt suppression and state persistence.
+- [x] Add an explicit env var to disable the prompt globally: `PETIGLYPH_NO_FFMPEG_PROMPT=1`.
+- [x] Change the prompt to "show command only" unless the user passes an opt-in flag (`--ffmpeg-auto-install`).
+- [x] Ensure docs explain that `petiglyph` never runs package-manager commands in JSON or non-interactive contexts.
 
 Validation:
 

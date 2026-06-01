@@ -33,7 +33,7 @@ AUR is manual: prepare `PKGBUILD`/`.SRCINFO`, validate locally, then push to the
 Runtime dependency policy:
 
 - `ffmpeg` is required for video/animated media import workflows.
-- Arch packaging declares `depends=('ffmpeg')`.
+- Arch packaging declares `depends=('ffmpeg' 'fontconfig')`.
 - Other package channels do not bundle `ffmpeg`; docs and runtime prompt must make that explicit.
 
 Trust/signing policy:
@@ -295,13 +295,15 @@ Workflow order:
 3. Publish to TestPyPI through the `testpypi` environment.
 4. Publish to PyPI through the `pypi` environment after TestPyPI succeeds.
 
-Local preflight:
+Local preflight (host-safe):
 
 ```bash
 python -m pip install -U maturin twine
-maturin build --release --compatibility pypi --sdist
-twine check target/wheels/*
+maturin sdist
+twine check target/wheels/petiglyph-*.tar.gz
 ```
+
+If you want local wheel validation, use a manylinux container. On a plain Linux host, `maturin build --compatibility pypi` can produce `linux_x86_64` wheels that PyPI rejects.
 
 TestPyPI install check:
 

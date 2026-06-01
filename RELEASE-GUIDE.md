@@ -400,13 +400,15 @@ Flow:
 3. Publish to TestPyPI (environment approval).
 4. Publish to PyPI (environment approval).
 
-Local preflight:
+Local preflight (host-safe):
 
 ```bash
 python -m pip install -U maturin twine
-maturin build --release --compatibility pypi --sdist
-twine check target/wheels/*
+maturin sdist
+twine check target/wheels/petiglyph-*.tar.gz
 ```
+
+Note: on a plain Linux host, `maturin build --compatibility pypi` typically emits a `linux_x86_64` wheel tag that PyPI rejects. Treat wheels built by `.github/workflows/pypi-publish.yml` (maturin manylinux mode) as the release-valid wheels, and validate those CI-produced wheel artifacts with `twine check`.
 
 Install checks:
 

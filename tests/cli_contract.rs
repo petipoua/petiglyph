@@ -136,6 +136,10 @@ fn cli_help_describes_polished_command_surface() {
         ),
         "nuke-everything name should be kept with clear wording: {top_stdout}"
     );
+    assert!(
+        top_stdout.contains("--ffmpeg-auto-install"),
+        "top-level help should document the ffmpeg auto-install opt-in flag: {top_stdout}"
+    );
 
     let animation = run_petiglyph(&workspace, &["animation", "--help"], None, None);
     assert!(animation.status.success(), "animation help should succeed");

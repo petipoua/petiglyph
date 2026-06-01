@@ -3,7 +3,7 @@ use clap::{Parser, Subcommand, ValueEnum};
 use serde::Serialize;
 use std::collections::BTreeSet;
 use std::fs;
-use std::io::{self, IsTerminal, Write};
+use std::io::{self, IsTerminal};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -38,6 +38,9 @@ struct Cli {
     /// Enable verbose image-to-glyph debug artifacts and logs (writes to project `debug/`).
     #[arg(long, global = true)]
     debug: bool,
+    /// Allow petiglyph to execute an OS package-manager FFmpeg install command when FFmpeg is missing.
+    #[arg(long, global = true)]
+    ffmpeg_auto_install: bool,
     #[command(subcommand)]
     command: Option<CliCommand>,
 }
@@ -676,40 +679,27 @@ fn maybe_offer_first_run_ffmpeg_setup(cli: &Cli) {
     println!();
     println!("  {}", hint.suggested_command);
     println!();
-    print!("Run this now? [y/N] ");
-    let _ = io::stdout().flush();
-
-    let mut answer = String::new();
-    let outcome = match io::stdin().read_line(&mut answer) {
-        Ok(_) => {
-            if answer.trim().eq_ignore_ascii_case("y") {
-                match run_ffmpeg_install_command(&hint) {
-                    Ok(()) => {
-                        if ffmpeg_available_on_path() {
-                            println!("FFmpeg install completed and is now available on PATH.");
-                            "accepted_success"
-                        } else {
-                            println!(
-                                "FFmpeg install command completed, but `ffmpeg` is still not on PATH."
-                            );
-                            println!("You may need to restart your terminal session.");
-                            "accepted_not_on_path"
-                        }
-                    }
-                    Err(error) => {
-                        eprintln!("FFmpeg install command failed: {error}");
-                        "accepted_failed"
-                    }
+    let outcome = if cli.ffmpeg_auto_install {
+        match run_ffmpeg_install_command(&hint) {
+            Ok(()) => {
+                if ffmpeg_available_on_path() {
+                    println!("FFmpeg install completed and is now available on PATH.");
+                    "auto_install_success"
+                } else {
+                    println!("FFmpeg install command completed, but `ffmpeg` is still not on PATH.");
+                    println!("You may need to restart your terminal session.");
+                    "auto_install_not_on_path"
                 }
-            } else {
-                println!("Skipped FFmpeg auto-install. You can run the command manually later.");
-                "declined"
+            }
+            Err(error) => {
+                eprintln!("FFmpeg install command failed: {error}");
+                "auto_install_failed"
             }
         }
-        Err(error) => {
-            eprintln!("Could not read prompt input: {error}");
-            "prompt_input_failed"
-        }
+    } else {
+        println!("Copy and run the suggested command above, then restart petiglyph.");
+        println!("After FFmpeg is available on PATH, video and animated media import will work.");
+        "hint_only"
     };
 
     if let Err(error) = record_ffmpeg_setup_prompt_state(&state_path, outcome, &hint) {
@@ -718,6 +708,10 @@ fn maybe_offer_first_run_ffmpeg_setup(cli: &Cli) {
 }
 
 fn should_offer_first_run_ffmpeg_setup(cli: &Cli) -> bool {
+    if ffmpeg_prompt_globally_disabled() {
+        return false;
+    }
+
     if !io::stdin().is_terminal() || !io::stdout().is_terminal() {
         return false;
     }
@@ -734,6 +728,14 @@ fn should_offer_first_run_ffmpeg_setup(cli: &Cli) -> bool {
             | Some(CliCommand::Sample { .. })
             | Some(CliCommand::InstallFont { .. })
     )
+}
+
+fn ffmpeg_prompt_globally_disabled() -> bool {
+    ffmpeg_prompt_globally_disabled_from_env(std::env::var_os("PETIGLYPH_NO_FFMPEG_PROMPT"))
+}
+
+fn ffmpeg_prompt_globally_disabled_from_env(value: Option<std::ffi::OsString>) -> bool {
+    value.is_some_and(|value| !value.is_empty() && value != "0")
 }
 
 fn command_emits_json(cli: &Cli) -> bool {
@@ -2812,4 +2814,19 @@ fn uninstall_tool_command() -> Result<UninstallToolCommandData> {
 
 fn doctor_command(manifest: Option<PathBuf>, repair: bool) -> Result<DoctorReport> {
     doctor(repair, manifest)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::ffmpeg_prompt_globally_disabled_from_env;
+    use std::ffi::OsString;
+
+    #[test]
+    fn ffmpeg_prompt_disable_env_parsing() {
+        assert!(!ffmpeg_prompt_globally_disabled_from_env(None));
+        assert!(!ffmpeg_prompt_globally_disabled_from_env(Some(OsString::from(""))));
+        assert!(!ffmpeg_prompt_globally_disabled_from_env(Some(OsString::from("0"))));
+        assert!(ffmpeg_prompt_globally_disabled_from_env(Some(OsString::from("1"))));
+        assert!(ffmpeg_prompt_globally_disabled_from_env(Some(OsString::from("true"))));
+    }
 }

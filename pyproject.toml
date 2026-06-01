@@ -4,6 +4,7 @@ build-backend = "maturin"
 
 [project]
 name = "petiglyph"
+dynamic = ["version"]
 description = "TUI-first Rust CLI for turning image folders into monochrome glyph fonts."
 readme = "README.md"
 requires-python = ">=3.8"

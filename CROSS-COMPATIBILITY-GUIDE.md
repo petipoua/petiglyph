@@ -155,7 +155,8 @@ The current PyPI workflow does not build musllinux wheels. Musl binaries are cur
 
 ### AUR / Local Arch Packaging
 
-- `PKGBUILD` and `scripts/aur.sh` use `depends=('ffmpeg')` and `makedepends=('cargo')`.
+- `PKGBUILD` and `scripts/aur.sh` use `depends=('ffmpeg' 'fontconfig')` and `makedepends=('cargo')`.
+- Current AUR metadata targets `arch=('x86_64')` only for the first public release; Arch ARM/aarch64 is treated as a separate manual validation path until explicitly supported.
 - `scripts/aur.sh` creates a tarball from the current working tree snapshot for local package testing.
 - `scripts/release_prepare_aur.sh` prepares release-grade `PKGBUILD` and `.SRCINFO` from an immutable GitHub tag tarball and computes a real SHA256.
 
