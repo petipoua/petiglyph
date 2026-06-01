@@ -3,6 +3,7 @@ set -euo pipefail
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$repo_root"
+source "$repo_root/scripts/lib/pkg_meta.sh"
 
 version="${1:-}"
 if [[ -z "$version" ]]; then
@@ -23,15 +24,15 @@ source_url="https://github.com/petipoua/petiglyph/archive/refs/tags/v${version}.
 sha256="$(curl -fsSL "$source_url" | sha256sum | awk '{print $1}')"
 
 cat > PKGBUILD <<PKGEOF
-pkgname=petiglyph
+pkgname=$AUR_PKGNAME
 pkgver=${version}
 pkgrel=1
-pkgdesc='Build icon fonts from project-local assets'
-arch=('x86_64')
-url='https://github.com/petipoua/petiglyph'
-license=('MIT')
-depends=('ffmpeg' 'fontconfig')
-makedepends=('cargo')
+pkgdesc='$AUR_PKGDESC'
+arch=($AUR_ARCH_LITERAL)
+url='$AUR_DEFAULT_REPO_URL'
+license=($AUR_LICENSE_LITERAL)
+depends=($AUR_DEPENDS_LITERAL)
+makedepends=($AUR_MAKEDEPENDS_LITERAL)
 source=("\$pkgname-\$pkgver.tar.gz::${source_url}")
 sha256sums=('${sha256}')
 

@@ -18,6 +18,9 @@ env:
   CARGO_DENY_VERSION: "0.19.8"
   CARGO_AUDIT_VERSION: "0.22.1"
   CARGO_BINSTALL_VERSION: "1.12.7"
+  HTY_INSTALLER_COMMIT: "23a4ac84ed996470f6ceaa1aa9cc7c94e03a1bbb"
+  HTY_INSTALLER_SHA256: "49cba3cda1d7ad1db67add0f33d169c045aca3d507c0f48b3e1d55634f550ad5"
+  HTY_VERSION: "v0.7.0"
 
 jobs:
   rust-quality:
@@ -72,6 +75,9 @@ jobs:
       - name: Assert release package hygiene
         run: ./scripts/release_assert_clean_tree.sh
 
+      - name: Check distribution matrix sync
+        run: ./scripts/distribution_matrix.py --check-sync
+
   tui-e2e-hty:
     name: tui-e2e-hty-linux
     runs-on: ubuntu-latest
@@ -87,7 +93,11 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          curl -fsSL https://raw.githubusercontent.com/LatentEvals/hty/main/scripts/install.sh | sh
+          installer_url="https://raw.githubusercontent.com/LatentEvals/hty/${HTY_INSTALLER_COMMIT}/scripts/install.sh"
+          installer_path="$(mktemp)"
+          curl -fsSL "$installer_url" -o "$installer_path"
+          echo "${HTY_INSTALLER_SHA256}  ${installer_path}" | sha256sum -c -
+          sh "$installer_path" --version "${HTY_VERSION}" --verify always
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"
 
       - name: Show hty version

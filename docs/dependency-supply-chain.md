@@ -25,7 +25,7 @@ This file records the dependency checks required by TODO item 8.
 
 Based on `cargo tree --locked -e normal` on 2026-05-31:
 
-- `image` is compiled with `avif` and `avif-native` features.
+- `image` is compiled with `avif`, `bmp`, `gif`, `jpeg`, `png`, and `webp` features.
 - AVIF-related chain includes `dav1d`, `dav1d-sys`, `ravif`, and `rav1e`.
 - SVG/raster rendering stack includes `resvg`, `usvg`, and `tiny-skia`.
 

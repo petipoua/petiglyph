@@ -63,18 +63,10 @@ jobs:
       - name: Verify staged binaries exist
         run: |
           set -euo pipefail
-          for bin_path in \
-            npm/petiglyph-linux-x64-gnu/bin/petiglyph \
-            npm/petiglyph-linux-arm64-gnu/bin/petiglyph \
-            npm/petiglyph-linux-x64-musl/bin/petiglyph \
-            npm/petiglyph-linux-arm64-musl/bin/petiglyph \
-            npm/petiglyph-darwin-x64/bin/petiglyph \
-            npm/petiglyph-darwin-arm64/bin/petiglyph \
-            npm/petiglyph-win32-x64-msvc/bin/petiglyph.exe \
-            npm/petiglyph-win32-arm64-msvc/bin/petiglyph.exe
-          do
+          while IFS= read -r bin_path; do
+            [[ -n "$bin_path" ]] || continue
             [[ -f "$bin_path" ]] || { echo "Missing staged binary: $bin_path" >&2; exit 1; }
-          done
+          done < <(./scripts/distribution_matrix.py --npm-bin-paths)
 
       - name: npm pack dry-run validation
         run: |
@@ -88,18 +80,10 @@ jobs:
       - name: Publish platform packages
         run: |
           set -euo pipefail
-          for pkg in \
-            npm/petiglyph-linux-x64-gnu \
-            npm/petiglyph-linux-arm64-gnu \
-            npm/petiglyph-linux-x64-musl \
-            npm/petiglyph-linux-arm64-musl \
-            npm/petiglyph-darwin-x64 \
-            npm/petiglyph-darwin-arm64 \
-            npm/petiglyph-win32-x64-msvc \
-            npm/petiglyph-win32-arm64-msvc
-          do
+          while IFS= read -r pkg; do
+            [[ -n "$pkg" ]] || continue
             (cd "$pkg" && npm publish --access public)
-          done
+          done < <(./scripts/distribution_matrix.py --npm-package-dirs)
 
       - name: Publish meta package
         run: |

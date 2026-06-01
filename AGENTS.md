@@ -47,30 +47,30 @@
 
 ### Code Layout (Important)
 
-- Entrypoint is [src/main.rs](/home/peti_poua/Code/petiglyph/src/main.rs); core behavior is split across:
-  - [src/cli.rs](/home/peti_poua/Code/petiglyph/src/cli.rs)
-  - [src/tui.rs](/home/peti_poua/Code/petiglyph/src/tui.rs)
-  - [src/project.rs](/home/peti_poua/Code/petiglyph/src/project.rs)
-  - [src/build.rs](/home/peti_poua/Code/petiglyph/src/build.rs)
-  - [src/compose.rs](/home/peti_poua/Code/petiglyph/src/compose.rs)
-  - [src/animation_media.rs](/home/peti_poua/Code/petiglyph/src/animation_media.rs)
-  - [src/image_pipeline.rs](/home/peti_poua/Code/petiglyph/src/image_pipeline.rs)
-  - [src/glyph_debug.rs](/home/peti_poua/Code/petiglyph/src/glyph_debug.rs)
-  - [src/install.rs](/home/peti_poua/Code/petiglyph/src/install.rs)
-  - [src/doctor.rs](/home/peti_poua/Code/petiglyph/src/doctor.rs)
-  - [src/artifact_warning.rs](/home/peti_poua/Code/petiglyph/src/artifact_warning.rs)
+- Entrypoint is [src/main.rs](src/main.rs); core behavior is split across:
+  - [src/cli.rs](src/cli.rs)
+  - [src/tui.rs](src/tui.rs)
+  - [src/project.rs](src/project.rs)
+  - [src/build.rs](src/build.rs)
+  - [src/compose.rs](src/compose.rs)
+  - [src/animation_media.rs](src/animation_media.rs)
+  - [src/image_pipeline.rs](src/image_pipeline.rs)
+  - [src/glyph_debug.rs](src/glyph_debug.rs)
+  - [src/install.rs](src/install.rs)
+  - [src/doctor.rs](src/doctor.rs)
+  - [src/artifact_warning.rs](src/artifact_warning.rs)
 - In-crate unit/integration-style coverage helpers:
-  - [src/tests.rs](/home/peti_poua/Code/petiglyph/src/tests.rs)
-  - [tests/cli_contract.rs](/home/peti_poua/Code/petiglyph/tests/cli_contract.rs)
+  - [src/tests.rs](src/tests.rs)
+  - [tests/cli_contract.rs](tests/cli_contract.rs)
 - Root metadata/docs:
-  - [Cargo.toml](/home/peti_poua/Code/petiglyph/Cargo.toml)
-  - [README.md](/home/peti_poua/Code/petiglyph/README.md)
-  - [RELEASE-GUIDE.md](/home/peti_poua/Code/petiglyph/RELEASE-GUIDE.md)
-  - [RELEASE-CHECKLIST.md](/home/peti_poua/Code/petiglyph/RELEASE-CHECKLIST.md)
-  - [CROSS-COMPATIBILITY-GUIDE.md](/home/peti_poua/Code/petiglyph/CROSS-COMPATIBILITY-GUIDE.md)
-  - [pyproject.toml](/home/peti_poua/Code/petiglyph/pyproject.toml)
+  - [Cargo.toml](Cargo.toml)
+  - [README.md](README.md)
+  - [RELEASE-GUIDE.md](RELEASE-GUIDE.md)
+  - [RELEASE-CHECKLIST.md](RELEASE-CHECKLIST.md)
+  - [CROSS-COMPATIBILITY-GUIDE.md](CROSS-COMPATIBILITY-GUIDE.md)
+  - [pyproject.toml](pyproject.toml)
 - Local Arch packaging helpers:
-  - [PKGBUILD](/home/peti_poua/Code/petiglyph/PKGBUILD)
+  - [PKGBUILD](PKGBUILD)
   - `scripts/aur.sh`
   - `scripts/release_prepare_aur.sh`
 - npm packaging lives under `npm/`:

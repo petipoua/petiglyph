@@ -24,7 +24,7 @@ Supported distribution surfaces in this repository are:
 - Rust edition: `2024`.
 - CLI parser: `clap`.
 - TUI stack: `ratatui` + `crossterm`.
-- Image decode/rendering: `image` with `avif`, `avif-native`, `bmp`, `gif`, `jpeg`, `png`, `webp`; SVG through `resvg`.
+- Image decode/rendering: `image` with `avif`, `bmp`, `gif`, `jpeg`, `png`, `webp`; SVG through `resvg`.
 - Video/GIF frame expansion: `src/animation_media.rs`; video expansion shells out to `ffmpeg`.
 - Install/uninstall lifecycle: `src/install.rs` with Linux, macOS, and Windows branches.
 - Health/repair checks: `src/doctor.rs`.
@@ -70,7 +70,7 @@ Managed state:
 - GIF expansion uses Rust image decoding; video expansion uses `ffmpeg`.
 - First interactive non-JSON runs offer a one-time OS-aware install prompt when `ffmpeg` is missing.
 - Prompt state is stored as `.ffmpeg-setup-prompt-v1.json` under the managed install directory.
-- Arch packaging declares `depends=('ffmpeg')`.
+- Arch packaging declares `depends=('ffmpeg' 'fontconfig')`.
 
 Clipboard providers used by the TUI installed-font card:
 
@@ -220,7 +220,7 @@ Before modifying `hty` flows, validate local `hty --help` and check upstream doc
 - macOS direct artifacts are unsigned and not notarized unless a release explicitly states otherwise.
 - Windows direct artifacts are unsigned unless a release explicitly states otherwise.
 - macOS and Windows ARM64 artifacts should remain called out as limited-runtime-validation/unstable until direct runtime testing exists.
-- `image` `avif-native` can introduce native build requirements; keep CI/package builds watched for AVIF codec regressions.
+- `image` AVIF support still pulls native codec dependencies transitively (`dav1d-sys`, `ravif`, `rav1e`); keep CI/package builds watched for AVIF codec regressions.
 - PyPI does not currently ship musllinux wheels.
 - Windows font refresh depends on PowerShell availability.
 - Clipboard support depends on external platform tools; failures should remain user-visible and non-fatal.

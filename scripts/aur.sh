@@ -2,7 +2,8 @@
 set -euo pipefail
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-pkgname="petiglyph"
+source "$repo_root/scripts/lib/pkg_meta.sh"
+pkgname="$AUR_PKGNAME"
 
 usage() {
   cat <<'EOF'
@@ -40,19 +41,19 @@ write_pkgbuild() {
     exit 1
   fi
   if [[ -z "${repo_url}" ]]; then
-    repo_url="https://github.com/petipoua/petiglyph"
+    repo_url="$AUR_DEFAULT_REPO_URL"
   fi
 
   cat >"$repo_root/PKGBUILD" <<EOF
 pkgname=$pkgname
 pkgver=$pkgver
 pkgrel=1
-pkgdesc='Build icon fonts from project-local assets'
-arch=('x86_64')
+pkgdesc='$AUR_PKGDESC'
+arch=($AUR_ARCH_LITERAL)
 url='$repo_url'
-license=('MIT')
-depends=('ffmpeg')
-makedepends=('cargo')
+license=($AUR_LICENSE_LITERAL)
+depends=($AUR_DEPENDS_LITERAL)
+makedepends=($AUR_MAKEDEPENDS_LITERAL)
 source=("\$pkgname-\$pkgver.tar.gz")
 sha256sums=('SKIP')
 

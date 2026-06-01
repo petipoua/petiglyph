@@ -19,6 +19,7 @@ fi
 
 tmpdir="$(mktemp -d)"
 trap 'rm -rf "$tmpdir"' EXIT
+matrix_script="$repo_root/scripts/distribution_matrix.py"
 
 extract_archive() {
   local archive="$1"
@@ -68,13 +69,9 @@ stage_target() {
   echo "Staged $target -> $package_dir/bin/$bin_name"
 }
 
-stage_target "x86_64-unknown-linux-gnu" "npm/petiglyph-linux-x64-gnu" "petiglyph"
-stage_target "aarch64-unknown-linux-gnu" "npm/petiglyph-linux-arm64-gnu" "petiglyph"
-stage_target "x86_64-unknown-linux-musl" "npm/petiglyph-linux-x64-musl" "petiglyph"
-stage_target "aarch64-unknown-linux-musl" "npm/petiglyph-linux-arm64-musl" "petiglyph"
-stage_target "x86_64-apple-darwin" "npm/petiglyph-darwin-x64" "petiglyph"
-stage_target "aarch64-apple-darwin" "npm/petiglyph-darwin-arm64" "petiglyph"
-stage_target "x86_64-pc-windows-msvc" "npm/petiglyph-win32-x64-msvc" "petiglyph.exe"
-stage_target "aarch64-pc-windows-msvc" "npm/petiglyph-win32-arm64-msvc" "petiglyph.exe"
+while IFS=$'\t' read -r target package_dir bin_name; do
+  [[ -n "${target}" ]] || continue
+  stage_target "$target" "$package_dir" "$bin_name"
+done < <("$matrix_script" --stage-lines)
 
 echo "npm platform binaries staged from $dist_dir"

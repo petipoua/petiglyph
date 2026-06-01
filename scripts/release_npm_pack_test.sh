@@ -18,23 +18,13 @@ tarball_dir="$(mktemp -d)"
 workdir="$(mktemp -d)"
 trap 'rm -rf "$tarball_dir" "$workdir"' EXIT
 
-required_bins=(
-  npm/petiglyph-linux-x64-gnu/bin/petiglyph
-  npm/petiglyph-linux-arm64-gnu/bin/petiglyph
-  npm/petiglyph-linux-x64-musl/bin/petiglyph
-  npm/petiglyph-linux-arm64-musl/bin/petiglyph
-  npm/petiglyph-darwin-x64/bin/petiglyph
-  npm/petiglyph-darwin-arm64/bin/petiglyph
-  npm/petiglyph-win32-x64-msvc/bin/petiglyph.exe
-  npm/petiglyph-win32-arm64-msvc/bin/petiglyph.exe
-)
-
-for bin_path in "${required_bins[@]}"; do
-  if [[ ! -f "$bin_path" ]]; then
+while IFS= read -r bin_path; do
+  [[ -n "${bin_path}" ]] || continue
+  if [[ ! -f "${bin_path}" ]]; then
     echo "Missing staged binary: $bin_path" >&2
     exit 1
   fi
-done
+done < <("$repo_root/scripts/distribution_matrix.py" --npm-bin-paths)
 
 for pkg in npm/*; do
   if [[ -f "$pkg/package.json" ]]; then
@@ -48,7 +38,13 @@ for pkg in npm/*; do
 done
 
 meta_tgz="$(ls "$tarball_dir"/petiglyph-[0-9]*.tgz 2>/dev/null | head -n1 || true)"
-platform_tgz="$(ls "$tarball_dir"/petiglyph-petiglyph-linux-x64-gnu-*.tgz 2>/dev/null | head -n1 || true)"
+first_platform_dir="$("$repo_root/scripts/distribution_matrix.py" --npm-package-dirs | head -n1 || true)"
+if [[ -z "$first_platform_dir" ]]; then
+  echo "No platform package directories found in distribution matrix" >&2
+  exit 1
+fi
+first_platform_slug="$(basename "$first_platform_dir")"
+platform_tgz="$(ls "$tarball_dir"/petiglyph-"$first_platform_slug"-*.tgz 2>/dev/null | head -n1 || true)"
 
 if [[ -z "$meta_tgz" || -z "$platform_tgz" ]]; then
   echo "Expected meta and at least one platform tarball in $tarball_dir" >&2
