@@ -571,7 +571,7 @@ Legacy manifests may still contain boolean bleed values in compositions (`true`/
 
 ## TUI Keys
 
-- TUI viewport is centered and capped at `148x46`; terminals smaller than `96x28` show a size warning screen
+- TUI viewport is centered and capped at `148x92`; terminals smaller than `96x40` show a size warning screen
 - `Tab` / `Shift+Tab`: cycle Home <-> Glyphs
 - `1` / `2`: switch panels outside Home workflow mode; on Home with an active project, `1`-`4` start the four creation workflows
 - `v`: toggle verbose path display
