@@ -3,7 +3,7 @@ use serde_json::Value;
 use std::env;
 use std::fs;
 use std::fs::{File, FileTimes};
-#[cfg(unix)]
+#[cfg(target_os = "linux")]
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
