@@ -1300,11 +1300,18 @@ pub(crate) fn installed_ttf_candidates_for_manifest_font(
 }
 
 fn run_refresh_command(mut command: ProcessCommand, description: &str) -> Result<()> {
-    let status = command
-        .status()
+    let output = command
+        .output()
         .with_context(|| format!("failed to run {description}"))?;
-    if !status.success() {
-        bail!("{description} failed with status {status}");
+    if !output.status.success() {
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        bail!(
+            "{description} failed with status {}\nstdout:\n{}\nstderr:\n{}",
+            output.status,
+            stdout.trim(),
+            stderr.trim()
+        );
     }
     Ok(())
 }
