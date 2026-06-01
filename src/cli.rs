@@ -791,7 +791,10 @@ fn ffmpeg_setup_prompt_state_path() -> Option<PathBuf> {
 }
 
 fn ffmpeg_available_on_path() -> bool {
-    Command::new("ffmpeg")
+    let Some(ffmpeg) = resolve_command_path("ffmpeg") else {
+        return false;
+    };
+    Command::new(ffmpeg)
         .arg("-version")
         .stdin(Stdio::null())
         .stdout(Stdio::null())
@@ -808,10 +811,17 @@ fn run_ffmpeg_install_command(hint: &FfmpegInstallHint) -> Result<()> {
         );
     };
 
-    let status = Command::new(&invocation.program)
+    let resolved = resolve_command_path(&invocation.program).ok_or_else(|| {
+        anyhow::anyhow!(
+            "could not resolve executable '{}' from PATH for ffmpeg auto-install",
+            invocation.program
+        )
+    })?;
+
+    let status = Command::new(&resolved)
         .args(invocation.args.iter())
         .status()
-        .with_context(|| format!("failed to launch {}", invocation.program))?;
+        .with_context(|| format!("failed to launch {}", resolved.display()))?;
 
     if status.success() {
         Ok(())
@@ -821,6 +831,74 @@ fn run_ffmpeg_install_command(hint: &FfmpegInstallHint) -> Result<()> {
             .map_or_else(|| "signal".to_string(), |c| c.to_string());
         anyhow::bail!("installer exited with status {code}");
     }
+}
+
+fn resolve_command_path(command: &str) -> Option<PathBuf> {
+    let candidate = PathBuf::from(command);
+    if candidate.is_absolute() && candidate.is_file() {
+        return Some(candidate);
+    }
+
+    let path_var = std::env::var_os("PATH")?;
+    let path_exts = windows_path_extensions();
+    for dir in std::env::split_paths(&path_var) {
+        if dir.as_os_str().is_empty() {
+            continue;
+        }
+        if cfg!(windows) {
+            if has_path_extension(&candidate) {
+                let full = dir.join(&candidate);
+                if full.is_file() {
+                    return Some(full);
+                }
+            } else {
+                for ext in &path_exts {
+                    let full = dir.join(format!("{command}{ext}"));
+                    if full.is_file() {
+                        return Some(full);
+                    }
+                }
+            }
+        } else {
+            let full = dir.join(&candidate);
+            if full.is_file() {
+                return Some(full);
+            }
+        }
+    }
+    None
+}
+
+fn has_path_extension(path: &Path) -> bool {
+    path.extension().is_some()
+}
+
+fn windows_path_extensions() -> Vec<String> {
+    if !cfg!(windows) {
+        return Vec::new();
+    }
+    std::env::var_os("PATHEXT")
+        .map(|raw| {
+            raw.to_string_lossy()
+                .split(';')
+                .filter_map(|value| {
+                    let trimmed = value.trim();
+                    if trimmed.is_empty() {
+                        None
+                    } else {
+                        Some(trimmed.to_ascii_lowercase())
+                    }
+                })
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_else(|| {
+            vec![
+                ".com".to_string(),
+                ".exe".to_string(),
+                ".bat".to_string(),
+                ".cmd".to_string(),
+            ]
+        })
 }
 
 fn now_unix_ms() -> u128 {
@@ -2846,8 +2924,11 @@ fn doctor_command(manifest: Option<PathBuf>, repair: bool) -> Result<DoctorRepor
 
 #[cfg(test)]
 mod tests {
-    use super::ffmpeg_prompt_globally_disabled_from_env;
+    use super::{ffmpeg_prompt_globally_disabled_from_env, resolve_command_path};
     use std::ffi::OsString;
+    use std::fs;
+    use std::path::PathBuf;
+    use std::time::{SystemTime, UNIX_EPOCH};
 
     #[test]
     fn ffmpeg_prompt_disable_env_parsing() {
@@ -2864,5 +2945,32 @@ mod tests {
         assert!(ffmpeg_prompt_globally_disabled_from_env(Some(
             OsString::from("true")
         )));
+    }
+
+    #[test]
+    fn resolve_command_path_accepts_absolute_file_path() {
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system clock should be valid")
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!("petiglyph-cli-resolve-{nonce}.bin"));
+        fs::write(&path, b"stub").expect("stub command file is written");
+
+        let resolved = resolve_command_path(path.to_str().expect("temp path should be UTF-8"));
+        assert_eq!(resolved, Some(path.clone()));
+
+        fs::remove_file(path).expect("stub command file is removed");
+    }
+
+    #[test]
+    fn resolve_command_path_returns_none_for_missing_command() {
+        let missing = format!(
+            "petiglyph-command-does-not-exist-{}",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("system clock should be valid")
+                .as_nanos()
+        );
+        assert_eq!(resolve_command_path(&missing), None::<PathBuf>);
     }
 }

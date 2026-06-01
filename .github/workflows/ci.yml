@@ -104,7 +104,9 @@ jobs:
           installer_path="$(mktemp)"
           curl -fsSL "$installer_url" -o "$installer_path"
           echo "${HTY_INSTALLER_SHA256}  ${installer_path}" | sha256sum -c -
-          sh "$installer_path" --version "${HTY_VERSION}" --verify always
+          chmod 500 "$installer_path"
+          env -i HOME="$HOME" PATH="$PATH" bash --noprofile --norc "$installer_path" --version "${HTY_VERSION}" --verify always
+          rm -f "$installer_path"
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"
 
       - name: Show hty version

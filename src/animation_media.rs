@@ -427,12 +427,16 @@ fn expand_video_frames_to_temp_pngs(
     let temp_root = TempExtractDir::new("video")?;
     let output_pattern = temp_root.path().join("%06d.png");
 
-    let ffmpeg_check = Command::new("ffmpeg").arg("-version").output();
+    let Some(ffmpeg_path) = resolve_command_path("ffmpeg") else {
+        bail!("ffmpeg not found; install ffmpeg to import video files");
+    };
+
+    let ffmpeg_check = Command::new(&ffmpeg_path).arg("-version").output();
     if ffmpeg_check.is_err() {
         bail!("ffmpeg not found; install ffmpeg to import video files");
     }
 
-    let output = Command::new("ffmpeg")
+    let output = Command::new(&ffmpeg_path)
         .arg("-v")
         .arg("error")
         .arg("-i")
@@ -474,6 +478,24 @@ fn expand_video_frames_to_temp_pngs(
     }
     frames.sort();
     Ok((temp_root, frames))
+}
+
+fn resolve_command_path(command: &str) -> Option<PathBuf> {
+    let candidate = PathBuf::from(command);
+    if candidate.is_absolute() && candidate.is_file() {
+        return Some(candidate);
+    }
+    let path_var = std::env::var_os("PATH")?;
+    for dir in std::env::split_paths(&path_var) {
+        if dir.as_os_str().is_empty() {
+            continue;
+        }
+        let full = dir.join(&candidate);
+        if full.is_file() {
+            return Some(full);
+        }
+    }
+    None
 }
 
 fn media_identity_hash_hex8(path: &Path) -> Result<String> {
@@ -751,6 +773,7 @@ mod tests {
     use super::AnimationImportProcessingOptions;
     use super::classify_input_kind;
     use super::media_identity_hash_hex8;
+    use super::resolve_command_path;
     use super::slug_stem;
     use super::{AnimationInputKind, ExistingImportPolicy, import_animation_media_to_input};
     use image::{Rgba, RgbaImage};
@@ -866,5 +889,29 @@ mod tests {
             super::unescape_backslashes(r"C:\Users\alice\icons\frame.png"),
             r"C:\Users\alice\icons\frame.png"
         );
+    }
+
+    #[test]
+    fn resolve_command_path_accepts_absolute_file_path() {
+        let dir = make_temp_dir("anim-media-resolve");
+        let bin = dir.join("tool-stub");
+        fs::write(&bin, b"stub").expect("stub command file is written");
+
+        let resolved = resolve_command_path(bin.to_str().expect("path should be utf-8"));
+        assert_eq!(resolved, Some(bin.clone()));
+
+        fs::remove_dir_all(dir).expect("temp dir removed");
+    }
+
+    #[test]
+    fn resolve_command_path_returns_none_for_missing_command() {
+        let missing = format!(
+            "petiglyph-anim-media-does-not-exist-{}",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("system time is valid")
+                .as_nanos()
+        );
+        assert_eq!(resolve_command_path(&missing), None);
     }
 }

@@ -9,6 +9,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command as ProcessCommand;
 use std::thread;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use tempfile::Builder;
 use walkdir::WalkDir;
 
 use crate::project::{
@@ -299,34 +300,36 @@ fn acquire_file_lock(lock_path: &Path, label: &str) -> Result<FileLockGuard> {
 
 fn write_atomic_string(path: &Path, data: &str) -> Result<()> {
     let parent = path.parent().unwrap_or_else(|| Path::new("."));
-    let temp_path = parent.join(format!(
-        ".{}.tmp-{}-{}",
-        path.file_name()
-            .and_then(|name| name.to_str())
-            .unwrap_or("write"),
-        std::process::id(),
-        now_millis()
-    ));
-    fs::write(&temp_path, data)
-        .with_context(|| format!("failed to write {}", temp_path.display()))?;
-    fs::rename(&temp_path, path)
+    let mut temp_file = Builder::new()
+        .prefix(".petiglyph-")
+        .suffix(".tmp")
+        .tempfile_in(parent)
+        .with_context(|| format!("failed to create secure temp file in {}", parent.display()))?;
+    temp_file
+        .write_all(data.as_bytes())
+        .with_context(|| format!("failed to write temporary content for {}", path.display()))?;
+    temp_file
+        .flush()
+        .with_context(|| format!("failed to flush temporary content for {}", path.display()))?;
+    fs::rename(temp_file.path(), path)
         .with_context(|| format!("failed to replace {}", path.display()))?;
     Ok(())
 }
 
 fn write_atomic_bytes(path: &Path, data: &[u8]) -> Result<()> {
     let parent = path.parent().unwrap_or_else(|| Path::new("."));
-    let temp_path = parent.join(format!(
-        ".{}.tmp-{}-{}",
-        path.file_name()
-            .and_then(|name| name.to_str())
-            .unwrap_or("write"),
-        std::process::id(),
-        now_millis()
-    ));
-    fs::write(&temp_path, data)
-        .with_context(|| format!("failed to write {}", temp_path.display()))?;
-    fs::rename(&temp_path, path)
+    let mut temp_file = Builder::new()
+        .prefix(".petiglyph-")
+        .suffix(".tmp")
+        .tempfile_in(parent)
+        .with_context(|| format!("failed to create secure temp file in {}", parent.display()))?;
+    temp_file
+        .write_all(data)
+        .with_context(|| format!("failed to write temporary content for {}", path.display()))?;
+    temp_file
+        .flush()
+        .with_context(|| format!("failed to flush temporary content for {}", path.display()))?;
+    fs::rename(temp_file.path(), path)
         .with_context(|| format!("failed to replace {}", path.display()))?;
     Ok(())
 }

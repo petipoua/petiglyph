@@ -10,7 +10,7 @@
     clippy::too_many_arguments
 )]
 
-use anyhow::{Context, Result, bail};
+use anyhow::{Context, Result, anyhow, bail};
 use crossterm::ExecutableCommand;
 use crossterm::event::{
     self, DisableBracketedPaste, EnableBracketedPaste, Event, KeyCode, KeyEvent, KeyEventKind,
@@ -1891,7 +1891,9 @@ fn clipboard_providers_for_os(
 }
 
 fn execute_clipboard_provider(provider: &ClipboardProvider, text: &str) -> Result<()> {
-    let mut command = std::process::Command::new(provider.command);
+    let resolved = resolve_command_path(provider.command)
+        .ok_or_else(|| anyhow!("{} missing from PATH", provider.command))?;
+    let mut command = std::process::Command::new(&resolved);
     command
         .args(provider.args)
         .stdin(std::process::Stdio::piped());
@@ -1910,6 +1912,25 @@ fn execute_clipboard_provider(provider: &ClipboardProvider, text: &str) -> Resul
         bail!("{} exited with status {status}", provider.command);
     }
     Ok(())
+}
+
+fn resolve_command_path(command: &str) -> Option<PathBuf> {
+    let candidate = PathBuf::from(command);
+    if candidate.is_absolute() && candidate.is_file() {
+        return Some(candidate);
+    }
+
+    let path_var = env::var_os("PATH")?;
+    for dir in env::split_paths(&path_var) {
+        if dir.as_os_str().is_empty() {
+            continue;
+        }
+        let full = dir.join(&candidate);
+        if full.is_file() {
+            return Some(full);
+        }
+    }
+    None
 }
 
 fn copy_to_clipboard_with_runner<F>(
@@ -12131,7 +12152,7 @@ mod tests {
         home_workflow_preview_lines, import_image_files_to_input,
         installed_animation_blocks_for_definition, installed_animation_frame_index,
         installed_animation_source_block, persist_composition_definition, preview_leftmost_control,
-        preview_lines, prune_static_sample_blocks, scrollbar_thumb_geometry,
+        preview_lines, prune_static_sample_blocks, resolve_command_path, scrollbar_thumb_geometry,
         selected_threshold_sources, split_shell_like_tokens, step_animation_preview,
         visible_window_bounds,
     };
@@ -14822,5 +14843,29 @@ mod tests {
         assert!(message.contains("tried: xclip, wl-copy"));
         assert!(message.contains("xclip: xclip missing from PATH"));
         assert!(message.contains("wl-copy: wl-copy missing from PATH"));
+    }
+
+    #[test]
+    fn resolve_command_path_accepts_absolute_file_path() {
+        let dir = make_temp_dir("clipboard-resolve");
+        let tool = dir.join("tool-stub");
+        fs::write(&tool, b"stub").expect("stub command file is written");
+
+        let resolved = resolve_command_path(tool.to_str().expect("path should be utf-8"));
+        assert_eq!(resolved, Some(tool.clone()));
+
+        fs::remove_dir_all(dir).expect("temp dir is removed");
+    }
+
+    #[test]
+    fn resolve_command_path_returns_none_for_missing_command() {
+        let missing = format!(
+            "petiglyph-tui-does-not-exist-{}",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("system time is valid")
+                .as_nanos()
+        );
+        assert_eq!(resolve_command_path(&missing), None);
     }
 }
