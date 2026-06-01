@@ -130,6 +130,10 @@
   - Headless CI-style runs (default script mode).
   - Visible observation/debug runs (`hty watch`, `hty attach`, and script `--watch`/`--watch-auto` flows).
 - When adjusting timing/synchronization, favor explicit waits on rendered state and filesystem artifacts over fixed sleeps.
+- CI adaptation policy:
+  - It is acceptable to add CI-only/headless-only adaptations (for example runner-specific timing buffers or env-gated behavior) to make GitHub-hosted runners reliably execute the same workflows.
+  - Keep local test execution as the full-strength baseline; do not reduce local journey coverage, assertions, or behavioral checks just to make CI pass.
+  - Fixing CI flakiness must not weaken the overall E2E suite semantics for local runs.
 
 ### Practical Workflow Guidance for Agents
 
