@@ -30,7 +30,7 @@ jobs:
         os: [ubuntu-latest, macos-latest, windows-latest]
 
     steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
 
       - name: Show toolchain
         shell: bash
@@ -58,7 +58,7 @@ jobs:
       contents: read
 
     steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
 
       - name: Cargo package listing
         shell: bash
@@ -78,7 +78,7 @@ jobs:
       PETIGLYPH_MOCK_CLIPBOARD: "1"
 
     steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
 
       - name: Install hty
         shell: bash
@@ -110,7 +110,7 @@ jobs:
         os: [ubuntu-latest, macos-latest, windows-latest]
 
     steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
 
       - name: Runtime smoke (Linux/macOS)
         if: runner.os != 'Windows'
@@ -148,7 +148,7 @@ jobs:
       contents: read
 
     steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
 
       - name: Install cargo-deny and cargo-audit
         shell: bash
@@ -171,7 +171,7 @@ jobs:
           cat cargo-tree-normal.txt
 
       - name: Upload dependency tree
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f
         with:
           name: cargo-tree-normal
           path: cargo-tree-normal.txt
