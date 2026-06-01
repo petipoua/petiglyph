@@ -18,9 +18,13 @@ Intent: keep core Rust quality bar consistent across major OS runners.
 
 Runs:
 - `cargo fmt --check`
-- `cargo check --locked`
 - `cargo clippy --locked --all-targets --all-features -- -D warnings`
 - `cargo test --locked`
+
+Cache guardrails:
+- caches Cargo registry/git sources and `target/` with `actions/cache`
+- key includes OS, workflow identity, `Cargo.lock` hash, and toolchain file hash (`rust-toolchain.toml` / `rust-toolchain` when present)
+- cache restore/save is non-fatal; misses fall back to cold build automatically
 
 ## 2. `package-hygiene-linux` (Ubuntu)
 
@@ -63,7 +67,6 @@ Run these locally before pushing:
 
 ```bash
 cargo fmt --check
-cargo check --locked
 cargo clippy --locked --all-targets --all-features -- -D warnings
 cargo test --locked
 ./scripts/release_assert_clean_tree.sh
@@ -75,6 +78,25 @@ cargo tree --locked -e normal
 ```
 
 ## CI Debugging Notes
+
+### Manual cache maintenance
+
+When CI performance or behavior suggests stale cache state, use:
+
+```bash
+# list rust-quality caches for this repo
+./scripts/gh_cache_delete.sh --prefix rust-quality --list
+
+# delete matching rust-quality caches
+./scripts/gh_cache_delete.sh --prefix rust-quality
+
+# delete all caches only for main ref
+./scripts/gh_cache_delete.sh --all --ref refs/heads/main
+```
+
+Notes:
+- script requires authenticated `gh` CLI with `repo` scope
+- use `--dry-run` first if you want to preview deletes
 
 Use this section as operational memory when a CI failure is not immediately explained by the failing command output. Several commits after `bdf42556f0f0` through `9c75ea4e1a70` fixed runner-only failures that were not always reproducible locally.
 
