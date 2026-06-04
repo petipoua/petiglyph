@@ -387,6 +387,7 @@ enum AnimationImportSettingsFocus {
     GrayscaleToggle,
     GrayscaleOptionsButton,
     Threshold,
+    FramesButton,
     ExportTestImageButton,
     Continue,
     Back,
@@ -415,6 +416,7 @@ struct AnimationImportSettingsState {
     threshold: u8,
     grayscale_editor: Option<GrayscaleOptionsEditor>,
     export_frame_count: u16,
+    preview_frame_index: usize,
     last_exported_test_image: Option<PathBuf>,
 }
 
@@ -427,6 +429,7 @@ impl Default for AnimationImportSettingsState {
             threshold: 64,
             grayscale_editor: None,
             export_frame_count: 5,
+            preview_frame_index: 0,
             last_exported_test_image: None,
         }
     }
@@ -536,6 +539,7 @@ pub(crate) struct App {
     home_workflow_grid_source_key: Option<String>,
     home_workflow_grid_inline_notice: Option<String>,
     home_workflow_error: Option<String>,
+    discard_next_animation_import_result: bool,
     pub(crate) last_build: Option<BuildSummary>,
     pub(crate) last_sample: Option<String>,
     pub(crate) installed_font_path: Option<PathBuf>,
@@ -3300,8 +3304,11 @@ fn move_import_settings_focus_left(
         AnimationImportSettingsFocus::Threshold => {
             AnimationImportSettingsFocus::GrayscaleOptionsButton
         }
-        AnimationImportSettingsFocus::ExportTestImageButton => {
+        AnimationImportSettingsFocus::FramesButton => {
             AnimationImportSettingsFocus::Threshold
+        }
+        AnimationImportSettingsFocus::ExportTestImageButton => {
+            AnimationImportSettingsFocus::FramesButton
         }
         AnimationImportSettingsFocus::Continue => {
             AnimationImportSettingsFocus::ExportTestImageButton
@@ -3329,6 +3336,9 @@ fn move_import_settings_focus_right(
             AnimationImportSettingsFocus::Threshold
         }
         AnimationImportSettingsFocus::Threshold => {
+            AnimationImportSettingsFocus::FramesButton
+        }
+        AnimationImportSettingsFocus::FramesButton => {
             AnimationImportSettingsFocus::ExportTestImageButton
         }
         AnimationImportSettingsFocus::ExportTestImageButton => {
@@ -3489,6 +3499,29 @@ fn handle_animation_import_settings_key(app: &mut App, key: KeyEvent) -> Result<
                 ));
                 return Ok(true);
             }
+            if app.animation_import_settings.focus == AnimationImportSettingsFocus::FramesButton
+                && matches!(
+                    app.home_workflow,
+                    HomeWorkflow::Tweaking(HomeCreationKind::AnimatedGlyph)
+                        | HomeWorkflow::Tweaking(HomeCreationKind::AnimatedGridGlyph)
+                )
+            {
+                if app.animation_selection_order.is_empty() {
+                    app.status = Some("import at least one animation frame first".to_string());
+                    return Ok(true);
+                }
+                let step: i32 = if matches!(key.code, KeyCode::Up | KeyCode::Char('k')) {
+                    1
+                } else {
+                    -1
+                };
+                let total = app.animation_selection_order.len();
+                let current = app.animation_import_settings.preview_frame_index % total;
+                let next = ((current as i32 + step).rem_euclid(total as i32)) as usize;
+                app.animation_import_settings.preview_frame_index = next;
+                app.status = Some(format!("preview frame {}/{}", next + 1, total));
+                return Ok(true);
+            }
             if app.animation_import_settings.focus
                 == AnimationImportSettingsFocus::ExportTestImageButton
                 && matches!(
@@ -3543,6 +3576,7 @@ fn handle_animation_import_settings_key(app: &mut App, key: KeyEvent) -> Result<
                 Ok(true)
             }
             AnimationImportSettingsFocus::Threshold => Ok(true),
+            AnimationImportSettingsFocus::FramesButton => Ok(true),
             AnimationImportSettingsFocus::ExportTestImageButton => {
                 app.export_animation_import_test_image()?;
                 Ok(true)
@@ -4876,6 +4910,7 @@ impl App {
 
     fn start_home_workflow(&mut self, kind: HomeCreationKind) {
         self.home_workflow = HomeWorkflow::Import(kind);
+        self.discard_next_animation_import_result = false;
         self.home_workflow_import_count = 0;
         self.home_workflow_recent_imported_source_keys.clear();
         self.home_workflow_created_source_keys.clear();
@@ -4898,6 +4933,7 @@ impl App {
 
     fn reset_home_workflow(&mut self) {
         self.home_workflow = HomeWorkflow::Launcher;
+        self.discard_next_animation_import_result = false;
         self.home_workflow_import_count = 0;
         self.home_workflow_recent_imported_source_keys.clear();
         self.home_workflow_created_source_keys.clear();
@@ -4923,6 +4959,9 @@ impl App {
     }
 
     fn cancel_home_workflow(&mut self) -> Result<()> {
+        if self.animation_import_task.is_some() {
+            self.discard_next_animation_import_result = true;
+        }
         for source_key in self.home_workflow_created_source_keys.iter().rev() {
             if source_key.is_empty() {
                 continue;
@@ -5222,6 +5261,7 @@ impl App {
             home_workflow_grid_source_key: None,
             home_workflow_grid_inline_notice: None,
             home_workflow_error: None,
+            discard_next_animation_import_result: false,
             last_build: None,
             last_sample: None,
             installed_font_path: None,
@@ -5311,6 +5351,7 @@ impl App {
             home_workflow_grid_source_key: None,
             home_workflow_grid_inline_notice: None,
             home_workflow_error: None,
+            discard_next_animation_import_result: false,
             last_build,
             last_sample,
             installed_font_path,
@@ -6101,6 +6142,20 @@ impl App {
                 | HomeWorkflow::Import(HomeCreationKind::Grid)
                 | HomeWorkflow::Tweaking(HomeCreationKind::Grid)
         ) {
+            if matches!(
+                self.home_workflow,
+                HomeWorkflow::Import(HomeCreationKind::Grid)
+                    | HomeWorkflow::Tweaking(HomeCreationKind::Grid)
+            ) && collect_dropped_paths(payload).len() != 1
+            {
+                self.home_workflow_error =
+                    Some("drop only ONE IMAGE for the grid (selection unchanged)".to_string());
+                self.status = Some(
+                    "create grid: drop only one image at a time (kept current selection)"
+                        .to_string(),
+                );
+                return Ok(());
+            }
             self.start_home_import_task(payload.to_string())?;
             return Ok(());
         }
@@ -6257,7 +6312,7 @@ impl App {
                     skipped_unsupported: media_import.skipped_unsupported,
                     skipped_missing: media_import.skipped_missing,
                     imported_source_keys: media_import.imported_source_keys,
-                    created_source_keys: Vec::new(),
+                    created_source_keys: media_import.created_source_keys,
                 };
                 let loaded = if !import.imported_source_keys.is_empty() {
                     Some(load_interactive_glyphs_from_config(&config)?)
@@ -6803,7 +6858,20 @@ impl App {
         }
     }
 
-    fn finish_animation_import(&mut self, output: AnimationImportTaskOutput) {
+    fn finish_animation_import(&mut self, mut output: AnimationImportTaskOutput) {
+        if self.discard_next_animation_import_result {
+            self.discard_next_animation_import_result = false;
+            for source_key in output.import.created_source_keys.drain(..) {
+                if source_key.is_empty() {
+                    continue;
+                }
+                let path = self.config.input_dir.join(source_key);
+                let _ = fs::remove_file(path);
+            }
+            let _ = self.reload_glyphs();
+            return;
+        }
+
         if let Some(loaded) = output.loaded {
             self.glyphs = loaded.glyphs;
             self.clamp_glyph_selection();
@@ -6833,6 +6901,8 @@ impl App {
                 self.animation_selection_order.push(source_key);
             }
         }
+        self.home_workflow_created_source_keys
+            .extend(output.import.created_source_keys);
 
         if has_selected_sources {
             self.status = Some(format!(
@@ -8964,7 +9034,13 @@ fn home_workflow_preview_lines(
             .or_else(|| app.home_workflow_recent_imported_source_keys.last()),
         HomeCreationKind::Grid => app.home_workflow_grid_source_key.as_ref(),
         HomeCreationKind::AnimatedGlyph | HomeCreationKind::AnimatedGridGlyph => {
-            app.animation_selection_order.first()
+            if app.animation_selection_order.is_empty() {
+                None
+            } else {
+                let idx = app.animation_import_settings.preview_frame_index
+                    % app.animation_selection_order.len();
+                app.animation_selection_order.get(idx)
+            }
         }
     };
     let Some(source_key) = source_key else {
@@ -9174,22 +9250,25 @@ fn draw_animation_import_workflow_ui(
     };
     let show_skip_all = matches!(kind, HomeCreationKind::Glyph);
 
+    let button_width = 18;
     let row = Layout::default()
         .direction(Direction::Horizontal)
         .constraints([
-            Constraint::Length(19),
+            Constraint::Length(button_width),
             Constraint::Length(2),
-            Constraint::Length(28),
+            Constraint::Length(button_width),
             Constraint::Length(2),
-            Constraint::Length(18),
+            Constraint::Length(button_width),
             Constraint::Length(2),
-            Constraint::Length(20),
+            Constraint::Length(button_width),
             Constraint::Length(2),
-            Constraint::Length(9),
+            Constraint::Length(button_width),
+            Constraint::Length(2),
+            Constraint::Length(button_width),
             Constraint::Length(if show_skip_all { 2 } else { 0 }),
-            Constraint::Length(if show_skip_all { 7 } else { 0 }),
+            Constraint::Length(if show_skip_all { button_width } else { 0 }),
             Constraint::Length(if show_skip_all { 2 } else { 0 }),
-            Constraint::Length(if show_skip_all { 10 } else { 0 }),
+            Constraint::Length(if show_skip_all { button_width } else { 0 }),
             Constraint::Min(0),
         ])
         .split(layout[1]);
@@ -9203,9 +9282,9 @@ fn draw_animation_import_workflow_ui(
         idle_style
     };
     let grayscale_label = if app.animation_import_settings.grayscale_enabled {
-        " Grayscale: ON "
+        " Gray: ON "
     } else {
-        " Grayscale: OFF "
+        " Gray: OFF "
     };
     frame.render_widget(
         Paragraph::new(grayscale_label)
@@ -9233,7 +9312,7 @@ fn draw_animation_import_workflow_ui(
             " *"
         };
     frame.render_widget(
-        Paragraph::new(format!(" Grayscale Options{options_dirty} "))
+        Paragraph::new(format!(" Gray Options{options_dirty} "))
             .block(
                 Block::default()
                     .borders(Borders::ALL)
@@ -9257,7 +9336,7 @@ fn draw_animation_import_workflow_ui(
     };
     frame.render_widget(
         Paragraph::new(format!(
-            " Threshold: {}{threshold_dirty} ",
+            " Th: {}{threshold_dirty} ",
             app.animation_import_settings.threshold
         ))
         .block(
@@ -9268,6 +9347,36 @@ fn draw_animation_import_workflow_ui(
         .style(threshold_style),
         row[4],
     );
+    let frames_style = if app.animation_import_settings.focus
+        == AnimationImportSettingsFocus::FramesButton
+        && app.animation_import_settings.grayscale_editor.is_none()
+    {
+        focused_style
+    } else {
+        idle_style
+    };
+    let frames_label = if matches!(
+        kind,
+        HomeCreationKind::AnimatedGlyph | HomeCreationKind::AnimatedGridGlyph
+    ) && !app.animation_selection_order.is_empty()
+    {
+        let total = app.animation_selection_order.len();
+        let idx = app.animation_import_settings.preview_frame_index % total;
+        format!(" Frames: {}/{} ", idx + 1, total)
+    } else {
+        " Frames: - ".to_string()
+    };
+    frame.render_widget(
+        Paragraph::new(frames_label)
+            .block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .border_style(frames_style),
+            )
+            .style(frames_style),
+        row[6],
+    );
+
     let export_style = if app.animation_import_settings.focus
         == AnimationImportSettingsFocus::ExportTestImageButton
         && app.animation_import_settings.grayscale_editor.is_none()
@@ -9277,20 +9386,20 @@ fn draw_animation_import_workflow_ui(
         idle_style
     };
     frame.render_widget(
-        Paragraph::new(" Export Test Image ")
+        Paragraph::new(" Export Test ")
             .block(
                 Block::default()
                     .borders(Borders::ALL)
                     .border_style(export_style),
             )
             .style(export_style),
-        row[6],
+        row[8],
     );
     frame.render_widget(
         Paragraph::new(if show_skip_all {
             "Next"
         } else {
-            "Continue"
+            "Continue "
         })
         .alignment(Alignment::Center)
         .block(
@@ -9299,7 +9408,7 @@ fn draw_animation_import_workflow_ui(
                 .border_style(continue_style),
         )
         .style(continue_style),
-        row[8],
+        row[10],
     );
     if show_skip_all {
         let back_style = if app.animation_import_settings.focus
@@ -9319,7 +9428,7 @@ fn draw_animation_import_workflow_ui(
                         .border_style(back_style),
                 )
                 .style(back_style),
-            row[10],
+            row[12],
         );
         frame.render_widget(
             Paragraph::new("Skip All")
@@ -9330,7 +9439,7 @@ fn draw_animation_import_workflow_ui(
                         .border_style(skip_all_style),
                 )
                 .style(skip_all_style),
-            row[12],
+            row[14],
         );
     }
 
@@ -9431,7 +9540,7 @@ fn draw_animation_import_workflow_ui(
             ) {
                 Span::styled(
                     format!(
-                        "Frames: {} (focus Export + Up/Down)  ",
+                        "Export count: {} (focus Export + Up/Down)  ",
                         app.animation_import_settings.export_frame_count
                     ),
                     Style::default().fg(accent),
@@ -9440,7 +9549,7 @@ fn draw_animation_import_workflow_ui(
                 Span::raw("")
             },
             Span::styled(
-                "Left/Right focus, Up/Down changes toggle/threshold/frames, Enter toggle/open/export/continue.",
+                "Left/Right focus, Up/Down changes toggle/threshold/frame/export count, Enter toggle/open/export/continue.",
                 Style::default().fg(muted),
             ),
         ])
@@ -13461,6 +13570,72 @@ mod tests {
     }
 
     #[test]
+    fn grid_home_workflow_refuses_multi_image_drop_without_importing() {
+        let project_dir = make_temp_dir("grid-home-refuse-multi-drop");
+        let manifest_path = project_dir.join("petiglyph.toml");
+        write_manifest(&manifest_path, &Manifest::default()).expect("manifest is written");
+
+        let icons_dir = project_dir.join("icons");
+        fs::create_dir_all(&icons_dir).expect("icons dir is created");
+
+        let external_dir = project_dir.join("external");
+        fs::create_dir_all(&external_dir).expect("external dir is created");
+        let first_path = external_dir.join("grid_1.png");
+        let second_path = external_dir.join("grid_2.png");
+        write_test_png(&first_path);
+        write_test_png(&second_path);
+
+        let config = RuntimeConfig {
+            project_dir: project_dir.clone(),
+            project_id: "test-grid-home-refuse-multi-drop".to_string(),
+            input_dir: icons_dir.clone(),
+            out_dir: project_dir.join("build"),
+            font_name: "Petiglyph".to_string(),
+            glyph_size: 8,
+            base_threshold: 64,
+            threshold_overrides: BTreeMap::new(),
+            invert_overrides: BTreeMap::new(),
+            compositions: BTreeMap::new(),
+            animations: Vec::new(),
+            codepoint_start: 0x10_0000,
+        };
+        let mut app = App::new(manifest_path, config);
+        app.start_home_workflow(HomeCreationKind::Grid);
+
+        handle_paste_event_for_test(
+            &mut app,
+            &format!("{}\n{}", first_path.display(), second_path.display()),
+        )
+        .expect("multi-image drop should be handled");
+
+        assert!(
+            app.home_import_task.is_none(),
+            "refused grid multi-drop should not start background import task"
+        );
+        assert_eq!(
+            app.home_workflow_grid_source_key, None,
+            "refused grid multi-drop should not update selected grid source"
+        );
+        assert_eq!(
+            app.home_workflow_import_count, 0,
+            "refused grid multi-drop should not advance workflow import count"
+        );
+        let icon_entries = fs::read_dir(&icons_dir)
+            .expect("icons dir should remain readable")
+            .count();
+        assert_eq!(
+            icon_entries, 0,
+            "refused grid multi-drop should not import files into icons"
+        );
+        assert!(
+            app.status
+                .as_ref()
+                .is_some_and(|msg| msg.contains("drop only one image at a time")),
+            "refused grid multi-drop should explain refusal in status"
+        );
+    }
+
+    #[test]
     fn animated_home_workflow_reimport_identical_frames_keeps_progress_and_selection() {
         let project_dir = make_temp_dir("animated-home-reimport-identical");
         let manifest_path = project_dir.join("petiglyph.toml");
@@ -13578,7 +13753,8 @@ mod tests {
 
         assert_eq!(app.animation_import_settings.threshold, 64);
         handle_key(&mut app, KeyCode::Left).expect("left focuses export from continue");
-        handle_key(&mut app, KeyCode::Left).expect("left focuses threshold from export");
+        handle_key(&mut app, KeyCode::Left).expect("left focuses frames from export");
+        handle_key(&mut app, KeyCode::Left).expect("left focuses threshold from frames");
         assert_eq!(
             app.animation_import_settings.focus,
             super::AnimationImportSettingsFocus::Threshold
@@ -13815,6 +13991,129 @@ mod tests {
         assert!(icons_dir.join("kept.png").exists(), "existing file should remain");
         assert_eq!(app.glyphs.len(), initial_count);
         assert!(matches!(app.home_workflow, HomeWorkflow::Launcher));
+    }
+
+    #[test]
+    fn animated_creation_cancel_removes_workflow_imports() {
+        let project_dir = make_temp_dir("animated-creation-cancel-removes-imports");
+        let manifest_path = project_dir.join("petiglyph.toml");
+        write_manifest(&manifest_path, &Manifest::default()).expect("manifest is written");
+        let icons_dir = project_dir.join("icons");
+        fs::create_dir_all(&icons_dir).expect("icons dir is created");
+        write_test_png(&icons_dir.join("kept.png"));
+
+        let external_dir = project_dir.join("external");
+        fs::create_dir_all(&external_dir).expect("external dir is created");
+        let dropped = external_dir.join("frame_01.png");
+        write_test_png(&dropped);
+
+        let config = RuntimeConfig {
+            project_dir: project_dir.clone(),
+            project_id: "test-animated-creation-cancel-removes-imports".to_string(),
+            input_dir: icons_dir.clone(),
+            out_dir: project_dir.join("build"),
+            font_name: "Petiglyph".to_string(),
+            glyph_size: 8,
+            base_threshold: 64,
+            threshold_overrides: BTreeMap::new(),
+            invert_overrides: BTreeMap::new(),
+            compositions: BTreeMap::new(),
+            animations: Vec::new(),
+            codepoint_start: 0x10_0000,
+        };
+        let mut app = App::new(manifest_path, config);
+        app.reload_glyphs().expect("initial glyphs load");
+        let initial_count = app.glyphs.len();
+
+        app.start_home_workflow(HomeCreationKind::AnimatedGlyph);
+        handle_paste_event_for_test(&mut app, &dropped.display().to_string())
+            .expect("drop/paste import should succeed");
+        for _ in 0..50 {
+            app.poll_animation_import_task();
+            if app.animation_import_task.is_none() {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert!(
+            app.animation_import_task.is_none(),
+            "animation import task should complete"
+        );
+        let imported_key = app
+            .home_workflow_created_source_keys
+            .last()
+            .cloned()
+            .expect("workflow should track created frame key");
+        let imported_path = icons_dir.join(&imported_key);
+        assert!(
+            imported_path.exists(),
+            "workflow import should stage frame in icons while editing"
+        );
+
+        handle_key(&mut app, KeyCode::Esc).expect("esc cancels workflow");
+
+        assert!(
+            !imported_path.exists(),
+            "cancel should remove workflow-added animated frames"
+        );
+        assert!(icons_dir.join("kept.png").exists(), "existing file should remain");
+        assert_eq!(app.glyphs.len(), initial_count);
+        assert!(matches!(app.home_workflow, HomeWorkflow::Launcher));
+    }
+
+    #[test]
+    fn canceled_animated_import_result_is_discarded_and_cleaned_up() {
+        let project_dir = make_temp_dir("animated-import-discard-result");
+        let manifest_path = project_dir.join("petiglyph.toml");
+        write_manifest(&manifest_path, &Manifest::default()).expect("manifest is written");
+        let icons_dir = project_dir.join("icons");
+        fs::create_dir_all(&icons_dir).expect("icons dir is created");
+        let staged = icons_dir.join("frame_01.png");
+        write_test_png(&staged);
+
+        let config = RuntimeConfig {
+            project_dir: project_dir.clone(),
+            project_id: "test-animated-import-discard-result".to_string(),
+            input_dir: icons_dir.clone(),
+            out_dir: project_dir.join("build"),
+            font_name: "Petiglyph".to_string(),
+            glyph_size: 8,
+            base_threshold: 64,
+            threshold_overrides: BTreeMap::new(),
+            invert_overrides: BTreeMap::new(),
+            compositions: BTreeMap::new(),
+            animations: Vec::new(),
+            codepoint_start: 0x10_0000,
+        };
+        let mut app = App::new(manifest_path, config);
+        app.discard_next_animation_import_result = true;
+
+        app.finish_animation_import(AnimationImportTaskOutput {
+            import: DropImportResult {
+                imported: 1,
+                renamed: 0,
+                skipped_existing: 0,
+                skipped_unsupported: 0,
+                skipped_missing: 0,
+                imported_source_keys: vec!["frame_01.png".to_string()],
+                created_source_keys: vec!["frame_01.png".to_string()],
+            },
+            loaded: None,
+            detail_status: None,
+        });
+
+        assert!(
+            !staged.exists(),
+            "discarded animation result should delete staged created files"
+        );
+        assert!(
+            app.animation_selection_order.is_empty(),
+            "discarded animation result should not alter selection"
+        );
+        assert!(
+            !app.discard_next_animation_import_result,
+            "discard flag should reset after one discarded result"
+        );
     }
 
     #[test]
@@ -14180,7 +14479,8 @@ mod tests {
         );
 
         handle_key(&mut app, KeyCode::Left).expect("left moves focus from Continue to export");
-        handle_key(&mut app, KeyCode::Left).expect("left moves focus from export to threshold");
+        handle_key(&mut app, KeyCode::Left).expect("left moves focus from export to frames");
+        handle_key(&mut app, KeyCode::Left).expect("left moves focus from frames to threshold");
         handle_key(&mut app, KeyCode::Left).expect("left moves focus from threshold to options");
         handle_key(&mut app, KeyCode::Left).expect("left moves focus from options to toggle");
         handle_key(&mut app, KeyCode::Enter).expect("enter toggles grayscale");
@@ -14228,7 +14528,8 @@ mod tests {
         app.home_workflow = HomeWorkflow::Tweaking(HomeCreationKind::AnimatedGlyph);
 
         handle_key(&mut app, KeyCode::Left).expect("left moves focus from Continue to export");
-        handle_key(&mut app, KeyCode::Left).expect("left moves focus from export to threshold");
+        handle_key(&mut app, KeyCode::Left).expect("left moves focus from export to frames");
+        handle_key(&mut app, KeyCode::Left).expect("left moves focus from frames to threshold");
         handle_key(&mut app, KeyCode::Left).expect("left moves focus from threshold to options");
         handle_key(&mut app, KeyCode::Enter).expect("enter opens grayscale options editor");
         assert!(
@@ -14381,6 +14682,47 @@ mod tests {
         assert_eq!(app.animation_import_settings.export_frame_count, 6);
         handle_key(&mut app, KeyCode::Down).expect("down decreases frame export count");
         assert_eq!(app.animation_import_settings.export_frame_count, 5);
+    }
+
+    #[test]
+    fn animated_home_workflow_frames_focus_cycles_preview_frame_with_up_down() {
+        let project_dir = make_temp_dir("animated-home-frames-focus");
+        let manifest_path = project_dir.join("petiglyph.toml");
+        write_manifest(&manifest_path, &Manifest::default()).expect("manifest is written");
+        let config = RuntimeConfig {
+            project_dir: project_dir.clone(),
+            project_id: "test-animated-home-frames-focus".to_string(),
+            input_dir: project_dir.join("icons"),
+            out_dir: project_dir.join("build"),
+            font_name: "Petiglyph".to_string(),
+            glyph_size: 8,
+            base_threshold: 64,
+            threshold_overrides: BTreeMap::new(),
+            invert_overrides: BTreeMap::new(),
+            compositions: BTreeMap::new(),
+            animations: Vec::new(),
+            codepoint_start: 0x10_0000,
+        };
+        let mut app = App::new(manifest_path, config);
+        app.start_home_workflow(HomeCreationKind::AnimatedGlyph);
+        app.home_workflow = HomeWorkflow::Tweaking(HomeCreationKind::AnimatedGlyph);
+        app.animation_selection_order = vec![
+            "f1.png".to_string(),
+            "f2.png".to_string(),
+            "f3.png".to_string(),
+        ];
+
+        handle_key(&mut app, KeyCode::Left).expect("left focuses export from continue");
+        handle_key(&mut app, KeyCode::Left).expect("left focuses frames from export");
+        assert_eq!(
+            app.animation_import_settings.focus,
+            super::AnimationImportSettingsFocus::FramesButton
+        );
+
+        handle_key(&mut app, KeyCode::Up).expect("up advances preview frame");
+        assert_eq!(app.animation_import_settings.preview_frame_index, 1);
+        handle_key(&mut app, KeyCode::Down).expect("down rewinds preview frame");
+        assert_eq!(app.animation_import_settings.preview_frame_index, 0);
     }
 
     #[test]

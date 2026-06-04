@@ -19,6 +19,7 @@ pub(crate) struct AnimationMediaImportResult {
     pub(crate) skipped_unsupported: usize,
     pub(crate) skipped_missing: usize,
     pub(crate) imported_source_keys: Vec<String>,
+    pub(crate) created_source_keys: Vec<String>,
     pub(crate) media_files_processed: usize,
     pub(crate) frames_extracted: usize,
 }
@@ -116,6 +117,7 @@ pub(crate) fn import_animation_media_to_input(
         skipped_unsupported: 0,
         skipped_missing: 0,
         imported_source_keys: Vec::new(),
+        created_source_keys: Vec::new(),
         media_files_processed: 0,
         frames_extracted: 0,
     };
@@ -344,6 +346,9 @@ fn import_one_file(
 
     result
         .imported_source_keys
+        .push(source_key_from_input_path(input_dir, &destination));
+    result
+        .created_source_keys
         .push(source_key_from_input_path(input_dir, &destination));
     result.imported += 1;
     if was_renamed {
