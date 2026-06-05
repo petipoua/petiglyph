@@ -1178,3 +1178,36 @@ fn preview_lines_from_coverage_stable_frame(
     render_binary_preview_lines(&cropped, crop_w, crop_h, max_w, max_h, true, true, true)
 }
 
+fn preview_lines_from_coverage_full_frame(
+    coverage: &[u8],
+    width_u32: u32,
+    height_u32: u32,
+    threshold: u8,
+    invert: bool,
+    max_w: u16,
+    max_h: u16,
+) -> Vec<Line<'static>> {
+    let src_w = width_u32 as usize;
+    let src_h = height_u32 as usize;
+    if src_w == 0 || src_h == 0 || max_w == 0 || max_h == 0 {
+        return vec![Line::from("    [Preview too small]")];
+    }
+    if coverage.len() != src_w.saturating_mul(src_h) {
+        return vec![Line::from("    [Preview unavailable]")];
+    }
+    let mut matrix = vec![false; src_w.saturating_mul(src_h)];
+    let mut has_visible_pixel = false;
+    for y in 0..src_h {
+        for x in 0..src_w {
+            let idx = y * src_w + x;
+            if (coverage[idx] >= threshold) ^ invert {
+                matrix[idx] = true;
+                has_visible_pixel = true;
+            }
+        }
+    }
+    if !has_visible_pixel {
+        return vec![Line::from("    [No visible pixels at threshold]")];
+    }
+    render_binary_preview_lines(&matrix, src_w, src_h, max_w, max_h, true, false, true)
+}

@@ -337,6 +337,96 @@
     }
 
     #[test]
+    fn animated_standard_workflow_popup_preview_uses_whole_frame_scale() {
+        assert_animated_workflow_popup_preview_uses_whole_frame_scale(
+            HomeCreationKind::AnimatedGlyph,
+            "animated-standard-popup-whole-frame-preview",
+        );
+    }
+
+    #[test]
+    fn animated_grid_workflow_popup_preview_uses_whole_frame_scale() {
+        assert_animated_workflow_popup_preview_uses_whole_frame_scale(
+            HomeCreationKind::AnimatedGridGlyph,
+            "animated-grid-popup-whole-frame-preview",
+        );
+    }
+
+    fn assert_animated_workflow_popup_preview_uses_whole_frame_scale(
+        kind: HomeCreationKind,
+        temp_name: &str,
+    ) {
+        let project_dir = make_temp_dir(temp_name);
+        let manifest_path = project_dir.join("petiglyph.toml");
+        write_manifest(&manifest_path, &Manifest::default()).expect("manifest is written");
+        let icons_dir = project_dir.join("icons");
+        fs::create_dir_all(&icons_dir).expect("icons dir is created");
+
+        let tall_frame = icons_dir.join("frame-tall.png");
+        let short_frame = icons_dir.join("frame-short.png");
+        let mut tall = RgbaImage::from_pixel(32, 16, Rgba([255, 255, 255, 0]));
+        for y in 0..16 {
+            for x in 8..24 {
+                tall.put_pixel(x, y, Rgba([0, 0, 0, 255]));
+            }
+        }
+        tall.save(&tall_frame).expect("tall frame image is written");
+
+        let mut short = RgbaImage::from_pixel(32, 16, Rgba([255, 255, 255, 0]));
+        for y in 7..9 {
+            for x in 8..24 {
+                short.put_pixel(x, y, Rgba([0, 0, 0, 255]));
+            }
+        }
+        short.save(&short_frame)
+            .expect("short frame image is written");
+
+        let config = RuntimeConfig {
+            project_dir: project_dir.clone(),
+            project_id: format!("test-{temp_name}"),
+            input_dir: icons_dir,
+            out_dir: project_dir.join("build"),
+            font_name: "Petiglyph".to_string(),
+            glyph_size: 16,
+            base_threshold: 64,
+            threshold_overrides: BTreeMap::new(),
+            invert_overrides: BTreeMap::new(),
+            compositions: BTreeMap::new(),
+            animations: Vec::new(),
+            codepoint_start: 0x10_0000,
+        };
+        let mut app = App::new(manifest_path, config);
+        app.start_home_workflow(kind);
+        app.home_workflow = HomeWorkflow::Tweaking(kind);
+        app.animation_import_settings.grayscale_enabled = false;
+        app.animation_selection_order = vec![
+            "frame-tall.png".to_string(),
+            "frame-short.png".to_string(),
+        ];
+        app.animation_selection_set
+            .insert("frame-tall.png".to_string());
+        app.animation_selection_set
+            .insert("frame-short.png".to_string());
+
+        app.animation_import_settings.preview_frame_index = 0;
+        let (_, tall_lines) = home_workflow_preview_lines(&app, kind, 32, 32);
+        app.animation_import_settings.preview_frame_index = 1;
+        let (_, short_lines) = home_workflow_preview_lines(&app, kind, 32, 32);
+
+        assert_eq!(
+            tall_lines.len(),
+            short_lines.len(),
+            "animated workflow popup previews should scale from the whole animation frame, not each frame's active bounds"
+        );
+        assert!(
+            tall_lines.len() > 16,
+            "whole-frame preview should keep the reserved frame area instead of shrinking to active content"
+        );
+
+        fs::remove_dir_all(project_dir).expect("temp dir is removed");
+    }
+
+    #[test]
     fn animated_home_workflow_export_uses_first_five_frames_by_default() {
         let project_dir = make_temp_dir("animated-home-export-default-five");
         let manifest_path = project_dir.join("petiglyph.toml");

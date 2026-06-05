@@ -548,8 +548,20 @@ fn home_workflow_preview_lines(
             .get(source_key)
             .copied()
             .unwrap_or(false);
-        return (
-            format!("Source: {}", source_display_name(source_key)),
+        let preview_lines = if matches!(
+            kind,
+            HomeCreationKind::AnimatedGlyph | HomeCreationKind::AnimatedGridGlyph
+        ) {
+            preview_lines_from_coverage_full_frame(
+                &coverage,
+                app.config.glyph_size,
+                app.config.glyph_size,
+                app.animation_import_settings.threshold,
+                invert,
+                max_w,
+                max_h,
+            )
+        } else {
             preview_lines_from_coverage_stable_frame(
                 &coverage,
                 app.config.glyph_size,
@@ -558,7 +570,11 @@ fn home_workflow_preview_lines(
                 invert,
                 max_w,
                 max_h,
-            ),
+            )
+        };
+        return (
+            format!("Source: {}", source_display_name(source_key)),
+            preview_lines,
         );
     }
 
@@ -989,4 +1005,3 @@ fn draw_home_creation_area(frame: &mut Frame, app: &App, area: Rect, accent: Col
         _ => {}
     }
 }
-
