@@ -487,15 +487,21 @@ fn unified_tui_zero_projects_starts_without_active_project() {
 
     handle_key(&mut app, KeyCode::Down).expect("down should stay on create input");
     assert_eq!(app.welcome_focus, WelcomeFocus::CreateInput);
+    handle_key(&mut app, KeyCode::Left).expect("left should stay on create input");
+    assert_eq!(app.welcome_focus, WelcomeFocus::CreateInput);
     handle_key(&mut app, KeyCode::Right)
         .expect("right moves to verbose toggle when no active project");
     assert_eq!(app.welcome_focus, WelcomeFocus::VerbosePathsToggle);
-    handle_key(&mut app, KeyCode::Left).expect("left stays on verbose toggle");
-    assert_eq!(app.welcome_focus, WelcomeFocus::VerbosePathsToggle);
+    handle_key(&mut app, KeyCode::Left)
+        .expect("left returns to create input when no projects exist");
+    assert_eq!(app.welcome_focus, WelcomeFocus::CreateInput);
     handle_key(&mut app, KeyCode::Down)
         .expect("down from verbose toggle goes to create input when no projects");
-    // With no projects and no active project, down from VerbosePathsToggle goes to CreateInput
-    handle_key(&mut app, KeyCode::Down).expect("down stays on create input");
+    assert_eq!(app.welcome_focus, WelcomeFocus::CreateInput);
+    handle_key(&mut app, KeyCode::Up)
+        .expect("up from create input goes to verbose toggle when no projects");
+    assert_eq!(app.welcome_focus, WelcomeFocus::VerbosePathsToggle);
+    handle_key(&mut app, KeyCode::Down).expect("down returns to create input");
     assert_eq!(app.welcome_focus, WelcomeFocus::CreateInput);
 
     fs::remove_dir_all(workspace).expect("temp workspace is removed");

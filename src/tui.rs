@@ -2785,7 +2785,7 @@ fn handle_welcome_key(app: &mut App, key: KeyEvent) -> Result<()> {
             app.welcome_focus = match app.welcome_focus {
                 WelcomeFocus::VerbosePathsToggle => {
                     if app.projects.is_empty() {
-                        WelcomeFocus::VerbosePathsToggle
+                        WelcomeFocus::CreateInput
                     } else {
                         app.selected_project = 0;
                         WelcomeFocus::ProjectList
@@ -3076,7 +3076,9 @@ fn home_import_missing_sources_message(kind: HomeCreationKind) -> &'static str {
 
 fn home_enter_tweaking_message(kind: HomeCreationKind) -> &'static str {
     match kind {
-        HomeCreationKind::Glyph => "tweak grayscale/threshold + preview in popup, then Continue",
+        HomeCreationKind::Glyph => {
+            "tweak grayscale/threshold + preview in popup, then use Next until Finish"
+        }
         HomeCreationKind::Grid => {
             "tweak grayscale/threshold + preview in popup, then Continue to grid settings"
         }
@@ -3733,8 +3735,7 @@ fn continue_home_creation_tweaking_enter(app: &mut App, kind: HomeCreationKind) 
                 persist_creation_workflow_threshold(app, remaining)?;
                 app.animation_import_settings.threshold = original;
             }
-            app.reload_glyphs()?;
-            app.complete_home_workflow_to_glyphs();
+            app.complete_home_glyph_creation_to_glyphs();
             app.status = Some("skipped remaining previews with default settings".to_string());
             return Ok(());
         }
@@ -3771,8 +3772,7 @@ fn continue_home_workflow_after_tweaking(app: &mut App, kind: HomeCreationKind) 
                     creation_workflow_threshold_sources(app, kind),
                 )?;
             }
-            app.reload_glyphs()?;
-            app.complete_home_workflow_to_glyphs();
+            app.complete_home_glyph_creation_to_glyphs();
         }
         HomeCreationKind::Grid => {
             let Some(source_key) = app.home_workflow_grid_source_key.clone() else {
@@ -4985,6 +4985,51 @@ impl App {
         self.reset_home_workflow();
         self.view = AppView::Glyphs;
         self.glyphs_focus = GlyphsFocus::List;
+    }
+
+    fn complete_home_glyph_creation_to_glyphs(&mut self) {
+        let reviewed_source_keys = self.home_workflow_tweak_source_queue.clone();
+        if let Err(err) = self.reload_glyphs() {
+            let reload_status = format_status_from_error(&self.manifest_path, &err.to_string());
+            if !reviewed_source_keys.is_empty() {
+                match load_interactive_glyphs_for_source_keys(&self.config, &reviewed_source_keys) {
+                    Ok(created_glyphs) if !created_glyphs.is_empty() => {
+                        self.merge_created_glyphs(created_glyphs);
+                        self.status = Some(format!(
+                            "{reload_status}; loaded reviewed glyphs into Glyphs"
+                        ));
+                    }
+                    Ok(_) => {
+                        self.status = Some(reload_status);
+                    }
+                    Err(fallback_err) => {
+                        self.status = Some(format!(
+                            "{reload_status}; reviewed glyph load failed: {fallback_err}"
+                        ));
+                    }
+                }
+            } else {
+                self.status = Some(reload_status);
+            }
+        }
+        self.reset_home_workflow();
+        self.view = AppView::Glyphs;
+        self.glyphs_focus = GlyphsFocus::List;
+    }
+
+    fn merge_created_glyphs(&mut self, created_glyphs: Vec<InteractiveGlyph>) {
+        let created_sources = created_glyphs
+            .iter()
+            .map(|glyph| glyph.glyph.source_parent_key.clone())
+            .collect::<BTreeSet<_>>();
+        self.glyphs
+            .retain(|glyph| !created_sources.contains(&glyph.glyph.source_parent_key));
+        self.glyphs.extend(created_glyphs);
+        self.clamp_glyph_selection();
+        self.live_glyph_source_count = Some(self.glyphs.len());
+        self.live_glyph_source_probe_at = Some(Instant::now());
+        self.live_glyph_source_probe_fingerprint =
+            glyph_source_fingerprint(&self.config.input_dir).ok();
     }
 
     fn cancel_home_workflow(&mut self) -> Result<()> {
@@ -9167,6 +9212,19 @@ fn glyph_tweak_progress_label(app: &App) -> String {
     format!("Image {current}/{total}  ")
 }
 
+fn glyph_tweak_continue_finishes_workflow(app: &App) -> bool {
+    app.home_workflow_tweak_source_index.saturating_add(1)
+        >= app.home_workflow_tweak_source_queue.len()
+}
+
+fn glyph_tweak_continue_label(app: &App) -> &'static str {
+    if glyph_tweak_continue_finishes_workflow(app) {
+        "Finish"
+    } else {
+        "Next"
+    }
+}
+
 fn draw_animation_import_workflow_ui(
     frame: &mut Frame,
     app: &App,
@@ -9342,7 +9400,7 @@ fn draw_animation_import_workflow_ui(
                     continue_style
                 };
                 if matches!(kind, HomeCreationKind::Glyph) {
-                    "Next".to_string()
+                    glyph_tweak_continue_label(app).to_string()
                 } else {
                     "Continue".to_string()
                 }
@@ -9923,7 +9981,11 @@ fn draw_home_creation_popup(frame: &mut Frame, app: &App, area: Rect, accent: Co
                     " continue / create animation    "
                 } else if tweaking {
                     if matches!(kind, HomeCreationKind::Glyph) {
-                        " next preview / finish    "
+                        if glyph_tweak_continue_finishes_workflow(app) {
+                            " finish and open Glyphs    "
+                        } else {
+                            " next preview    "
+                        }
                     } else {
                         " continue to next step    "
                     }
@@ -12061,6 +12123,55 @@ fn load_interactive_glyphs_from_config(config: &RuntimeConfig) -> Result<LoadedG
     })
 }
 
+fn load_interactive_glyphs_for_source_keys(
+    config: &RuntimeConfig,
+    source_keys: &[String],
+) -> Result<Vec<InteractiveGlyph>> {
+    let mut seen = BTreeSet::new();
+    let mut sources = Vec::new();
+    for source_key in source_keys {
+        if !seen.insert(source_key.clone()) {
+            continue;
+        }
+        let source_path = config.input_dir.join(source_key);
+        if source_path.is_file() && is_supported_source(&source_path) {
+            sources.push(source_path);
+        }
+    }
+    sources.sort();
+
+    let glyphs = preprocess_sources_with_compositions_and_standard_sources(
+        &sources,
+        &config.input_dir,
+        config.glyph_size,
+        &config.compositions,
+        &standard_animation_frame_sources(config),
+    )?
+    .into_iter()
+    .map(|glyph| {
+        let saved_threshold = config
+            .threshold_overrides
+            .get(&glyph.source_parent_key)
+            .copied();
+        let working_threshold = saved_threshold.unwrap_or(config.base_threshold);
+        let saved_invert = config
+            .invert_overrides
+            .get(&glyph.source_parent_key)
+            .copied()
+            .unwrap_or(false);
+        InteractiveGlyph {
+            glyph,
+            saved_threshold,
+            working_threshold,
+            saved_invert,
+            working_invert: saved_invert,
+        }
+    })
+    .collect::<Vec<_>>();
+
+    Ok(glyphs)
+}
+
 fn detected_terminal_name() -> Option<&'static str> {
     let term_program = env::var("TERM_PROGRAM")
         .unwrap_or_default()
@@ -12423,9 +12534,9 @@ mod tests {
         collect_dropped_paths, composition_preview_lines_stable_frame,
         continue_home_workflow_after_tweaking, default_animation_name_from_frames,
         drag_images_here_lines, emitted_composition_cols, glyph_matches_animation_frame_source,
-        glyph_tweak_progress_label, grayscale_options_are_default, handle_key,
-        handle_key_event_for_test, handle_paste_event_for_test, home_workflow_preview_lines,
-        import_image_files_to_input, import_settings_visible_focuses,
+        glyph_tweak_continue_label, glyph_tweak_progress_label, grayscale_options_are_default,
+        handle_key, handle_key_event_for_test, handle_paste_event_for_test,
+        home_workflow_preview_lines, import_image_files_to_input, import_settings_visible_focuses,
         installed_animation_blocks_for_definition, installed_animation_frame_index,
         installed_animation_source_block, move_import_settings_focus,
         persist_composition_definition, preview_leftmost_control, preview_lines,
@@ -13864,6 +13975,7 @@ mod tests {
         app.home_workflow_import_count = 2;
         app.rebuild_home_tweak_queue_for_glyph();
 
+        assert_eq!(glyph_tweak_continue_label(&app), "Next");
         app.animation_import_settings.threshold = 90;
         handle_key(&mut app, KeyCode::Enter).expect("first next should persist first image");
         let manifest_after_first = read_manifest(&manifest_path).expect("manifest reload succeeds");
@@ -13881,6 +13993,7 @@ mod tests {
             app.home_workflow,
             HomeWorkflow::Tweaking(HomeCreationKind::Glyph)
         ));
+        assert_eq!(glyph_tweak_continue_label(&app), "Finish");
 
         app.animation_import_settings.threshold = 101;
         handle_key(&mut app, KeyCode::Enter).expect("second next should finish workflow");
@@ -13933,6 +14046,216 @@ mod tests {
         app.home_workflow_tweak_source_index = 20;
 
         assert_eq!(glyph_tweak_progress_label(&app), "Image 20/20  ");
+    }
+
+    #[test]
+    fn glyph_creation_tweaking_single_preview_uses_finish_label() {
+        let project_dir = make_temp_dir("glyph-creation-single-preview-finish-label");
+        let manifest_path = project_dir.join("petiglyph.toml");
+        write_manifest(&manifest_path, &Manifest::default()).expect("manifest is written");
+        let icons_dir = project_dir.join("icons");
+        fs::create_dir_all(&icons_dir).expect("icons dir is created");
+        write_test_png(&icons_dir.join("source.png"));
+
+        let config = RuntimeConfig {
+            project_dir: project_dir.clone(),
+            project_id: "test-glyph-creation-single-preview-finish-label".to_string(),
+            input_dir: icons_dir,
+            out_dir: project_dir.join("build"),
+            font_name: "Petiglyph".to_string(),
+            glyph_size: 8,
+            base_threshold: 64,
+            threshold_overrides: BTreeMap::new(),
+            invert_overrides: BTreeMap::new(),
+            compositions: BTreeMap::new(),
+            animations: Vec::new(),
+            codepoint_start: 0x10_0000,
+        };
+        let mut app = App::new(manifest_path, config);
+        app.start_home_workflow(HomeCreationKind::Glyph);
+        app.home_workflow = HomeWorkflow::Tweaking(HomeCreationKind::Glyph);
+        app.home_workflow_recent_imported_source_keys = vec!["source.png".to_string()];
+        app.home_workflow_import_count = 1;
+        app.rebuild_home_tweak_queue_for_glyph();
+
+        assert_eq!(glyph_tweak_continue_label(&app), "Finish");
+    }
+
+    #[test]
+    fn glyph_creation_multi_image_enter_on_finish_completes_full_keyboard_flow() {
+        let project_dir = make_temp_dir("glyph-creation-multi-image-keyboard-finish");
+        let manifest_path = project_dir.join("petiglyph.toml");
+        write_manifest(&manifest_path, &Manifest::default()).expect("manifest is written");
+        let icons_dir = project_dir.join("icons");
+        let external_dir = project_dir.join("external");
+        fs::create_dir_all(&icons_dir).expect("icons dir is created");
+        fs::create_dir_all(&external_dir).expect("external dir is created");
+
+        let source_a = external_dir.join("source_a.png");
+        let source_b = external_dir.join("source_b.png");
+        write_test_png(&source_a);
+        write_test_png(&source_b);
+
+        let config = RuntimeConfig {
+            project_dir: project_dir.clone(),
+            project_id: "test-glyph-creation-multi-image-keyboard-finish".to_string(),
+            input_dir: icons_dir,
+            out_dir: project_dir.join("build"),
+            font_name: "Petiglyph".to_string(),
+            glyph_size: 8,
+            base_threshold: 64,
+            threshold_overrides: BTreeMap::new(),
+            invert_overrides: BTreeMap::new(),
+            compositions: BTreeMap::new(),
+            animations: Vec::new(),
+            codepoint_start: 0x10_0000,
+        };
+        let mut app = App::new(manifest_path, config);
+        app.start_home_workflow(HomeCreationKind::Glyph);
+
+        handle_paste_event_for_test(
+            &mut app,
+            &format!("{}\n{}", source_a.display(), source_b.display()),
+        )
+        .expect("drop/paste import should succeed");
+        drain_background_tasks(&mut app);
+
+        handle_key(&mut app, KeyCode::Enter).expect("enter should advance from import to tweak");
+        assert!(matches!(
+            app.home_workflow,
+            HomeWorkflow::Tweaking(HomeCreationKind::Glyph)
+        ));
+        assert_eq!(
+            app.animation_import_settings.focus,
+            AnimationImportSettingsFocus::Continue
+        );
+        assert_eq!(glyph_tweak_continue_label(&app), "Next");
+
+        handle_key(&mut app, KeyCode::Enter)
+            .expect("enter on Next should advance to final preview");
+        assert!(matches!(
+            app.home_workflow,
+            HomeWorkflow::Tweaking(HomeCreationKind::Glyph)
+        ));
+        assert_eq!(
+            app.animation_import_settings.focus,
+            AnimationImportSettingsFocus::Continue
+        );
+        assert_eq!(glyph_tweak_continue_label(&app), "Finish");
+
+        handle_key(&mut app, KeyCode::Enter).expect("enter on Finish should complete the workflow");
+
+        assert!(matches!(app.home_workflow, HomeWorkflow::Launcher));
+        assert_eq!(app.view, AppView::Glyphs);
+        assert_eq!(
+            app.glyphs
+                .iter()
+                .filter(|glyph| glyph.glyph.composition_tile.is_none())
+                .count(),
+            2,
+            "finish should close the popup and load both created glyphs"
+        );
+    }
+
+    #[test]
+    fn glyph_creation_finish_closes_workflow_when_final_reload_reports_error() {
+        let project_dir = make_temp_dir("glyph-creation-finish-reload-error");
+        let manifest_path = project_dir.join("petiglyph.toml");
+        write_manifest(&manifest_path, &Manifest::default()).expect("manifest is written");
+        let icons_dir = project_dir.join("icons");
+        fs::create_dir_all(&icons_dir).expect("icons dir is created");
+        fs::write(icons_dir.join("source.png"), b"not an image").expect("invalid png is written");
+
+        let config = RuntimeConfig {
+            project_dir: project_dir.clone(),
+            project_id: "test-glyph-creation-finish-reload-error".to_string(),
+            input_dir: icons_dir,
+            out_dir: project_dir.join("build"),
+            font_name: "Petiglyph".to_string(),
+            glyph_size: 8,
+            base_threshold: 64,
+            threshold_overrides: BTreeMap::new(),
+            invert_overrides: BTreeMap::new(),
+            compositions: BTreeMap::new(),
+            animations: Vec::new(),
+            codepoint_start: 0x10_0000,
+        };
+        let mut app = App::new(manifest_path, config);
+        app.start_home_workflow(HomeCreationKind::Glyph);
+        app.home_workflow = HomeWorkflow::Tweaking(HomeCreationKind::Glyph);
+        app.home_workflow_recent_imported_source_keys = vec!["source.png".to_string()];
+        app.home_workflow_import_count = 1;
+        app.rebuild_home_tweak_queue_for_glyph();
+        app.animation_import_settings.focus = AnimationImportSettingsFocus::Continue;
+
+        handle_key(&mut app, KeyCode::Enter)
+            .expect("finish should not keep the workflow open on reload errors");
+
+        assert!(matches!(app.home_workflow, HomeWorkflow::Launcher));
+        assert_eq!(app.view, AppView::Glyphs);
+        assert!(
+            app.status
+                .as_deref()
+                .is_some_and(|status| status.contains("failed")),
+            "reload error should be surfaced after closing workflow, got {:?}",
+            app.status
+        );
+    }
+
+    #[test]
+    fn glyph_creation_finish_adds_reviewed_glyphs_when_full_reload_hits_bad_existing_source() {
+        let project_dir = make_temp_dir("glyph-creation-finish-partial-reload");
+        let manifest_path = project_dir.join("petiglyph.toml");
+        write_manifest(&manifest_path, &Manifest::default()).expect("manifest is written");
+        let icons_dir = project_dir.join("icons");
+        let external_dir = project_dir.join("external");
+        fs::create_dir_all(&icons_dir).expect("icons dir is created");
+        fs::create_dir_all(&external_dir).expect("external dir is created");
+        fs::write(icons_dir.join("broken.png"), b"not an image").expect("bad source is written");
+        let source = external_dir.join("source.png");
+        write_test_png(&source);
+
+        let config = RuntimeConfig {
+            project_dir: project_dir.clone(),
+            project_id: "test-glyph-creation-finish-partial-reload".to_string(),
+            input_dir: icons_dir,
+            out_dir: project_dir.join("build"),
+            font_name: "Petiglyph".to_string(),
+            glyph_size: 8,
+            base_threshold: 64,
+            threshold_overrides: BTreeMap::new(),
+            invert_overrides: BTreeMap::new(),
+            compositions: BTreeMap::new(),
+            animations: Vec::new(),
+            codepoint_start: 0x10_0000,
+        };
+        let mut app = App::new(manifest_path, config);
+        app.start_home_workflow(HomeCreationKind::Glyph);
+
+        handle_paste_event_for_test(&mut app, &source.display().to_string())
+            .expect("drop/paste import should succeed");
+        drain_background_tasks(&mut app);
+        handle_key(&mut app, KeyCode::Enter).expect("enter should advance from import to tweak");
+        assert_eq!(glyph_tweak_continue_label(&app), "Finish");
+
+        handle_key(&mut app, KeyCode::Enter)
+            .expect("finish should switch to glyphs and load reviewed glyphs");
+
+        assert!(matches!(app.home_workflow, HomeWorkflow::Launcher));
+        assert_eq!(app.view, AppView::Glyphs);
+        assert!(
+            app.glyphs
+                .iter()
+                .any(|glyph| glyph.glyph.source_parent_key == "source.png"),
+            "reviewed source should be added to Glyphs even when another source fails"
+        );
+        assert!(
+            app.status
+                .as_deref()
+                .is_some_and(|status| status.contains("loaded reviewed glyphs")),
+            "status should mention fallback reviewed glyph loading, got {:?}",
+            app.status
+        );
     }
 
     #[test]
