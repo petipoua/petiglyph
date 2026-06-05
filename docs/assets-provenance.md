@@ -1,6 +1,6 @@
 # Assets Provenance
 
-Last updated: 2026-06-01
+Last updated: 2026-06-05
 
 ## Repository Policy
 
@@ -16,7 +16,7 @@ Last updated: 2026-06-01
 - `test-assets/images/ring-128.svg`: maintainer-created, original work.
 - `test-assets/images/diamond-128.svg`: maintainer-created, original work.
 - `test-assets/images/*.png`, `*.jpg`, `*.webp`, `*.avif` for the shape set: generated from maintainer-created SVG files.
-- `test-assets/videos/*-rotate.mp4`, `*-rotate.webm`, `*-rotate.gif`: generated from synthetic in-repo render pipelines (shape rotation, max 60 frames).
+- `test-assets/videos/*-rotate.(mp4|webm|gif|mkv|mov)`: generated from synthetic in-repo render pipelines (shape motion, max 60 frames). The ring fixture moves around the frame instead of rotating in place.
 - `test-assets/frames/rotate-*.png`: extracted 60-frame PNG sequence from `test-assets/videos/triangle-rotate.mp4`.
 
 License for all files above: treated as repository content under the project MIT license unless stated otherwise.

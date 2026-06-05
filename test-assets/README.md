@@ -10,7 +10,7 @@ Policy:
 Current provenance:
 - `images/*.svg`: created in-repo by maintainers for test use.
 - converted stills (`.png`, `.jpg`, `.webp`, `.avif`): generated from maintainer-created SVG sources.
-- `videos/*-rotate.(mp4|webm|gif|mkv|mov)`: generated in-repo from synthetic shape render pipelines.
+- `videos/*-rotate.(mp4|webm|gif|mkv|mov)`: generated in-repo from synthetic shape render pipelines. The ring fixture moves around the frame instead of rotating in place, because a rotating ring is visually unchanged.
 
 Notes:
 - This folder is intentionally not wired into code paths yet.
