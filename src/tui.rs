@@ -2471,6 +2471,21 @@ fn handle_glyphs_key(app: &mut App, key: KeyEvent) -> Result<()> {
                 }
             }
         }
+        KeyCode::Char('R') => {
+            if app.install_in_progress() {
+                app.status =
+                    Some("a background task is in progress; wait before rescanning".to_string());
+                return Ok(());
+            }
+            app.refresh_workspace_discovery()?;
+            app.refresh_pua_usage_summary();
+            if app.active_project.is_some() {
+                app.reload_glyphs()?;
+            }
+        }
+        KeyCode::Char('i') => {
+            trigger_install_action(app)?;
+        }
         KeyCode::PageUp => {
             if let Some(threshold) = selected_row_threshold_value(app) {
                 let next = threshold.saturating_add(10);
@@ -8124,6 +8139,15 @@ fn handle_key_event(app: &mut App, key: KeyEvent) -> Result<()> {
     if app.first_install_notice_open {
         return handle_first_install_notice_key(app, code);
     }
+    if app.view == AppView::Welcome && app.delete_project_confirm_selection.is_some() {
+        tui_debug_log(
+            "handle_key_event.route_delete_confirm",
+            app_debug_state(app),
+        );
+        let result = handle_welcome_key(app, key);
+        tui_debug_log("handle_key_event.exit_delete_confirm", app_debug_state(app));
+        return result;
+    }
     if matches!(code, KeyCode::Char('v') | KeyCode::Char('V'))
         && !app.welcome_input_editing
         && app.renaming_input.is_none()
@@ -8144,16 +8168,6 @@ fn handle_key_event(app: &mut App, key: KeyEvent) -> Result<()> {
         || (matches!(code, KeyCode::Char('1') | KeyCode::Char('2'))
             && !app.welcome_input_editing
             && app.renaming_input.is_none());
-
-    if app.view == AppView::Welcome && app.delete_project_confirm_selection.is_some() {
-        tui_debug_log(
-            "handle_key_event.route_delete_confirm",
-            app_debug_state(app),
-        );
-        let result = handle_welcome_key(app, key);
-        tui_debug_log("handle_key_event.exit_delete_confirm", app_debug_state(app));
-        return result;
-    }
 
     if app.view == AppView::Welcome && !is_global_panel_jump {
         tui_debug_log("handle_key_event.route_welcome", app_debug_state(app));
@@ -12404,7 +12418,7 @@ mod tests {
         AnimationImportSettingsState, AnimationImportTaskOutput, AnimationPreview, AnimationType,
         App, AppView, BleedLevel, DropImportResult, ExistingImportPolicy, GlyphPreviewControl,
         GlyphToolMode, HomeCreationKind, HomeWorkflow, InteractiveGlyph, KeyCode, KeyEvent,
-        RuntimeConfig, VisibleGlyphRow, animation_frame_source_for_preview,
+        RuntimeConfig, TuiLaunchOverrides, VisibleGlyphRow, animation_frame_source_for_preview,
         animation_has_non_uniform_frame_invert, animation_has_non_uniform_frame_thresholds,
         collect_dropped_paths, composition_preview_lines_stable_frame,
         continue_home_workflow_after_tweaking, default_animation_name_from_frames,
@@ -12846,6 +12860,45 @@ mod tests {
     }
 
     #[test]
+    fn verbose_paths_toggle_does_not_bypass_delete_confirmation_popup() {
+        let project_dir = make_temp_dir("verbose-delete-confirm");
+        let manifest_path = project_dir.join("petiglyph.toml");
+        let config = RuntimeConfig {
+            project_dir: project_dir.clone(),
+            project_id: "test-verbose-delete-confirm".to_string(),
+            input_dir: project_dir.join("icons"),
+            out_dir: project_dir.join("build"),
+            font_name: "Petiglyph".to_string(),
+            glyph_size: 8,
+            base_threshold: 64,
+            threshold_overrides: BTreeMap::new(),
+            invert_overrides: BTreeMap::new(),
+            compositions: BTreeMap::new(),
+            animations: Vec::new(),
+            codepoint_start: 0x10_0000,
+        };
+
+        let mut app = App::new(manifest_path, config);
+        app.view = AppView::Welcome;
+        app.delete_project_confirm_selection = Some(0);
+        assert!(!app.verbose_paths, "verbose paths should start disabled");
+
+        handle_key(&mut app, KeyCode::Char('v'))
+            .expect("delete confirmation should intercept verbose toggle");
+
+        assert!(
+            app.delete_project_confirm_selection.is_some(),
+            "delete confirmation should stay open"
+        );
+        assert!(
+            !app.verbose_paths,
+            "verbose paths should not toggle through delete confirmation"
+        );
+
+        fs::remove_dir_all(project_dir).expect("temp dir is removed");
+    }
+
+    #[test]
     fn verbose_paths_toggle_is_focusable_with_arrows_and_enter() {
         let project_dir = make_temp_dir("verbose-toggle-focus");
         let manifest_path = project_dir.join("petiglyph.toml");
@@ -12930,6 +12983,71 @@ mod tests {
             super::WelcomeFocus::InstallButton,
             "up from create glyph should jump to install/reinstall button"
         );
+
+        fs::remove_dir_all(project_dir).expect("temp dir is removed");
+    }
+
+    #[test]
+    fn glyphs_view_install_shortcut_routes_to_install_action() {
+        let workspace_root = make_temp_dir("glyphs-shortcut-install");
+        let mut app = App::new_inactive(workspace_root.clone(), TuiLaunchOverrides::default());
+        app.view = AppView::Glyphs;
+
+        handle_key(&mut app, KeyCode::Char('i'))
+            .expect("glyphs install shortcut should route to install action");
+
+        assert_eq!(
+            app.status.as_deref(),
+            Some("create a project in Home or relaunch with --manifest before installing")
+        );
+
+        fs::remove_dir_all(workspace_root).expect("temp dir is removed");
+    }
+
+    #[test]
+    fn glyphs_view_rescan_shortcut_reloads_project_sources() {
+        let project_dir = make_temp_dir("glyphs-shortcut-rescan");
+        let manifest_path = project_dir.join("petiglyph.toml");
+        let icons_dir = project_dir.join("icons");
+        fs::create_dir_all(&icons_dir).expect("icons dir is created");
+        write_manifest(&manifest_path, &Manifest::default()).expect("manifest is written");
+        write_test_png(&icons_dir.join("one.png"));
+
+        let config = RuntimeConfig {
+            project_dir: project_dir.clone(),
+            project_id: "test-glyphs-shortcut-rescan".to_string(),
+            input_dir: icons_dir.clone(),
+            out_dir: project_dir.join("build"),
+            font_name: "Petiglyph".to_string(),
+            glyph_size: 8,
+            base_threshold: 64,
+            threshold_overrides: BTreeMap::new(),
+            invert_overrides: BTreeMap::new(),
+            compositions: BTreeMap::new(),
+            animations: Vec::new(),
+            codepoint_start: 0x10_0000,
+        };
+
+        let mut app = App::new(manifest_path, config);
+        app.view = AppView::Glyphs;
+        app.reload_glyphs().expect("initial glyphs load");
+        assert_eq!(
+            app.glyphs.len(),
+            1,
+            "initial glyph load should see one source"
+        );
+
+        write_test_png(&icons_dir.join("two.png"));
+        assert_eq!(
+            app.glyphs.len(),
+            1,
+            "glyph cache should stay stale until the rescan shortcut runs"
+        );
+
+        handle_key(&mut app, KeyCode::Char('R'))
+            .expect("glyphs rescan shortcut should reload project sources");
+
+        assert_eq!(app.glyphs.len(), 2, "rescan should reload both sources");
 
         fs::remove_dir_all(project_dir).expect("temp dir is removed");
     }
