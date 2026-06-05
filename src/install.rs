@@ -311,7 +311,9 @@ fn write_atomic_string(path: &Path, data: &str) -> Result<()> {
     temp_file
         .flush()
         .with_context(|| format!("failed to flush temporary content for {}", path.display()))?;
-    fs::rename(temp_file.path(), path)
+    let temp_path = temp_file.into_temp_path();
+    temp_path
+        .persist(path)
         .with_context(|| format!("failed to replace {}", path.display()))?;
     Ok(())
 }
@@ -329,7 +331,9 @@ fn write_atomic_bytes(path: &Path, data: &[u8]) -> Result<()> {
     temp_file
         .flush()
         .with_context(|| format!("failed to flush temporary content for {}", path.display()))?;
-    fs::rename(temp_file.path(), path)
+    let temp_path = temp_file.into_temp_path();
+    temp_path
+        .persist(path)
         .with_context(|| format!("failed to replace {}", path.display()))?;
     Ok(())
 }

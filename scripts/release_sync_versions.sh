@@ -49,12 +49,11 @@ fi
 
 VERSION="$version" perl -i -pe 's/^pkgver=.*/pkgver=$ENV{VERSION}/m' PKGBUILD
 
-if ! command -v makepkg >/dev/null 2>&1; then
-  echo "makepkg is required to regenerate .SRCINFO during release sync." >&2
-  exit 1
+if command -v makepkg >/dev/null 2>&1; then
+  makepkg --printsrcinfo > .SRCINFO
+else
+  echo "Skipping .SRCINFO regeneration because makepkg is not available." >&2
 fi
-
-makepkg --printsrcinfo > .SRCINFO
 
 for pkg in npm/*/package.json; do
   VERSION="$version" perl -i -pe 's/("version"\s*:\s*")[^"]+(",)/$1$ENV{VERSION}$2/' "$pkg"

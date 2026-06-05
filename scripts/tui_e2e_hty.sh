@@ -724,7 +724,7 @@ go_glyphs_panel() {
 
   glyphs_panel_visible() {
     snapshot="$(session_snapshot_text "$session")"
-    [[ "$snapshot" == *"Threshold:"* ]] && [[ "$snapshot" == *"Invert:"* ]]
+    grep -Eq '^[^[:alnum:]]+Glyphs[[:space:]]' <<<"$snapshot"
   }
 
   if glyphs_panel_visible; then
