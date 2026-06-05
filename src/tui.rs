@@ -3290,82 +3290,83 @@ fn render_test_image_from_coverage(
     Ok(image)
 }
 
-fn move_import_settings_focus_left(
-    settings: &mut AnimationImportSettingsState,
-    include_back_and_skip_all: bool,
-) {
-    settings.focus = match settings.focus {
-        AnimationImportSettingsFocus::GrayscaleToggle => {
-            AnimationImportSettingsFocus::GrayscaleToggle
-        }
-        AnimationImportSettingsFocus::GrayscaleOptionsButton => {
-            AnimationImportSettingsFocus::GrayscaleToggle
-        }
-        AnimationImportSettingsFocus::Threshold => {
-            AnimationImportSettingsFocus::GrayscaleOptionsButton
-        }
-        AnimationImportSettingsFocus::FramesButton => {
-            AnimationImportSettingsFocus::Threshold
-        }
-        AnimationImportSettingsFocus::ExportTestImageButton => {
-            AnimationImportSettingsFocus::FramesButton
-        }
-        AnimationImportSettingsFocus::Continue => {
-            AnimationImportSettingsFocus::ExportTestImageButton
-        }
-        AnimationImportSettingsFocus::Back => AnimationImportSettingsFocus::Continue,
-        AnimationImportSettingsFocus::SkipAll => {
-            if include_back_and_skip_all {
-                AnimationImportSettingsFocus::Back
-            } else {
-                AnimationImportSettingsFocus::Continue
-            }
-        }
-    };
+fn import_settings_visible_focuses(kind: HomeCreationKind) -> Vec<AnimationImportSettingsFocus> {
+    let mut focuses = vec![
+        AnimationImportSettingsFocus::GrayscaleToggle,
+        AnimationImportSettingsFocus::GrayscaleOptionsButton,
+        AnimationImportSettingsFocus::Threshold,
+    ];
+    if matches!(
+        kind,
+        HomeCreationKind::AnimatedGlyph | HomeCreationKind::AnimatedGridGlyph
+    ) {
+        focuses.push(AnimationImportSettingsFocus::FramesButton);
+    }
+    if !matches!(kind, HomeCreationKind::Glyph) {
+        focuses.push(AnimationImportSettingsFocus::ExportTestImageButton);
+    }
+    focuses.push(AnimationImportSettingsFocus::Continue);
+    if matches!(kind, HomeCreationKind::Glyph) {
+        focuses.push(AnimationImportSettingsFocus::Back);
+        focuses.push(AnimationImportSettingsFocus::SkipAll);
+    }
+    focuses
 }
 
-fn move_import_settings_focus_right(
+fn normalize_import_settings_focus(
     settings: &mut AnimationImportSettingsState,
-    include_back_and_skip_all: bool,
+    kind: HomeCreationKind,
 ) {
-    settings.focus = match settings.focus {
-        AnimationImportSettingsFocus::GrayscaleToggle => {
-            AnimationImportSettingsFocus::GrayscaleOptionsButton
-        }
-        AnimationImportSettingsFocus::GrayscaleOptionsButton => {
-            AnimationImportSettingsFocus::Threshold
-        }
-        AnimationImportSettingsFocus::Threshold => {
-            AnimationImportSettingsFocus::FramesButton
-        }
-        AnimationImportSettingsFocus::FramesButton => {
-            AnimationImportSettingsFocus::ExportTestImageButton
-        }
-        AnimationImportSettingsFocus::ExportTestImageButton => {
-            AnimationImportSettingsFocus::Continue
-        }
-        AnimationImportSettingsFocus::Continue => {
-            if include_back_and_skip_all {
-                AnimationImportSettingsFocus::Back
-            } else {
-                AnimationImportSettingsFocus::Continue
-            }
-        }
-        AnimationImportSettingsFocus::Back => {
-            if include_back_and_skip_all {
-                AnimationImportSettingsFocus::SkipAll
-            } else {
-                AnimationImportSettingsFocus::Continue
-            }
-        }
-        AnimationImportSettingsFocus::SkipAll => {
-            if include_back_and_skip_all {
-                AnimationImportSettingsFocus::SkipAll
-            } else {
-                AnimationImportSettingsFocus::Continue
-            }
-        }
+    let visible = import_settings_visible_focuses(kind);
+    if !visible.contains(&settings.focus) {
+        settings.focus = AnimationImportSettingsFocus::Continue;
+    }
+}
+
+fn move_import_settings_focus(
+    settings: &mut AnimationImportSettingsState,
+    kind: HomeCreationKind,
+    direction: i8,
+) {
+    let visible = import_settings_visible_focuses(kind);
+    let current = visible
+        .iter()
+        .position(|focus| *focus == settings.focus)
+        .unwrap_or_else(|| {
+            visible
+                .iter()
+                .position(|focus| *focus == AnimationImportSettingsFocus::Continue)
+                .unwrap_or(0)
+        });
+    let next = if direction < 0 {
+        current.saturating_sub(1)
+    } else {
+        (current + 1).min(visible.len().saturating_sub(1))
     };
+    settings.focus = visible[next];
+}
+
+fn import_settings_enter_continues_workflow(
+    settings: &AnimationImportSettingsState,
+    kind: HomeCreationKind,
+) -> bool {
+    if settings.grayscale_editor.is_some() {
+        return false;
+    }
+
+    match settings.focus {
+        AnimationImportSettingsFocus::Continue
+        | AnimationImportSettingsFocus::Back
+        | AnimationImportSettingsFocus::SkipAll
+        | AnimationImportSettingsFocus::Threshold => true,
+        AnimationImportSettingsFocus::FramesButton => matches!(
+            kind,
+            HomeCreationKind::AnimatedGlyph | HomeCreationKind::AnimatedGridGlyph
+        ),
+        AnimationImportSettingsFocus::GrayscaleToggle
+        | AnimationImportSettingsFocus::GrayscaleOptionsButton
+        | AnimationImportSettingsFocus::ExportTestImageButton => false,
+    }
 }
 
 fn rotate_grayscale_knob_left(editor: &mut GrayscaleOptionsEditor) {
@@ -3445,21 +3446,19 @@ fn handle_animation_import_settings_key(app: &mut App, key: KeyEvent) -> Result<
         }
     }
 
+    let kind = match app.home_workflow {
+        HomeWorkflow::Tweaking(kind) => kind,
+        _ => HomeCreationKind::AnimatedGlyph,
+    };
+    normalize_import_settings_focus(&mut app.animation_import_settings, kind);
+
     match key.code {
         KeyCode::Left | KeyCode::Char('h') => {
-            let include_skip_all = matches!(
-                app.home_workflow,
-                HomeWorkflow::Tweaking(HomeCreationKind::Glyph)
-            );
-            move_import_settings_focus_left(&mut app.animation_import_settings, include_skip_all);
+            move_import_settings_focus(&mut app.animation_import_settings, kind, -1);
             Ok(true)
         }
         KeyCode::Right | KeyCode::Char('l') => {
-            let include_skip_all = matches!(
-                app.home_workflow,
-                HomeWorkflow::Tweaking(HomeCreationKind::Glyph)
-            );
-            move_import_settings_focus_right(&mut app.animation_import_settings, include_skip_all);
+            move_import_settings_focus(&mut app.animation_import_settings, kind, 1);
             Ok(true)
         }
         KeyCode::Up | KeyCode::Char('k') | KeyCode::Down | KeyCode::Char('j') => {
@@ -3575,8 +3574,8 @@ fn handle_animation_import_settings_key(app: &mut App, key: KeyEvent) -> Result<
                 );
                 Ok(true)
             }
-            AnimationImportSettingsFocus::Threshold => Ok(true),
-            AnimationImportSettingsFocus::FramesButton => Ok(true),
+            AnimationImportSettingsFocus::Threshold => Ok(false),
+            AnimationImportSettingsFocus::FramesButton => Ok(false),
             AnimationImportSettingsFocus::ExportTestImageButton => {
                 app.export_animation_import_test_image()?;
                 Ok(true)
@@ -3621,72 +3620,20 @@ fn handle_home_creation_key(app: &mut App, key: KeyEvent) -> Result<()> {
             _ => {}
         },
         HomeWorkflow::Tweaking(kind) => {
+            let enter_continues_workflow = matches!(key.code, KeyCode::Enter)
+                && import_settings_enter_continues_workflow(&app.animation_import_settings, kind);
             if handle_animation_import_settings_key(app, key)? {
                 return Ok(());
+            }
+            if enter_continues_workflow {
+                return continue_home_creation_tweaking_enter(app, kind);
             }
             match key.code {
                 KeyCode::Esc => {
                     app.cancel_home_workflow()?;
                     app.status = Some("home creation workflow canceled".to_string());
                 }
-                KeyCode::Enter => {
-                    if app.home_import_task.is_some() {
-                        app.status = Some("images are still loading".to_string());
-                        return Ok(());
-                    }
-                    if matches!(kind, HomeCreationKind::Glyph) {
-                        let is_back = app.animation_import_settings.focus
-                            == AnimationImportSettingsFocus::Back;
-                        let is_skip_all = app.animation_import_settings.focus
-                            == AnimationImportSettingsFocus::SkipAll;
-                        let current_source = app.current_glyph_tweak_source_key().cloned();
-                        if is_back {
-                            if app.home_workflow_tweak_source_index > 0 {
-                                app.home_workflow_tweak_source_index =
-                                    app.home_workflow_tweak_source_index.saturating_sub(1);
-                                app.sync_threshold_to_current_glyph_tweak_source();
-                                let current =
-                                    app.home_workflow_tweak_source_index.saturating_add(1);
-                                let total = app.home_workflow_tweak_source_queue.len();
-                                app.status = Some(format!("previous preview ({current}/{total})"));
-                            } else {
-                                app.status = Some("already at first preview".to_string());
-                            }
-                            return Ok(());
-                        }
-                        if is_skip_all {
-                            let remaining = app.home_workflow_tweak_source_queue
-                                [app.home_workflow_tweak_source_index..]
-                                .to_vec();
-                            if !remaining.is_empty() {
-                                let original = app.animation_import_settings.threshold;
-                                app.animation_import_settings.threshold = app.config.base_threshold;
-                                persist_creation_workflow_threshold(app, remaining)?;
-                                app.animation_import_settings.threshold = original;
-                            }
-                            app.reload_glyphs()?;
-                            app.complete_home_workflow_to_glyphs();
-                            app.status = Some(
-                                "skipped remaining previews with default settings".to_string(),
-                            );
-                            return Ok(());
-                        }
-
-                        if let Some(source_key) = current_source {
-                            persist_creation_workflow_threshold(app, vec![source_key])?;
-                            app.home_workflow_tweak_source_index =
-                                app.home_workflow_tweak_source_index.saturating_add(1);
-                            app.sync_threshold_to_current_glyph_tweak_source();
-                        }
-                        if app.current_glyph_tweak_source_key().is_some() {
-                            let current = app.home_workflow_tweak_source_index.saturating_add(1);
-                            let total = app.home_workflow_tweak_source_queue.len();
-                            app.status = Some(format!("next preview ({current}/{total})"));
-                            return Ok(());
-                        }
-                    }
-                    continue_home_workflow_after_tweaking(app, kind)?;
-                }
+                KeyCode::Enter => continue_home_creation_tweaking_enter(app, kind)?,
                 _ => {}
             }
         }
@@ -3734,6 +3681,70 @@ fn handle_home_creation_key(app: &mut App, key: KeyEvent) -> Result<()> {
         }
     }
     Ok(())
+}
+
+fn continue_home_creation_tweaking_enter(app: &mut App, kind: HomeCreationKind) -> Result<()> {
+    app.poll_home_import_task();
+    if app.home_import_task.is_some() {
+        app.status = Some("images are still loading".to_string());
+        return Ok(());
+    }
+    if matches!(kind, HomeCreationKind::Glyph) {
+        let is_back = app.animation_import_settings.focus == AnimationImportSettingsFocus::Back;
+        let is_skip_all =
+            app.animation_import_settings.focus == AnimationImportSettingsFocus::SkipAll;
+        let current_source = app.current_glyph_tweak_source_key().cloned();
+        if is_back {
+            if app.home_workflow_tweak_source_index > 0 {
+                app.home_workflow_tweak_source_index =
+                    app.home_workflow_tweak_source_index.saturating_sub(1);
+                app.sync_threshold_to_current_glyph_tweak_source();
+                let current = app.home_workflow_tweak_source_index.saturating_add(1);
+                let total = app.home_workflow_tweak_source_queue.len();
+                app.status = Some(format!("previous preview ({current}/{total})"));
+            } else {
+                app.status = Some("already at first preview".to_string());
+            }
+            return Ok(());
+        }
+        if is_skip_all {
+            let remaining_start = app
+                .home_workflow_tweak_source_index
+                .min(app.home_workflow_tweak_source_queue.len());
+            let remaining = app.home_workflow_tweak_source_queue[remaining_start..].to_vec();
+            if !remaining.is_empty() {
+                let original = app.animation_import_settings.threshold;
+                app.animation_import_settings.threshold = app.config.base_threshold;
+                persist_creation_workflow_threshold(app, remaining)?;
+                app.animation_import_settings.threshold = original;
+            }
+            app.reload_glyphs()?;
+            app.complete_home_workflow_to_glyphs();
+            app.status = Some("skipped remaining previews with default settings".to_string());
+            return Ok(());
+        }
+
+        if let Some(source_key) = current_source {
+            let is_final_preview = app.home_workflow_tweak_source_index.saturating_add(1)
+                >= app.home_workflow_tweak_source_queue.len();
+            persist_creation_workflow_threshold(app, vec![source_key])?;
+            if is_final_preview {
+                return continue_home_workflow_after_tweaking(app, kind);
+            }
+            app.home_workflow_tweak_source_index = app
+                .home_workflow_tweak_source_index
+                .saturating_add(1)
+                .min(app.home_workflow_tweak_source_queue.len());
+            app.sync_threshold_to_current_glyph_tweak_source();
+        }
+        if app.current_glyph_tweak_source_key().is_some() {
+            let current = app.home_workflow_tweak_source_index.saturating_add(1);
+            let total = app.home_workflow_tweak_source_queue.len();
+            app.status = Some(format!("next preview ({current}/{total})"));
+            return Ok(());
+        }
+    }
+    continue_home_workflow_after_tweaking(app, kind)
 }
 
 fn continue_home_workflow_after_tweaking(app: &mut App, kind: HomeCreationKind) -> Result<()> {
@@ -4951,7 +4962,10 @@ impl App {
 
     fn complete_home_workflow_to_glyphs(&mut self) {
         if let Err(err) = self.reload_glyphs() {
-            self.status = Some(format_status_from_error(&self.manifest_path, &err.to_string()));
+            self.status = Some(format_status_from_error(
+                &self.manifest_path,
+                &err.to_string(),
+            ));
         }
         self.reset_home_workflow();
         self.view = AppView::Glyphs;
@@ -9130,6 +9144,15 @@ fn home_workflow_preview_lines(
     )
 }
 
+fn glyph_tweak_progress_label(app: &App) -> String {
+    let total = app.home_workflow_tweak_source_queue.len().max(1);
+    let current = app
+        .home_workflow_tweak_source_index
+        .saturating_add(1)
+        .min(total);
+    format!("Image {current}/{total}  ")
+}
+
 fn draw_animation_import_workflow_ui(
     frame: &mut Frame,
     app: &App,
@@ -9179,11 +9202,7 @@ fn draw_animation_import_workflow_ui(
         Span::raw("  "),
         Span::styled(
             if matches!(kind, HomeCreationKind::Glyph) {
-                format!(
-                    "Image {}/{}  ",
-                    app.home_workflow_tweak_source_index.saturating_add(1),
-                    app.home_workflow_tweak_source_queue.len().max(1)
-                )
+                glyph_tweak_progress_label(app)
             } else {
                 String::new()
             },
@@ -9240,206 +9259,89 @@ fn draw_animation_import_workflow_ui(
             .bg(Color::Blue)
             .add_modifier(Modifier::BOLD)
     };
-    let skip_all_style = if app.animation_import_settings.focus
-        == AnimationImportSettingsFocus::SkipAll
-        && app.animation_import_settings.grayscale_editor.is_none()
-    {
-        focused_style
-    } else {
-        idle_style
-    };
-    let show_skip_all = matches!(kind, HomeCreationKind::Glyph);
-
     let button_width = 18;
+    let visible_focuses = import_settings_visible_focuses(kind);
+    let mut row_constraints = Vec::new();
+    for index in 0..visible_focuses.len() {
+        if index > 0 {
+            row_constraints.push(Constraint::Length(2));
+        }
+        row_constraints.push(Constraint::Length(button_width));
+    }
+    row_constraints.push(Constraint::Min(0));
     let row = Layout::default()
         .direction(Direction::Horizontal)
-        .constraints([
-            Constraint::Length(button_width),
-            Constraint::Length(2),
-            Constraint::Length(button_width),
-            Constraint::Length(2),
-            Constraint::Length(button_width),
-            Constraint::Length(2),
-            Constraint::Length(button_width),
-            Constraint::Length(2),
-            Constraint::Length(button_width),
-            Constraint::Length(2),
-            Constraint::Length(button_width),
-            Constraint::Length(if show_skip_all { 2 } else { 0 }),
-            Constraint::Length(if show_skip_all { button_width } else { 0 }),
-            Constraint::Length(if show_skip_all { 2 } else { 0 }),
-            Constraint::Length(if show_skip_all { button_width } else { 0 }),
-            Constraint::Min(0),
-        ])
+        .constraints(row_constraints)
         .split(layout[1]);
 
-    let grayscale_style = if app.animation_import_settings.focus
-        == AnimationImportSettingsFocus::GrayscaleToggle
-        && app.animation_import_settings.grayscale_editor.is_none()
-    {
-        focused_style
-    } else {
-        idle_style
-    };
-    let grayscale_label = if app.animation_import_settings.grayscale_enabled {
-        " Gray: ON "
-    } else {
-        " Gray: OFF "
-    };
-    frame.render_widget(
-        Paragraph::new(grayscale_label)
-            .block(
-                Block::default()
-                    .borders(Borders::ALL)
-                    .border_style(grayscale_style),
-            )
-            .style(grayscale_style),
-        row[0],
-    );
-
-    let options_style = if app.animation_import_settings.focus
-        == AnimationImportSettingsFocus::GrayscaleOptionsButton
-        || app.animation_import_settings.grayscale_editor.is_some()
-    {
-        focused_style
-    } else {
-        idle_style
-    };
-    let options_dirty =
-        if grayscale_options_are_default(app.animation_import_settings.grayscale_options) {
-            ""
-        } else {
-            " *"
-        };
-    frame.render_widget(
-        Paragraph::new(format!(" Gray Options{options_dirty} "))
-            .block(
-                Block::default()
-                    .borders(Borders::ALL)
-                    .border_style(options_style),
-            )
-            .style(options_style),
-        row[2],
-    );
-    let threshold_style = if app.animation_import_settings.focus
-        == AnimationImportSettingsFocus::Threshold
-        && app.animation_import_settings.grayscale_editor.is_none()
-    {
-        focused_style
-    } else {
-        idle_style
-    };
-    let threshold_dirty = if app.animation_import_settings.threshold == app.config.base_threshold {
-        ""
-    } else {
-        " *"
-    };
-    frame.render_widget(
-        Paragraph::new(format!(
-            " Th: {}{threshold_dirty} ",
-            app.animation_import_settings.threshold
-        ))
-        .block(
-            Block::default()
-                .borders(Borders::ALL)
-                .border_style(threshold_style),
-        )
-        .style(threshold_style),
-        row[4],
-    );
-    let frames_style = if app.animation_import_settings.focus
-        == AnimationImportSettingsFocus::FramesButton
-        && app.animation_import_settings.grayscale_editor.is_none()
-    {
-        focused_style
-    } else {
-        idle_style
-    };
-    let frames_label = if matches!(
-        kind,
-        HomeCreationKind::AnimatedGlyph | HomeCreationKind::AnimatedGridGlyph
-    ) && !app.animation_selection_order.is_empty()
-    {
-        let total = app.animation_selection_order.len();
-        let idx = app.animation_import_settings.preview_frame_index % total;
-        format!(" Frames: {}/{} ", idx + 1, total)
-    } else {
-        " Frames: - ".to_string()
-    };
-    frame.render_widget(
-        Paragraph::new(frames_label)
-            .block(
-                Block::default()
-                    .borders(Borders::ALL)
-                    .border_style(frames_style),
-            )
-            .style(frames_style),
-        row[6],
-    );
-
-    let export_style = if app.animation_import_settings.focus
-        == AnimationImportSettingsFocus::ExportTestImageButton
-        && app.animation_import_settings.grayscale_editor.is_none()
-    {
-        focused_style
-    } else {
-        idle_style
-    };
-    frame.render_widget(
-        Paragraph::new(" Export Test ")
-            .block(
-                Block::default()
-                    .borders(Borders::ALL)
-                    .border_style(export_style),
-            )
-            .style(export_style),
-        row[8],
-    );
-    frame.render_widget(
-        Paragraph::new(if show_skip_all {
-            "Next"
-        } else {
-            "Continue "
-        })
-        .alignment(Alignment::Center)
-        .block(
-            Block::default()
-                .borders(Borders::ALL)
-                .border_style(continue_style),
-        )
-        .style(continue_style),
-        row[10],
-    );
-    if show_skip_all {
-        let back_style = if app.animation_import_settings.focus
-            == AnimationImportSettingsFocus::Back
-            && app.animation_import_settings.grayscale_editor.is_none()
-        {
-            focused_style
-        } else {
-            idle_style
+    for (index, focus) in visible_focuses.iter().enumerate() {
+        let area = row[index * 2];
+        let selected = app.animation_import_settings.focus == *focus
+            && app.animation_import_settings.grayscale_editor.is_none();
+        let mut style = if selected { focused_style } else { idle_style };
+        let label = match focus {
+            AnimationImportSettingsFocus::GrayscaleToggle => {
+                if app.animation_import_settings.grayscale_enabled {
+                    "Gray: ON".to_string()
+                } else {
+                    "Gray: OFF".to_string()
+                }
+            }
+            AnimationImportSettingsFocus::GrayscaleOptionsButton => {
+                style = if selected || app.animation_import_settings.grayscale_editor.is_some() {
+                    focused_style
+                } else {
+                    idle_style
+                };
+                let dirty = if grayscale_options_are_default(
+                    app.animation_import_settings.grayscale_options,
+                ) {
+                    ""
+                } else {
+                    " *"
+                };
+                format!("Gray Options{dirty}")
+            }
+            AnimationImportSettingsFocus::Threshold => {
+                let dirty = if app.animation_import_settings.threshold == app.config.base_threshold
+                {
+                    ""
+                } else {
+                    " *"
+                };
+                format!("Th: {}{dirty}", app.animation_import_settings.threshold)
+            }
+            AnimationImportSettingsFocus::FramesButton => {
+                if !app.animation_selection_order.is_empty() {
+                    let total = app.animation_selection_order.len();
+                    let idx = app.animation_import_settings.preview_frame_index % total;
+                    format!("Frames: {}/{}", idx + 1, total)
+                } else {
+                    "Frames: -".to_string()
+                }
+            }
+            AnimationImportSettingsFocus::ExportTestImageButton => "Export Test".to_string(),
+            AnimationImportSettingsFocus::Continue => {
+                style = if selected {
+                    focused_style
+                } else {
+                    continue_style
+                };
+                if matches!(kind, HomeCreationKind::Glyph) {
+                    "Next".to_string()
+                } else {
+                    "Continue".to_string()
+                }
+            }
+            AnimationImportSettingsFocus::Back => "Back".to_string(),
+            AnimationImportSettingsFocus::SkipAll => "Skip All".to_string(),
         };
         frame.render_widget(
-            Paragraph::new("Back")
+            Paragraph::new(label)
                 .alignment(Alignment::Center)
-                .block(
-                    Block::default()
-                        .borders(Borders::ALL)
-                        .border_style(back_style),
-                )
-                .style(back_style),
-            row[12],
-        );
-        frame.render_widget(
-            Paragraph::new("Skip All")
-                .alignment(Alignment::Center)
-                .block(
-                    Block::default()
-                        .borders(Borders::ALL)
-                        .border_style(skip_all_style),
-                )
-                .style(skip_all_style),
-            row[14],
+                .block(Block::default().borders(Borders::ALL).border_style(style))
+                .style(style),
+            area,
         );
     }
 
@@ -12498,19 +12400,22 @@ fn installed_animation_preview_lines(
 #[cfg(test)]
 mod tests {
     use super::{
-        AnimationConfig, AnimationConfigFocus, AnimationImportTaskOutput, AnimationPreview,
-        AnimationType, App, AppView, BleedLevel, DropImportResult, ExistingImportPolicy,
-        GlyphPreviewControl, HomeCreationKind, HomeWorkflow, InteractiveGlyph, KeyCode,
+        AnimationConfig, AnimationConfigFocus, AnimationImportSettingsFocus,
+        AnimationImportSettingsState, AnimationImportTaskOutput, AnimationPreview, AnimationType,
+        App, AppView, BleedLevel, DropImportResult, ExistingImportPolicy, GlyphPreviewControl,
+        GlyphToolMode, HomeCreationKind, HomeWorkflow, InteractiveGlyph, KeyCode, KeyEvent,
         RuntimeConfig, VisibleGlyphRow, animation_frame_source_for_preview,
         animation_has_non_uniform_frame_invert, animation_has_non_uniform_frame_thresholds,
         collect_dropped_paths, composition_preview_lines_stable_frame,
         continue_home_workflow_after_tweaking, default_animation_name_from_frames,
         drag_images_here_lines, emitted_composition_cols, glyph_matches_animation_frame_source,
-        grayscale_options_are_default, handle_key, handle_paste_event_for_test,
-        home_workflow_preview_lines, import_image_files_to_input,
+        glyph_tweak_progress_label, grayscale_options_are_default, handle_key,
+        handle_key_event_for_test, handle_paste_event_for_test, home_workflow_preview_lines,
+        import_image_files_to_input, import_settings_visible_focuses,
         installed_animation_blocks_for_definition, installed_animation_frame_index,
-        installed_animation_source_block, persist_composition_definition, preview_leftmost_control,
-        preview_lines, prune_static_sample_blocks, resolve_command_path, scrollbar_thumb_geometry,
+        installed_animation_source_block, move_import_settings_focus,
+        persist_composition_definition, preview_leftmost_control, preview_lines,
+        prune_static_sample_blocks, resolve_command_path, scrollbar_thumb_geometry,
         selected_threshold_sources, split_shell_like_tokens, step_animation_preview,
         visible_window_bounds,
     };
@@ -13870,6 +13775,392 @@ mod tests {
             Some(&101)
         );
         assert!(matches!(app.home_workflow, HomeWorkflow::Launcher));
+        assert_eq!(app.view, AppView::Glyphs);
+        assert_eq!(
+            app.glyphs
+                .iter()
+                .filter(|glyph| glyph.glyph.composition_tile.is_none())
+                .count(),
+            2,
+            "finishing the final preview should reload created glyphs into the Glyphs panel"
+        );
+    }
+
+    #[test]
+    fn glyph_creation_tweaking_progress_clamps_after_final_preview() {
+        let project_dir = make_temp_dir("glyph-creation-progress-clamps");
+        let manifest_path = project_dir.join("petiglyph.toml");
+        write_manifest(&manifest_path, &Manifest::default()).expect("manifest is written");
+        let icons_dir = project_dir.join("icons");
+        fs::create_dir_all(&icons_dir).expect("icons dir is created");
+
+        let config = RuntimeConfig {
+            project_dir: project_dir.clone(),
+            project_id: "test-glyph-creation-progress-clamps".to_string(),
+            input_dir: icons_dir,
+            out_dir: project_dir.join("build"),
+            font_name: "Petiglyph".to_string(),
+            glyph_size: 8,
+            base_threshold: 64,
+            threshold_overrides: BTreeMap::new(),
+            invert_overrides: BTreeMap::new(),
+            compositions: BTreeMap::new(),
+            animations: Vec::new(),
+            codepoint_start: 0x10_0000,
+        };
+        let mut app = App::new(manifest_path, config);
+        app.home_workflow_tweak_source_queue = (0..20)
+            .map(|index| format!("source_{index:02}.png"))
+            .collect();
+        app.home_workflow_tweak_source_index = 20;
+
+        assert_eq!(glyph_tweak_progress_label(&app), "Image 20/20  ");
+    }
+
+    #[test]
+    fn glyph_creation_tweaking_next_finishes_when_index_is_already_at_end() {
+        let project_dir = make_temp_dir("glyph-creation-next-at-end");
+        let manifest_path = project_dir.join("petiglyph.toml");
+        write_manifest(&manifest_path, &Manifest::default()).expect("manifest is written");
+        let icons_dir = project_dir.join("icons");
+        fs::create_dir_all(&icons_dir).expect("icons dir is created");
+        write_test_png(&icons_dir.join("source.png"));
+
+        let config = RuntimeConfig {
+            project_dir: project_dir.clone(),
+            project_id: "test-glyph-creation-next-at-end".to_string(),
+            input_dir: icons_dir,
+            out_dir: project_dir.join("build"),
+            font_name: "Petiglyph".to_string(),
+            glyph_size: 8,
+            base_threshold: 64,
+            threshold_overrides: BTreeMap::new(),
+            invert_overrides: BTreeMap::new(),
+            compositions: BTreeMap::new(),
+            animations: Vec::new(),
+            codepoint_start: 0x10_0000,
+        };
+        let mut app = App::new(manifest_path, config);
+        app.start_home_workflow(HomeCreationKind::Glyph);
+        app.home_workflow = HomeWorkflow::Tweaking(HomeCreationKind::Glyph);
+        app.home_workflow_recent_imported_source_keys = vec!["source.png".to_string()];
+        app.home_workflow_import_count = 1;
+        app.rebuild_home_tweak_queue_for_glyph();
+        app.home_workflow_tweak_source_index = 1;
+        app.animation_import_settings.focus = AnimationImportSettingsFocus::Continue;
+
+        handle_key(&mut app, KeyCode::Enter).expect("next at end should finish workflow");
+
+        assert!(matches!(app.home_workflow, HomeWorkflow::Launcher));
+        assert_eq!(app.view, AppView::Glyphs);
+        assert!(
+            app.glyphs
+                .iter()
+                .any(|glyph| glyph.glyph.source_parent_key == "source.png"),
+            "finishing from an end index should still reload glyphs"
+        );
+    }
+
+    #[test]
+    fn glyph_creation_tweaking_enter_on_continue_finishes_final_preview() {
+        let project_dir = make_temp_dir("glyph-creation-continue-enter-finishes");
+        let manifest_path = project_dir.join("petiglyph.toml");
+        write_manifest(&manifest_path, &Manifest::default()).expect("manifest is written");
+        let icons_dir = project_dir.join("icons");
+        fs::create_dir_all(&icons_dir).expect("icons dir is created");
+        write_test_png(&icons_dir.join("source_a.png"));
+        write_test_png(&icons_dir.join("source_b.png"));
+
+        let config = RuntimeConfig {
+            project_dir: project_dir.clone(),
+            project_id: "test-glyph-creation-continue-enter-finishes".to_string(),
+            input_dir: icons_dir,
+            out_dir: project_dir.join("build"),
+            font_name: "Petiglyph".to_string(),
+            glyph_size: 8,
+            base_threshold: 64,
+            threshold_overrides: BTreeMap::new(),
+            invert_overrides: BTreeMap::new(),
+            compositions: BTreeMap::new(),
+            animations: Vec::new(),
+            codepoint_start: 0x10_0000,
+        };
+        let mut app = App::new(manifest_path.clone(), config);
+        app.start_home_workflow(HomeCreationKind::Glyph);
+        app.home_workflow = HomeWorkflow::Tweaking(HomeCreationKind::Glyph);
+        app.home_workflow_recent_imported_source_keys =
+            vec!["source_a.png".to_string(), "source_b.png".to_string()];
+        app.home_workflow_import_count = 2;
+        app.rebuild_home_tweak_queue_for_glyph();
+        app.home_workflow_tweak_source_index = 1;
+        app.animation_import_settings.focus = AnimationImportSettingsFocus::Continue;
+        app.animation_import_settings.threshold = 99;
+
+        handle_key(&mut app, KeyCode::Enter)
+            .expect("enter on final continue control should finish workflow");
+
+        let manifest_after = read_manifest(&manifest_path).expect("manifest reload succeeds");
+        assert_eq!(
+            manifest_after.threshold_overrides.get("source_b.png"),
+            Some(&99)
+        );
+        assert!(matches!(app.home_workflow, HomeWorkflow::Launcher));
+        assert_eq!(app.view, AppView::Glyphs);
+        assert_eq!(
+            app.glyphs
+                .iter()
+                .filter(|glyph| glyph.glyph.composition_tile.is_none())
+                .count(),
+            2,
+            "finishing from continue focus should reload glyph rows"
+        );
+    }
+
+    #[test]
+    fn glyph_creation_tweaking_enter_press_event_on_continue_finishes_final_preview() {
+        let project_dir = make_temp_dir("glyph-creation-continue-press-event-finishes");
+        let manifest_path = project_dir.join("petiglyph.toml");
+        write_manifest(&manifest_path, &Manifest::default()).expect("manifest is written");
+        let icons_dir = project_dir.join("icons");
+        fs::create_dir_all(&icons_dir).expect("icons dir is created");
+        write_test_png(&icons_dir.join("source_a.png"));
+        write_test_png(&icons_dir.join("source_b.png"));
+
+        let config = RuntimeConfig {
+            project_dir: project_dir.clone(),
+            project_id: "test-glyph-creation-continue-press-event-finishes".to_string(),
+            input_dir: icons_dir,
+            out_dir: project_dir.join("build"),
+            font_name: "Petiglyph".to_string(),
+            glyph_size: 8,
+            base_threshold: 64,
+            threshold_overrides: BTreeMap::new(),
+            invert_overrides: BTreeMap::new(),
+            compositions: BTreeMap::new(),
+            animations: Vec::new(),
+            codepoint_start: 0x10_0000,
+        };
+        let mut app = App::new(manifest_path.clone(), config);
+        app.start_home_workflow(HomeCreationKind::Glyph);
+        app.home_workflow = HomeWorkflow::Tweaking(HomeCreationKind::Glyph);
+        app.home_workflow_recent_imported_source_keys =
+            vec!["source_a.png".to_string(), "source_b.png".to_string()];
+        app.home_workflow_import_count = 2;
+        app.rebuild_home_tweak_queue_for_glyph();
+        app.home_workflow_tweak_source_index = 1;
+        app.animation_import_settings.focus = AnimationImportSettingsFocus::Continue;
+        app.animation_import_settings.threshold = 99;
+
+        handle_key_event_for_test(
+            &mut app,
+            KeyEvent::new(KeyCode::Enter, crossterm::event::KeyModifiers::NONE),
+        )
+        .expect("press event on final continue should finish workflow");
+
+        let manifest_after = read_manifest(&manifest_path).expect("manifest reload succeeds");
+        assert_eq!(
+            manifest_after.threshold_overrides.get("source_b.png"),
+            Some(&99)
+        );
+        assert!(matches!(app.home_workflow, HomeWorkflow::Launcher));
+        assert_eq!(app.view, AppView::Glyphs);
+    }
+
+    #[test]
+    fn glyph_creation_tweaking_twentieth_next_finishes_without_extra_step() {
+        let project_dir = make_temp_dir("glyph-creation-twentieth-next-finishes");
+        let manifest_path = project_dir.join("petiglyph.toml");
+        write_manifest(&manifest_path, &Manifest::default()).expect("manifest is written");
+        let icons_dir = project_dir.join("icons");
+        fs::create_dir_all(&icons_dir).expect("icons dir is created");
+        let source_keys = (1..=20)
+            .map(|index| format!("triangle-{index:03}.png"))
+            .collect::<Vec<_>>();
+        for source_key in &source_keys {
+            write_test_png(&icons_dir.join(source_key));
+        }
+
+        let config = RuntimeConfig {
+            project_dir: project_dir.clone(),
+            project_id: "test-glyph-creation-twentieth-next-finishes".to_string(),
+            input_dir: icons_dir,
+            out_dir: project_dir.join("build"),
+            font_name: "Petiglyph".to_string(),
+            glyph_size: 8,
+            base_threshold: 64,
+            threshold_overrides: BTreeMap::new(),
+            invert_overrides: BTreeMap::new(),
+            compositions: BTreeMap::new(),
+            animations: Vec::new(),
+            codepoint_start: 0x10_0000,
+        };
+        let mut app = App::new(manifest_path.clone(), config);
+        app.start_home_workflow(HomeCreationKind::Glyph);
+        app.home_workflow = HomeWorkflow::Tweaking(HomeCreationKind::Glyph);
+        app.home_workflow_recent_imported_source_keys = source_keys;
+        app.home_workflow_import_count = 20;
+        app.rebuild_home_tweak_queue_for_glyph();
+        app.home_workflow_tweak_source_index = 19;
+        app.animation_import_settings.focus = AnimationImportSettingsFocus::Continue;
+        app.animation_import_settings.threshold = 77;
+
+        assert_eq!(glyph_tweak_progress_label(&app), "Image 20/20  ");
+        handle_key(&mut app, KeyCode::Enter).expect("twentieth next should finish immediately");
+
+        let manifest_after = read_manifest(&manifest_path).expect("manifest reload succeeds");
+        assert_eq!(
+            manifest_after.threshold_overrides.get("triangle-020.png"),
+            Some(&77)
+        );
+        assert!(matches!(app.home_workflow, HomeWorkflow::Launcher));
+        assert_eq!(app.view, AppView::Glyphs);
+        assert_eq!(
+            app.glyphs
+                .iter()
+                .filter(|glyph| glyph.glyph.composition_tile.is_none())
+                .count(),
+            20,
+            "final Next should close the popup and refresh all created glyph rows"
+        );
+    }
+
+    #[test]
+    fn glyph_creation_tweaking_enter_on_threshold_finishes_final_preview() {
+        let project_dir = make_temp_dir("glyph-creation-threshold-enter-finishes");
+        let manifest_path = project_dir.join("petiglyph.toml");
+        write_manifest(&manifest_path, &Manifest::default()).expect("manifest is written");
+        let icons_dir = project_dir.join("icons");
+        fs::create_dir_all(&icons_dir).expect("icons dir is created");
+        write_test_png(&icons_dir.join("source_a.png"));
+        write_test_png(&icons_dir.join("source_b.png"));
+
+        let config = RuntimeConfig {
+            project_dir: project_dir.clone(),
+            project_id: "test-glyph-creation-threshold-enter-finishes".to_string(),
+            input_dir: icons_dir,
+            out_dir: project_dir.join("build"),
+            font_name: "Petiglyph".to_string(),
+            glyph_size: 8,
+            base_threshold: 64,
+            threshold_overrides: BTreeMap::new(),
+            invert_overrides: BTreeMap::new(),
+            compositions: BTreeMap::new(),
+            animations: Vec::new(),
+            codepoint_start: 0x10_0000,
+        };
+        let mut app = App::new(manifest_path.clone(), config);
+        app.start_home_workflow(HomeCreationKind::Glyph);
+        app.home_workflow = HomeWorkflow::Tweaking(HomeCreationKind::Glyph);
+        app.home_workflow_recent_imported_source_keys =
+            vec!["source_a.png".to_string(), "source_b.png".to_string()];
+        app.home_workflow_import_count = 2;
+        app.rebuild_home_tweak_queue_for_glyph();
+        app.home_workflow_tweak_source_index = 1;
+        app.animation_import_settings.focus = AnimationImportSettingsFocus::Threshold;
+        app.animation_import_settings.threshold = 99;
+
+        handle_key(&mut app, KeyCode::Enter)
+            .expect("enter on final threshold control should finish workflow");
+
+        let manifest_after = read_manifest(&manifest_path).expect("manifest reload succeeds");
+        assert_eq!(
+            manifest_after.threshold_overrides.get("source_b.png"),
+            Some(&99)
+        );
+        assert!(matches!(app.home_workflow, HomeWorkflow::Launcher));
+        assert_eq!(app.view, AppView::Glyphs);
+        assert_eq!(
+            app.glyphs
+                .iter()
+                .filter(|glyph| glyph.glyph.composition_tile.is_none())
+                .count(),
+            2,
+            "finishing from threshold focus should reload glyph rows"
+        );
+    }
+
+    #[test]
+    fn grid_creation_tweaking_enter_on_threshold_advances_to_grid_config() {
+        let project_dir = make_temp_dir("grid-creation-threshold-enter-advances");
+        let manifest_path = project_dir.join("petiglyph.toml");
+        write_manifest(&manifest_path, &Manifest::default()).expect("manifest is written");
+        let icons_dir = project_dir.join("icons");
+        fs::create_dir_all(&icons_dir).expect("icons dir is created");
+        write_test_png(&icons_dir.join("grid_source.png"));
+
+        let config = RuntimeConfig {
+            project_dir: project_dir.clone(),
+            project_id: "test-grid-creation-threshold-enter-advances".to_string(),
+            input_dir: icons_dir,
+            out_dir: project_dir.join("build"),
+            font_name: "Petiglyph".to_string(),
+            glyph_size: 8,
+            base_threshold: 64,
+            threshold_overrides: BTreeMap::new(),
+            invert_overrides: BTreeMap::new(),
+            compositions: BTreeMap::new(),
+            animations: Vec::new(),
+            codepoint_start: 0x10_0000,
+        };
+        let mut app = App::new(manifest_path, config);
+        app.start_home_workflow(HomeCreationKind::Grid);
+        app.home_workflow = HomeWorkflow::Tweaking(HomeCreationKind::Grid);
+        app.home_workflow_grid_source_key = Some("grid_source.png".to_string());
+        app.home_workflow_import_count = 1;
+        app.animation_import_settings.focus = AnimationImportSettingsFocus::Threshold;
+
+        handle_key(&mut app, KeyCode::Enter)
+            .expect("enter on grid threshold should continue to grid config");
+
+        assert!(matches!(app.home_workflow, HomeWorkflow::ConfigureGrid));
+        assert!(
+            app.grid_config.is_some(),
+            "grid config should be initialized after continuing"
+        );
+    }
+
+    #[test]
+    fn animated_creation_tweaking_enter_on_frames_advances_to_animation_config() {
+        let project_dir = make_temp_dir("animated-creation-frames-enter-advances");
+        let manifest_path = project_dir.join("petiglyph.toml");
+        write_manifest(&manifest_path, &Manifest::default()).expect("manifest is written");
+        let icons_dir = project_dir.join("icons");
+        fs::create_dir_all(&icons_dir).expect("icons dir is created");
+        write_test_png(&icons_dir.join("frame_a.png"));
+        write_test_png(&icons_dir.join("frame_b.png"));
+
+        let config = RuntimeConfig {
+            project_dir: project_dir.clone(),
+            project_id: "test-animated-creation-frames-enter-advances".to_string(),
+            input_dir: icons_dir,
+            out_dir: project_dir.join("build"),
+            font_name: "Petiglyph".to_string(),
+            glyph_size: 8,
+            base_threshold: 64,
+            threshold_overrides: BTreeMap::new(),
+            invert_overrides: BTreeMap::new(),
+            compositions: BTreeMap::new(),
+            animations: Vec::new(),
+            codepoint_start: 0x10_0000,
+        };
+        let mut app = App::new(manifest_path, config);
+        app.start_home_workflow(HomeCreationKind::AnimatedGlyph);
+        app.home_workflow = HomeWorkflow::Tweaking(HomeCreationKind::AnimatedGlyph);
+        app.animation_selection_order = vec!["frame_a.png".to_string(), "frame_b.png".to_string()];
+        app.home_workflow_import_count = 2;
+        app.animation_import_settings.focus = AnimationImportSettingsFocus::FramesButton;
+
+        handle_key(&mut app, KeyCode::Enter)
+            .expect("enter on frames should continue to animation config");
+
+        assert!(matches!(
+            app.home_workflow,
+            HomeWorkflow::ConfigureAnimation(AnimationType::Standard)
+        ));
+        assert!(matches!(
+            app.glyph_tool_mode,
+            GlyphToolMode::ConfigureAnimation(_)
+        ));
     }
 
     #[test]
@@ -13929,6 +14220,47 @@ mod tests {
     }
 
     #[test]
+    fn glyph_creation_tweaking_focus_skips_hidden_animation_controls() {
+        let mut settings = AnimationImportSettingsState {
+            focus: AnimationImportSettingsFocus::Threshold,
+            ..AnimationImportSettingsState::default()
+        };
+
+        move_import_settings_focus(&mut settings, HomeCreationKind::Glyph, 1);
+        assert_eq!(settings.focus, AnimationImportSettingsFocus::Continue);
+        move_import_settings_focus(&mut settings, HomeCreationKind::Glyph, 1);
+        assert_eq!(settings.focus, AnimationImportSettingsFocus::Back);
+        move_import_settings_focus(&mut settings, HomeCreationKind::Glyph, 1);
+        assert_eq!(settings.focus, AnimationImportSettingsFocus::SkipAll);
+        move_import_settings_focus(&mut settings, HomeCreationKind::Glyph, -1);
+        assert_eq!(settings.focus, AnimationImportSettingsFocus::Back);
+    }
+
+    #[test]
+    fn glyph_creation_tweaking_visible_controls_fit_popup_row() {
+        let controls = import_settings_visible_focuses(HomeCreationKind::Glyph);
+        assert_eq!(
+            controls,
+            vec![
+                AnimationImportSettingsFocus::GrayscaleToggle,
+                AnimationImportSettingsFocus::GrayscaleOptionsButton,
+                AnimationImportSettingsFocus::Threshold,
+                AnimationImportSettingsFocus::Continue,
+                AnimationImportSettingsFocus::Back,
+                AnimationImportSettingsFocus::SkipAll,
+            ]
+        );
+        let button_width = 18usize;
+        let gap_width = 2usize;
+        let rendered_width =
+            controls.len() * button_width + controls.len().saturating_sub(1) * gap_width;
+        assert!(
+            rendered_width <= 118,
+            "standard glyph tweak controls should fit inside the popup body"
+        );
+    }
+
+    #[test]
     fn glyph_creation_cancel_removes_workflow_imports() {
         let project_dir = make_temp_dir("glyph-creation-cancel-removes-imports");
         let manifest_path = project_dir.join("petiglyph.toml");
@@ -13970,7 +14302,10 @@ mod tests {
             }
             std::thread::sleep(Duration::from_millis(10));
         }
-        assert!(app.home_import_task.is_none(), "import task should complete");
+        assert!(
+            app.home_import_task.is_none(),
+            "import task should complete"
+        );
         let imported_key = app
             .home_workflow_recent_imported_source_keys
             .last()
@@ -13988,7 +14323,10 @@ mod tests {
             !imported_path.exists(),
             "cancel should remove workflow-added files"
         );
-        assert!(icons_dir.join("kept.png").exists(), "existing file should remain");
+        assert!(
+            icons_dir.join("kept.png").exists(),
+            "existing file should remain"
+        );
         assert_eq!(app.glyphs.len(), initial_count);
         assert!(matches!(app.home_workflow, HomeWorkflow::Launcher));
     }
@@ -14056,7 +14394,10 @@ mod tests {
             !imported_path.exists(),
             "cancel should remove workflow-added animated frames"
         );
-        assert!(icons_dir.join("kept.png").exists(), "existing file should remain");
+        assert!(
+            icons_dir.join("kept.png").exists(),
+            "existing file should remain"
+        );
         assert_eq!(app.glyphs.len(), initial_count);
         assert!(matches!(app.home_workflow, HomeWorkflow::Launcher));
     }
