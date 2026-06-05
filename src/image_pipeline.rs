@@ -21,6 +21,12 @@ struct SourceCoverage {
     content_min: u8,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub(crate) enum SourceFitMode {
+    TrimContent,
+    PreserveFrame,
+}
+
 pub(crate) fn terminal_cell_width_for_height(cell_height: u32) -> u32 {
     (cell_height / 2).max(1)
 }
@@ -57,6 +63,7 @@ pub(crate) fn preprocess_standard_source(
         glyph_height,
         Some(source_key),
         "standard",
+        SourceFitMode::TrimContent,
     )?;
 
     glyph_debug::write_coverage_png(
@@ -71,13 +78,89 @@ pub(crate) fn preprocess_standard_source(
     Ok(fitted)
 }
 
-pub(crate) fn preprocess_composition_grid_source(
+pub(crate) fn coverage_map_from_image(source: &RgbaImage, glyph_size: u32) -> Result<Vec<u8>> {
+    coverage_map_from_image_with_fit(source, glyph_size, SourceFitMode::TrimContent)
+}
+
+pub(crate) fn coverage_map_from_image_with_fit(
+    source: &RgbaImage,
+    glyph_size: u32,
+    fit_mode: SourceFitMode,
+) -> Result<Vec<u8>> {
+    if glyph_size == 0 {
+        bail!("glyph_size must be > 0");
+    }
+
+    let source_coverage = coverage_from_rgba(source);
+    fit_coverage_to_canvas(
+        &source_coverage,
+        glyph_size,
+        glyph_size,
+        None,
+        "generic",
+        fit_mode,
+    )
+}
+
+pub(crate) fn preprocess_standard_source_with_fit(
+    path: &Path,
+    glyph_width: u32,
+    glyph_height: u32,
+    source_key: &str,
+    fit_mode: SourceFitMode,
+) -> Result<Vec<u8>> {
+    if glyph_width == 0 || glyph_height == 0 {
+        bail!("glyph dimensions must be > 0");
+    }
+
+    glyph_debug::log_step(
+        "standard.start",
+        format!(
+            "source={source_key} glyph={}x{} fit={fit_mode:?}",
+            glyph_width, glyph_height
+        ),
+    );
+    let source = load_source_rgba(path, glyph_height)?;
+    glyph_debug::write_rgba_png("01_standard_input_rgba", source_key, &source);
+
+    let source_coverage = coverage_from_rgba(&source);
+    glyph_debug::write_coverage_png(
+        "02_standard_input_coverage",
+        source_key,
+        source_coverage.width,
+        source_coverage.height,
+        &source_coverage.coverage,
+    );
+
+    let fitted = fit_coverage_to_canvas(
+        &source_coverage,
+        glyph_width,
+        glyph_height,
+        Some(source_key),
+        "standard",
+        fit_mode,
+    )?;
+
+    glyph_debug::write_coverage_png(
+        "06_standard_final_coverage",
+        source_key,
+        glyph_width,
+        glyph_height,
+        &fitted,
+    );
+    glyph_debug::log_step("standard.done", format!("source={source_key}"));
+
+    Ok(fitted)
+}
+
+pub(crate) fn preprocess_composition_grid_source_with_fit(
     path: &Path,
     rows: usize,
     cols: usize,
     glyph_width: u32,
     glyph_height: u32,
     source_key: &str,
+    fit_mode: SourceFitMode,
 ) -> Result<Vec<u8>> {
     if rows == 0 || cols == 0 {
         bail!("composition rows/cols must be > 0");
@@ -89,7 +172,7 @@ pub(crate) fn preprocess_composition_grid_source(
     glyph_debug::log_step(
         "grid.start",
         format!(
-            "source={source_key} rows={rows} cols={cols} glyph={}x{}",
+            "source={source_key} rows={rows} cols={cols} glyph={}x{} fit={fit_mode:?}",
             glyph_width, glyph_height
         ),
     );
@@ -120,6 +203,7 @@ pub(crate) fn preprocess_composition_grid_source(
         target_h,
         Some(source_key),
         "grid",
+        fit_mode,
     )?;
 
     glyph_debug::write_coverage_png(
@@ -137,21 +221,13 @@ pub(crate) fn preprocess_composition_grid_source(
     Ok(fitted)
 }
 
-pub(crate) fn coverage_map_from_image(source: &RgbaImage, glyph_size: u32) -> Result<Vec<u8>> {
-    if glyph_size == 0 {
-        bail!("glyph_size must be > 0");
-    }
-
-    let source_coverage = coverage_from_rgba(source);
-    fit_coverage_to_canvas(&source_coverage, glyph_size, glyph_size, None, "generic")
-}
-
 fn fit_coverage_to_canvas(
     source: &SourceCoverage,
     target_w: u32,
     target_h: u32,
     debug_label: Option<&str>,
     debug_mode: &str,
+    fit_mode: SourceFitMode,
 ) -> Result<Vec<u8>> {
     if target_w == 0 || target_h == 0 {
         bail!("target dimensions must be > 0");
@@ -168,56 +244,78 @@ fn fit_coverage_to_canvas(
         );
     }
 
-    let Some((min_x, min_y, max_x, max_y)) = content_bounds_from_coverage(
-        &source.coverage,
-        source.width,
-        source.height,
-        source.content_min,
-    ) else {
-        if let Some(label) = debug_label {
-            glyph_debug::log_step(
-                &format!("{debug_mode}.empty"),
-                format!(
-                    "source={label} no content; writing blank {}x{}",
-                    target_w, target_h
-                ),
-            );
+    let (fit_w, fit_h, fit_coverage) = match fit_mode {
+        SourceFitMode::TrimContent => {
+            let Some((min_x, min_y, max_x, max_y)) = content_bounds_from_coverage(
+                &source.coverage,
+                source.width,
+                source.height,
+                source.content_min,
+            ) else {
+                if let Some(label) = debug_label {
+                    glyph_debug::log_step(
+                        &format!("{debug_mode}.empty"),
+                        format!(
+                            "source={label} no content; writing blank {}x{}",
+                            target_w, target_h
+                        ),
+                    );
+                }
+                let len = usize::try_from(target_w)
+                    .context("target width overflow")?
+                    .checked_mul(usize::try_from(target_h).context("target height overflow")?)
+                    .ok_or_else(|| anyhow::anyhow!("target coverage size overflow"))?;
+                return Ok(vec![0u8; len]);
+            };
+
+            let crop_w = max_x - min_x + 1;
+            let crop_h = max_y - min_y + 1;
+            let cropped =
+                crop_coverage(&source.coverage, source.width, min_x, min_y, crop_w, crop_h)?;
+
+            if let Some(label) = debug_label {
+                glyph_debug::log_step(
+                    &format!("{debug_mode}.bounds"),
+                    format!(
+                        "source={label} bounds=({},{})->({},{}) crop={}x{} target={}x{}",
+                        min_x, min_y, max_x, max_y, crop_w, crop_h, target_w, target_h
+                    ),
+                );
+            }
+            (crop_w, crop_h, cropped)
         }
-        let len = usize::try_from(target_w)
-            .context("target width overflow")?
-            .checked_mul(usize::try_from(target_h).context("target height overflow")?)
-            .ok_or_else(|| anyhow::anyhow!("target coverage size overflow"))?;
-        return Ok(vec![0u8; len]);
+        SourceFitMode::PreserveFrame => {
+            if let Some(label) = debug_label {
+                glyph_debug::log_step(
+                    &format!("{debug_mode}.frame"),
+                    format!(
+                        "source={label} preserving full frame {}x{} target={}x{}",
+                        source.width, source.height, target_w, target_h
+                    ),
+                );
+            }
+            (source.width, source.height, source.coverage.clone())
+        }
     };
 
-    let crop_w = max_x - min_x + 1;
-    let crop_h = max_y - min_y + 1;
-    let cropped = crop_coverage(&source.coverage, source.width, min_x, min_y, crop_w, crop_h)?;
-    let cropped_img = GrayImage::from_raw(crop_w, crop_h, cropped)
+    let cropped_img = GrayImage::from_raw(fit_w, fit_h, fit_coverage)
         .ok_or_else(|| anyhow::anyhow!("failed to construct grayscale source image"))?;
 
     if let Some(label) = debug_label {
-        glyph_debug::log_step(
-            &format!("{debug_mode}.bounds"),
-            format!(
-                "source={label} bounds=({},{})->({},{}) crop={}x{} target={}x{}",
-                min_x, min_y, max_x, max_y, crop_w, crop_h, target_w, target_h
-            ),
-        );
         glyph_debug::write_coverage_png(
-            &format!("03_{debug_mode}_cropped_coverage"),
+            &format!("03_{debug_mode}_fit_source_coverage"),
             label,
-            crop_w,
-            crop_h,
+            fit_w,
+            fit_h,
             cropped_img.as_raw(),
         );
     }
 
-    let scale_x = target_w as f64 / crop_w as f64;
-    let scale_y = target_h as f64 / crop_h as f64;
+    let scale_x = target_w as f64 / fit_w as f64;
+    let scale_y = target_h as f64 / fit_h as f64;
     let scale = scale_x.min(scale_y);
-    let scaled_w = ((crop_w as f64 * scale).round() as u32).clamp(1, target_w);
-    let scaled_h = ((crop_h as f64 * scale).round() as u32).clamp(1, target_h);
+    let scaled_w = ((fit_w as f64 * scale).round() as u32).clamp(1, target_w);
+    let scaled_h = ((fit_h as f64 * scale).round() as u32).clamp(1, target_h);
 
     let resized = image::imageops::resize(&cropped_img, scaled_w, scaled_h, FilterType::Lanczos3);
     if let Some(label) = debug_label {

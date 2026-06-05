@@ -83,17 +83,6 @@ fn animation_frame_parent_sources(config: &RuntimeConfig) -> BTreeSet<String> {
         .collect()
 }
 
-fn standard_animation_frame_sources(config: &RuntimeConfig) -> BTreeSet<String> {
-    config
-        .animations
-        .iter()
-        .filter(|animation| animation.animation_type == AnimationType::Standard)
-        .flat_map(|animation| animation.frames.iter())
-        .filter(|frame| !frame.contains("#compose:"))
-        .cloned()
-        .collect()
-}
-
 fn glyph_matches_animation_row_frame(
     glyph: &InteractiveGlyph,
     animation: &AnimationDef,
@@ -928,4 +917,3 @@ fn toggle_selected_invert(app: &mut App) {
     };
     set_selected_invert(app, !current);
 }
-

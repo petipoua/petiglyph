@@ -155,13 +155,7 @@ impl App {
             return Ok(());
         }
 
-        let glyphs = preprocess_sources_with_compositions_and_standard_sources(
-            &sources,
-            &self.config.input_dir,
-            self.config.glyph_size,
-            &self.config.compositions,
-            &standard_animation_frame_sources(&self.config),
-        )?
+        let glyphs = preprocess_sources_for_config(&sources, &self.config)?
         .into_iter()
         .map(|glyph| {
             let saved_threshold = self
@@ -1197,4 +1191,3 @@ impl App {
         }
     }
 }
-

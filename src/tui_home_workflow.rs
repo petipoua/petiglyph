@@ -90,6 +90,7 @@ fn live_preview_coverage_key(
     source_path: &Path,
     glyph_size: u32,
     settings: &AnimationImportSettingsState,
+    fit_mode: SourceFitMode,
 ) -> Option<LivePreviewCoverageKey> {
     if !source_path.is_file() || !is_supported_source(source_path) {
         return None;
@@ -110,6 +111,7 @@ fn live_preview_coverage_key(
         grayscale_brightness: settings.grayscale_options.brightness,
         grayscale_contrast: settings.grayscale_options.contrast,
         grayscale_gamma_percent: settings.grayscale_options.gamma_percent,
+        fit_mode,
     })
 }
 
@@ -117,10 +119,11 @@ fn live_import_source_coverage_uncached(
     source_path: &Path,
     glyph_size: u32,
     settings: &AnimationImportSettingsState,
+    fit_mode: SourceFitMode,
 ) -> Option<Vec<u8>> {
     let mut image = load_source_rgba(source_path, glyph_size).ok()?;
     apply_live_grayscale_processing(&mut image, settings);
-    coverage_map_from_image(&image, glyph_size).ok()
+    coverage_map_from_image_with_fit(&image, glyph_size, fit_mode).ok()
 }
 
 fn render_test_image_from_single_glyph(glyph: &InteractiveGlyph) -> Result<RgbaImage> {
@@ -841,4 +844,3 @@ fn handle_first_install_notice_key(app: &mut App, code: KeyCode) -> Result<()> {
     tui_debug_log("first_install_notice.exit", app_debug_state(app));
     Ok(())
 }
-

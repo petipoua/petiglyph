@@ -275,6 +275,68 @@
     }
 
     #[test]
+    fn animated_home_workflow_live_preview_preserves_full_frame_fit() {
+        let project_dir = make_temp_dir("animated-home-full-frame-preview");
+        let manifest_path = project_dir.join("petiglyph.toml");
+        write_manifest(&manifest_path, &Manifest::default()).expect("manifest is written");
+        let icons_dir = project_dir.join("icons");
+        fs::create_dir_all(&icons_dir).expect("icons dir is created");
+
+        let source_path = icons_dir.join("frame.png");
+        let mut image = RgbaImage::from_pixel(32, 16, Rgba([255, 255, 255, 0]));
+        for y in 4..12 {
+            for x in 24..32 {
+                image.put_pixel(x, y, Rgba([0, 0, 0, 255]));
+            }
+        }
+        image.save(&source_path).expect("frame image is written");
+
+        let config = RuntimeConfig {
+            project_dir: project_dir.clone(),
+            project_id: "test-animated-home-full-frame-preview".to_string(),
+            input_dir: icons_dir.clone(),
+            out_dir: project_dir.join("build"),
+            font_name: "Petiglyph".to_string(),
+            glyph_size: 16,
+            base_threshold: 64,
+            threshold_overrides: BTreeMap::new(),
+            invert_overrides: BTreeMap::new(),
+            compositions: BTreeMap::new(),
+            animations: Vec::new(),
+            codepoint_start: 0x10_0000,
+        };
+        let mut app = App::new(manifest_path, config);
+        app.animation_import_settings.grayscale_enabled = false;
+
+        let trimmed = app
+            .live_import_source_coverage(&source_path)
+            .expect("static live preview coverage exists");
+
+        app.start_home_workflow(HomeCreationKind::AnimatedGlyph);
+        app.home_workflow = HomeWorkflow::Tweaking(HomeCreationKind::AnimatedGlyph);
+        app.animation_selection_order = vec!["frame.png".to_string()];
+        app.animation_selection_set.insert("frame.png".to_string());
+
+        let animated = app
+            .live_import_source_coverage(&source_path)
+            .expect("animated live preview coverage exists");
+        let expected =
+            coverage_map_from_image_with_fit(&image, 16, SourceFitMode::PreserveFrame)
+                .expect("expected preserve-frame coverage");
+
+        assert_eq!(
+            animated, expected,
+            "animated draft preview should preserve the full frame instead of trimming content bounds"
+        );
+        assert_ne!(
+            trimmed, animated,
+            "live preview cache must distinguish trim-fit from full-frame animation fit"
+        );
+
+        fs::remove_dir_all(project_dir).expect("temp dir is removed");
+    }
+
+    #[test]
     fn animated_home_workflow_export_uses_first_five_frames_by_default() {
         let project_dir = make_temp_dir("animated-home-export-default-five");
         let manifest_path = project_dir.join("petiglyph.toml");

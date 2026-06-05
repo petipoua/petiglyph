@@ -13,7 +13,8 @@ use walkdir::WalkDir;
 use crate::compose::compose_tiles;
 use crate::glyph_debug;
 use crate::image_pipeline::{
-    coverage_map_from_image, preprocess_standard_source, terminal_cell_width_for_height,
+    SourceFitMode, coverage_map_from_image, preprocess_standard_source_with_fit,
+    terminal_cell_width_for_height,
 };
 use crate::install::reserve_project_unicode_range;
 use crate::project::{
@@ -194,14 +195,7 @@ pub(crate) fn build_outputs_with_options(
         ),
     );
     let sources = collect_source_files(&config.input_dir)?;
-    let standard_animation_sources = standard_animation_frame_sources(config);
-    let glyphs = preprocess_sources_with_compositions_and_standard_sources(
-        &sources,
-        &config.input_dir,
-        config.glyph_size,
-        &config.compositions,
-        &standard_animation_sources,
-    )?;
+    let glyphs = preprocess_sources_for_config(&sources, config)?;
     validate_codepoint_range(config.codepoint_start, glyphs.len())?;
     let assigned_codepoints = assign_codepoints_for_build(config, &glyphs, options)?;
 
@@ -947,11 +941,48 @@ pub(crate) fn preprocess_sources_with_compositions_and_standard_sources(
     compositions: &BTreeMap<String, CompositionDef>,
     standard_source_keys: &BTreeSet<String>,
 ) -> Result<Vec<PreprocessedGlyph>> {
+    preprocess_sources_with_compositions_and_fit_modes(
+        sources,
+        input_dir,
+        glyph_size,
+        compositions,
+        standard_source_keys,
+        &BTreeSet::new(),
+    )
+}
+
+pub(crate) fn preprocess_sources_for_config(
+    sources: &[PathBuf],
+    config: &RuntimeConfig,
+) -> Result<Vec<PreprocessedGlyph>> {
+    preprocess_sources_with_compositions_and_fit_modes(
+        sources,
+        &config.input_dir,
+        config.glyph_size,
+        &config.compositions,
+        &standard_animation_frame_sources(config),
+        &animation_frame_parent_sources(config),
+    )
+}
+
+fn preprocess_sources_with_compositions_and_fit_modes(
+    sources: &[PathBuf],
+    input_dir: &Path,
+    glyph_size: u32,
+    compositions: &BTreeMap<String, CompositionDef>,
+    standard_source_keys: &BTreeSet<String>,
+    full_frame_source_keys: &BTreeSet<String>,
+) -> Result<Vec<PreprocessedGlyph>> {
     let mut used_names = HashSet::new();
     let mut out = Vec::new();
 
     for source in sources {
         let source_key = source_manifest_key(source, input_dir);
+        let fit_mode = if full_frame_source_keys.contains(&source_key) {
+            SourceFitMode::PreserveFrame
+        } else {
+            SourceFitMode::TrimContent
+        };
         glyph_debug::log_step(
             "source.begin",
             format!("source={} path={}", source_key, source.display()),
@@ -961,7 +992,14 @@ pub(crate) fn preprocess_sources_with_compositions_and_standard_sources(
                 "source.compose",
                 format!("source={} rows={} cols={}", source_key, def.rows, def.cols),
             );
-            let tiles = compose_tiles(source, &source_key, def.rows, def.cols, glyph_size)?;
+            let tiles = compose_tiles(
+                source,
+                &source_key,
+                def.rows,
+                def.cols,
+                glyph_size,
+                fit_mode,
+            )?;
             let base_name = unique_glyph_name(source, &mut used_names);
             for tile in tiles {
                 let tile_source_key =
@@ -998,6 +1036,7 @@ pub(crate) fn preprocess_sources_with_compositions_and_standard_sources(
                     glyph_size,
                     &mut used_names,
                     Some(&format!("{base_name}_standard")),
+                    fit_mode,
                 )?;
             }
             glyph_debug::log_step("source.done", format!("source={} mode=compose", source_key));
@@ -1012,6 +1051,7 @@ pub(crate) fn preprocess_sources_with_compositions_and_standard_sources(
             glyph_size,
             &mut used_names,
             None,
+            fit_mode,
         )?;
         glyph_debug::log_step(
             "source.done",
@@ -1033,6 +1073,20 @@ fn standard_animation_frame_sources(config: &RuntimeConfig) -> BTreeSet<String> 
         .collect()
 }
 
+fn animation_frame_parent_sources(config: &RuntimeConfig) -> BTreeSet<String> {
+    config
+        .animations
+        .iter()
+        .flat_map(|animation| animation.frames.iter())
+        .map(|frame| {
+            frame
+                .split_once("#compose:")
+                .map_or_else(|| frame.as_str(), |(parent, _)| parent)
+                .to_string()
+        })
+        .collect()
+}
+
 fn push_standard_preprocessed_glyph(
     out: &mut Vec<PreprocessedGlyph>,
     source: &Path,
@@ -1040,10 +1094,17 @@ fn push_standard_preprocessed_glyph(
     glyph_size: u32,
     used_names: &mut HashSet<String>,
     glyph_name_seed: Option<&str>,
+    fit_mode: SourceFitMode,
 ) -> Result<()> {
     let glyph_width = glyph_size;
     let glyph_height = glyph_size;
-    let coverage = preprocess_standard_source(source, glyph_width, glyph_height, source_key)?;
+    let coverage = preprocess_standard_source_with_fit(
+        source,
+        glyph_width,
+        glyph_height,
+        source_key,
+        fit_mode,
+    )?;
     let glyph_name = match glyph_name_seed {
         Some(seed) => unique_glyph_name_for_seed(seed, used_names),
         None => unique_glyph_name(source, used_names),

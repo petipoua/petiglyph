@@ -444,13 +444,7 @@ fn load_interactive_glyphs_from_config(config: &RuntimeConfig) -> Result<LoadedG
     }
     sources.sort();
 
-    let glyphs = preprocess_sources_with_compositions_and_standard_sources(
-        &sources,
-        &config.input_dir,
-        config.glyph_size,
-        &config.compositions,
-        &standard_animation_frame_sources(config),
-    )?
+    let glyphs = preprocess_sources_for_config(&sources, config)?
     .into_iter()
     .map(|glyph| {
         let saved_threshold = config
@@ -496,13 +490,7 @@ fn load_interactive_glyphs_for_source_keys(
     }
     sources.sort();
 
-    let glyphs = preprocess_sources_with_compositions_and_standard_sources(
-        &sources,
-        &config.input_dir,
-        config.glyph_size,
-        &config.compositions,
-        &standard_animation_frame_sources(config),
-    )?
+    let glyphs = preprocess_sources_for_config(&sources, config)?
     .into_iter()
     .map(|glyph| {
         let saved_threshold = config
@@ -527,4 +515,3 @@ fn load_interactive_glyphs_for_source_keys(
 
     Ok(glyphs)
 }
-

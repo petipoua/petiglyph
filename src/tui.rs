@@ -49,12 +49,11 @@ use crate::animation_media;
 use crate::artifact_warning::incompatible_artifact_warning;
 use crate::build::{
     BuildSummary, MappingEntry, PreprocessedGlyph, build_outputs, expected_bdf_path,
-    expected_ttf_path, is_supported_source,
-    preprocess_sources_with_compositions_and_standard_sources,
+    expected_ttf_path, is_supported_source, preprocess_sources_for_config,
 };
 use crate::glyph_debug;
 use crate::image_pipeline::{
-    coverage_map_from_image, load_source_rgba, preprocess_standard_source,
+    SourceFitMode, coverage_map_from_image_with_fit, load_source_rgba, preprocess_standard_source,
 };
 use crate::install::{
     DEFAULT_INSTALL_NAME_MODE, FontInstallNameMode, effective_font_name,

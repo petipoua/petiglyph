@@ -412,6 +412,7 @@ struct LivePreviewCoverageKey {
     grayscale_brightness: i16,
     grayscale_contrast: i16,
     grayscale_gamma_percent: u16,
+    fit_mode: SourceFitMode,
 }
 
 #[derive(Debug, Default)]
@@ -720,4 +721,3 @@ impl Drop for TerminalSession {
         let _ = self.terminal.show_cursor();
     }
 }
-

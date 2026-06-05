@@ -12,7 +12,8 @@ use crate::artifact_warning::{INCOMPATIBLE_ARTIFACT_PREFIX, incompatible_artifac
 use crate::build::{
     BuildOptions, CompositionTileInfo, GlyphBitmap, MappingEntry, PreprocessedGlyph,
     bitmap_to_bdf_rows, build_outputs, build_outputs_with_options, coverage_map,
-    glyph_sample_string, is_supported_source, preprocess_sources_with_compositions,
+    glyph_sample_string, is_supported_source, preprocess_sources_for_config,
+    preprocess_sources_with_compositions,
     preprocess_sources_with_compositions_and_standard_sources,
 };
 use crate::cli::{
@@ -214,6 +215,24 @@ fn fit_alpha_to_canvas(source: &RgbaImage, target_w: u32, target_h: u32) -> Vec<
     let scaled_w = ((crop_w as f64 * scale).round() as u32).clamp(1, target_w);
     let scaled_h = ((crop_h as f64 * scale).round() as u32).clamp(1, target_h);
     let resized = image::imageops::resize(&cropped_alpha, scaled_w, scaled_h, FilterType::Lanczos3);
+
+    let mut canvas = image::GrayImage::from_pixel(target_w, target_h, image::Luma([0]));
+    let offset_x = ((target_w - scaled_w) / 2) as i64;
+    let offset_y = ((target_h - scaled_h) / 2) as i64;
+    image::imageops::overlay(&mut canvas, &resized, offset_x, offset_y);
+    canvas.into_raw()
+}
+
+fn fit_full_alpha_to_canvas(source: &RgbaImage, target_w: u32, target_h: u32) -> Vec<u8> {
+    let source_alpha = image::GrayImage::from_fn(source.width(), source.height(), |x, y| {
+        image::Luma([source.get_pixel(x, y)[3]])
+    });
+
+    let scale =
+        (target_w as f64 / source.width() as f64).min(target_h as f64 / source.height() as f64);
+    let scaled_w = ((source.width() as f64 * scale).round() as u32).clamp(1, target_w);
+    let scaled_h = ((source.height() as f64 * scale).round() as u32).clamp(1, target_h);
+    let resized = image::imageops::resize(&source_alpha, scaled_w, scaled_h, FilterType::Lanczos3);
 
     let mut canvas = image::GrayImage::from_pixel(target_w, target_h, image::Luma([0]));
     let offset_x = ((target_w - scaled_w) / 2) as i64;
@@ -1968,6 +1987,148 @@ fn preprocess_composition_tiles_use_global_grid_scaling() {
         assert_eq!(
             glyph.coverage, expected_coverage,
             "tile coverage should match global fit-before-split for row={}, col={}",
+            tile.row, tile.col
+        );
+    }
+
+    fs::remove_dir_all(project_dir).expect("temp project dir is removed");
+}
+
+#[test]
+fn standard_animation_frames_preserve_full_source_frame_when_scaling() {
+    let project_dir = make_temp_dir("standard-animation-full-frame-fit");
+    let input_dir = project_dir.join("icons");
+    fs::create_dir_all(&input_dir).expect("icons dir is created");
+
+    let mut img = RgbaImage::from_pixel(32, 16, Rgba([255, 255, 255, 0]));
+    for y in 4..12 {
+        for x in 24..32 {
+            img.put_pixel(x, y, Rgba([0, 0, 0, 255]));
+        }
+    }
+    let source_path = input_dir.join("frame.png");
+    img.save(&source_path).expect("frame image is written");
+
+    let config = RuntimeConfig {
+        project_dir: project_dir.clone(),
+        project_id: "project".to_string(),
+        input_dir: input_dir.clone(),
+        out_dir: project_dir.join("build"),
+        font_name: "Petiglyph".to_string(),
+        glyph_size: 16,
+        base_threshold: 64,
+        threshold_overrides: BTreeMap::new(),
+        invert_overrides: BTreeMap::new(),
+        compositions: BTreeMap::new(),
+        animations: vec![AnimationDef {
+            name: "run".to_string(),
+            animation_type: AnimationType::Standard,
+            fps: 12,
+            frames: vec!["frame.png".to_string()],
+            rows: None,
+            cols: None,
+            horizontal_bleed: None,
+            vertical_bleed: None,
+            grayscale_processing: None,
+        }],
+        codepoint_start: 0x10_0000,
+    };
+
+    let glyphs = preprocess_sources_for_config(&[source_path.clone()], &config)
+        .expect("animation preprocess succeeds");
+    assert_eq!(glyphs.len(), 1);
+
+    let source = image::open(&source_path)
+        .expect("source image opens")
+        .to_rgba8();
+    let expected = fit_full_alpha_to_canvas(&source, 16, 16);
+    assert_eq!(
+        glyphs[0].coverage, expected,
+        "standard animation frames should preserve the full video frame instead of trimming blank space"
+    );
+
+    fs::remove_dir_all(project_dir).expect("temp project dir is removed");
+}
+
+#[test]
+fn grid_animation_frames_preserve_full_source_frame_before_tile_split() {
+    let project_dir = make_temp_dir("grid-animation-full-frame-fit");
+    let input_dir = project_dir.join("icons");
+    fs::create_dir_all(&input_dir).expect("icons dir is created");
+
+    let mut img = RgbaImage::from_pixel(40, 20, Rgba([255, 255, 255, 0]));
+    for y in 5..15 {
+        for x in 30..40 {
+            img.put_pixel(x, y, Rgba([0, 0, 0, 255]));
+        }
+    }
+    let source_path = input_dir.join("frame-grid.png");
+    img.save(&source_path).expect("frame image is written");
+
+    let mut compositions = BTreeMap::new();
+    compositions.insert(
+        "frame-grid.png".to_string(),
+        CompositionDef {
+            rows: 2,
+            cols: 1,
+            horizontal_bleed: BleedLevel::Weak,
+            vertical_bleed: BleedLevel::Off,
+        },
+    );
+    let config = RuntimeConfig {
+        project_dir: project_dir.clone(),
+        project_id: "project".to_string(),
+        input_dir: input_dir.clone(),
+        out_dir: project_dir.join("build"),
+        font_name: "Petiglyph".to_string(),
+        glyph_size: 16,
+        base_threshold: 64,
+        threshold_overrides: BTreeMap::new(),
+        invert_overrides: BTreeMap::new(),
+        compositions,
+        animations: vec![AnimationDef {
+            name: "grid-run".to_string(),
+            animation_type: AnimationType::Grid,
+            fps: 12,
+            frames: vec!["frame-grid.png".to_string()],
+            rows: Some(2),
+            cols: Some(1),
+            horizontal_bleed: Some(BleedLevel::Weak),
+            vertical_bleed: Some(BleedLevel::Off),
+            grayscale_processing: None,
+        }],
+        codepoint_start: 0x10_0000,
+    };
+
+    let glyphs = preprocess_sources_for_config(&[source_path.clone()], &config)
+        .expect("animation grid preprocess succeeds");
+    assert_eq!(glyphs.len(), 4);
+
+    let tile_width = terminal_cell_width_for_height(16);
+    let tile_height = 16;
+    let emitted_cols = 2u32;
+    let source = image::open(&source_path)
+        .expect("source image opens")
+        .to_rgba8();
+    let expected_grid =
+        fit_full_alpha_to_canvas(&source, emitted_cols * tile_width, 2 * tile_height);
+
+    for glyph in &glyphs {
+        let tile = glyph
+            .composition_tile
+            .as_ref()
+            .expect("all glyphs should be composition tiles");
+        let expected_coverage = crop_expected_coverage_tile(
+            &expected_grid,
+            emitted_cols * tile_width,
+            (tile.col as u32) * tile_width,
+            (tile.row as u32) * tile_height,
+            tile_width,
+            tile_height,
+        );
+        assert_eq!(
+            glyph.coverage, expected_coverage,
+            "grid animation frame should be fit once as a full frame before splitting row={}, col={}",
             tile.row, tile.col
         );
     }

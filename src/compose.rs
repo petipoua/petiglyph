@@ -3,7 +3,9 @@ use std::fs;
 use std::path::Path;
 
 use crate::glyph_debug;
-use crate::image_pipeline::{preprocess_composition_grid_source, terminal_cell_width_for_height};
+use crate::image_pipeline::{
+    SourceFitMode, preprocess_composition_grid_source_with_fit, terminal_cell_width_for_height,
+};
 
 #[derive(Debug, Clone)]
 pub(crate) struct ComposedTile {
@@ -23,6 +25,7 @@ pub(crate) fn compose_tiles(
     rows: usize,
     logical_cols: usize,
     glyph_size: u32,
+    fit_mode: SourceFitMode,
 ) -> Result<Vec<ComposedTile>> {
     if rows == 0 || logical_cols == 0 {
         bail!("composition rows/cols must be > 0");
@@ -43,13 +46,14 @@ pub(crate) fn compose_tiles(
         .ok_or_else(|| anyhow::anyhow!("composition emitted cols overflow"))?;
     let glyph_width = terminal_cell_width_for_height(glyph_size);
     let glyph_height = glyph_size;
-    let grid_coverage = preprocess_composition_grid_source(
+    let grid_coverage = preprocess_composition_grid_source_with_fit(
         source_path,
         rows,
         cols,
         glyph_width,
         glyph_height,
         source_key,
+        fit_mode,
     )?;
     let grid_width = glyph_width
         .checked_mul(u32::try_from(cols).context("composition cols overflow u32")?)

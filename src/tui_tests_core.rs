@@ -20,6 +20,7 @@
     };
     use crate::animation_media;
     use crate::build::{CompositionTileInfo, PreprocessedGlyph};
+    use crate::image_pipeline::{SourceFitMode, coverage_map_from_image_with_fit};
     use crate::project::{AnimationDef, CompositionDef, Manifest, read_manifest, write_manifest};
     use anyhow::anyhow;
     use image::{Rgb, RgbImage, Rgba, RgbaImage};
@@ -1441,4 +1442,3 @@
         assert_eq!(glyph.working_threshold, 91);
         assert_eq!(glyph.saved_threshold, Some(91));
     }
-

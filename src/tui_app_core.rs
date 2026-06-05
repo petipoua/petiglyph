@@ -30,10 +30,12 @@ impl App {
     }
 
     fn live_import_source_coverage(&self, source_path: &Path) -> Option<Vec<u8>> {
+        let fit_mode = self.live_import_source_fit_mode(source_path);
         let key = live_preview_coverage_key(
             source_path,
             self.config.glyph_size,
             &self.animation_import_settings,
+            fit_mode,
         )?;
         if let Some(cached) = self.live_preview_coverage_cache.borrow().entries.get(&key) {
             return Some(cached.clone());
@@ -42,6 +44,7 @@ impl App {
             source_path,
             self.config.glyph_size,
             &self.animation_import_settings,
+            fit_mode,
         )?;
         let mut cache = self.live_preview_coverage_cache.borrow_mut();
         if cache.entries.len() > 32 {
@@ -49,6 +52,35 @@ impl App {
         }
         cache.entries.insert(key, coverage.clone());
         Some(coverage)
+    }
+
+    fn live_import_source_fit_mode(&self, source_path: &Path) -> SourceFitMode {
+        let source_key = source_path
+            .strip_prefix(&self.config.input_dir)
+            .unwrap_or(source_path)
+            .to_string_lossy()
+            .replace('\\', "/");
+
+        if matches!(
+            self.home_workflow,
+            HomeWorkflow::Import(HomeCreationKind::AnimatedGlyph)
+                | HomeWorkflow::Tweaking(HomeCreationKind::AnimatedGlyph)
+                | HomeWorkflow::Import(HomeCreationKind::AnimatedGridGlyph)
+                | HomeWorkflow::Tweaking(HomeCreationKind::AnimatedGridGlyph)
+                | HomeWorkflow::ConfigureAnimation(_)
+        ) && (self.animation_selection_order.contains(&source_key)
+            || self.animation_selection_set.contains(&source_key))
+        {
+            return SourceFitMode::PreserveFrame;
+        }
+
+        if let GlyphToolMode::ConfigureAnimation(config) = &self.glyph_tool_mode
+            && config.selected_frames.contains(&source_key)
+        {
+            return SourceFitMode::PreserveFrame;
+        }
+
+        SourceFitMode::TrimContent
     }
 
     fn has_imported_home_sources(&self, kind: HomeCreationKind) -> bool {
