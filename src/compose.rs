@@ -34,8 +34,11 @@ pub(crate) fn compose_tiles(
         bail!("glyph_size must be > 0");
     }
 
-    let source_bytes = fs::read(source_path)
-        .with_context(|| format!("failed to read {}", source_path.display()))?;
+    let source_hash = {
+        let source_bytes = fs::read(source_path)
+            .with_context(|| format!("failed to read {}", source_path.display()))?;
+        fnv1a64_hash(&source_bytes)
+    };
 
     // Portable composition flow:
     // 1) fit once on the full grid (no per-tile fit)
@@ -93,7 +96,7 @@ pub(crate) fn compose_tiles(
                     logical_col, half, x0, y0, glyph_width, glyph_height
                 ),
             );
-            let fingerprint = tile_fingerprint(&source_bytes, rows, cols, row, col);
+            let fingerprint = tile_fingerprint(source_hash, rows, cols, row, col);
 
             tiles.push(ComposedTile {
                 rows,
@@ -238,18 +241,17 @@ fn crop_coverage_tile(
     out
 }
 
-fn tile_fingerprint(
-    source_bytes: &[u8],
-    rows: usize,
-    cols: usize,
-    row: usize,
-    col: usize,
-) -> String {
+fn fnv1a64_hash(bytes: &[u8]) -> u64 {
     let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
-    for byte in source_bytes {
+    for byte in bytes {
         hash ^= u64::from(*byte);
         hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
     }
+    hash
+}
+
+fn tile_fingerprint(source_hash: u64, rows: usize, cols: usize, row: usize, col: usize) -> String {
+    let mut hash = source_hash;
     for value in [rows as u64, cols as u64, row as u64, col as u64] {
         for byte in value.to_le_bytes() {
             hash ^= u64::from(byte);

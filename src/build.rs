@@ -1,5 +1,5 @@
 use anyhow::{Context, Result, bail};
-use image::{Rgba, RgbaImage};
+use image::RgbaImage;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::fs;
@@ -13,7 +13,7 @@ use walkdir::WalkDir;
 use crate::compose::compose_tiles;
 use crate::glyph_debug;
 use crate::image_pipeline::{
-    SourceFitMode, coverage_map_from_image, preprocess_standard_source_with_fit,
+    SourceFitMode, coverage_map_from_image, preprocess_standard_source_with_fit_and_fingerprint,
     terminal_cell_width_for_height,
 };
 use crate::install::reserve_project_unicode_range;
@@ -400,20 +400,6 @@ fn save_glyph_lock(config: &RuntimeConfig, lock: &GlyphLockFile) -> Result<()> {
     let path = glyph_lock_path(config);
     let raw = serde_json::to_string_pretty(lock).context("failed to serialize glyph lock")?;
     fs::write(&path, raw).with_context(|| format!("failed to write {}", path.display()))
-}
-
-fn fingerprint_bytes(data: &[u8]) -> String {
-    let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
-    for byte in data {
-        hash ^= u64::from(*byte);
-        hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
-    }
-    format!("fnv1a64:{hash:016x}")
-}
-
-fn fingerprint_source(path: &Path) -> Result<String> {
-    let data = fs::read(path).with_context(|| format!("failed to read {}", path.display()))?;
-    Ok(fingerprint_bytes(&data))
 }
 
 fn next_available_codepoint(start: u32, used: &BTreeSet<u32>) -> Result<u32> {
@@ -1098,7 +1084,7 @@ fn push_standard_preprocessed_glyph(
 ) -> Result<()> {
     let glyph_width = glyph_size;
     let glyph_height = glyph_size;
-    let coverage = preprocess_standard_source_with_fit(
+    let (coverage, image_fingerprint) = preprocess_standard_source_with_fit_and_fingerprint(
         source,
         glyph_width,
         glyph_height,
@@ -1109,7 +1095,6 @@ fn push_standard_preprocessed_glyph(
         Some(seed) => unique_glyph_name_for_seed(seed, used_names),
         None => unique_glyph_name(source, used_names),
     };
-    let image_fingerprint = fingerprint_source(source)?;
     out.push(PreprocessedGlyph {
         source_path: source.to_path_buf(),
         source_key: source_key.to_string(),
@@ -1167,17 +1152,17 @@ fn threshold_bitmap(glyph: &PreprocessedGlyph, threshold: u8, invert: bool) -> G
 }
 
 fn write_preview_png(path: &Path, bitmap: &GlyphBitmap) -> Result<()> {
-    let mut img = RgbaImage::from_pixel(bitmap.width, bitmap.height, Rgba([255, 255, 255, 0]));
+    let pixel_count = (bitmap.width as usize).saturating_mul(bitmap.height as usize);
+    let mut raw = vec![0u8; pixel_count.saturating_mul(4)];
 
-    for y in 0..bitmap.height as usize {
-        for x in 0..bitmap.width as usize {
-            let idx = y * bitmap.width as usize + x;
-            if bitmap.pixels[idx] {
-                img.put_pixel(x as u32, y as u32, Rgba([0, 0, 0, 255]));
-            }
+    for (pixel, enabled) in raw.chunks_exact_mut(4).zip(bitmap.pixels.iter().copied()) {
+        if enabled {
+            pixel[3] = 255;
         }
     }
 
+    let img = RgbaImage::from_raw(bitmap.width, bitmap.height, raw)
+        .ok_or_else(|| anyhow::anyhow!("failed to construct preview image"))?;
     img.save(path)
         .with_context(|| format!("failed to save {}", path.display()))?;
     Ok(())

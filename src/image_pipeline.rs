@@ -6,6 +6,7 @@ use image::{
 use resvg::tiny_skia::{Pixmap, Transform};
 use resvg::usvg;
 use std::fs;
+use std::io::Cursor;
 use std::path::Path;
 
 use crate::glyph_debug;
@@ -19,6 +20,12 @@ struct SourceCoverage {
     height: u32,
     coverage: Vec<u8>,
     content_min: u8,
+}
+
+#[derive(Debug)]
+struct LoadedSourceRgba {
+    image: RgbaImage,
+    fingerprint: String,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -102,13 +109,13 @@ pub(crate) fn coverage_map_from_image_with_fit(
     )
 }
 
-pub(crate) fn preprocess_standard_source_with_fit(
+pub(crate) fn preprocess_standard_source_with_fit_and_fingerprint(
     path: &Path,
     glyph_width: u32,
     glyph_height: u32,
     source_key: &str,
     fit_mode: SourceFitMode,
-) -> Result<Vec<u8>> {
+) -> Result<(Vec<u8>, String)> {
     if glyph_width == 0 || glyph_height == 0 {
         bail!("glyph dimensions must be > 0");
     }
@@ -120,10 +127,10 @@ pub(crate) fn preprocess_standard_source_with_fit(
             glyph_width, glyph_height
         ),
     );
-    let source = load_source_rgba(path, glyph_height)?;
-    glyph_debug::write_rgba_png("01_standard_input_rgba", source_key, &source);
+    let loaded = load_source_rgba_with_fingerprint(path, glyph_height)?;
+    glyph_debug::write_rgba_png("01_standard_input_rgba", source_key, &loaded.image);
 
-    let source_coverage = coverage_from_rgba(&source);
+    let source_coverage = coverage_from_rgba(&loaded.image);
     glyph_debug::write_coverage_png(
         "02_standard_input_coverage",
         source_key,
@@ -150,7 +157,7 @@ pub(crate) fn preprocess_standard_source_with_fit(
     );
     glyph_debug::log_step("standard.done", format!("source={source_key}"));
 
-    Ok(fitted)
+    Ok((fitted, loaded.fingerprint))
 }
 
 pub(crate) fn preprocess_composition_grid_source_with_fit(
@@ -417,12 +424,27 @@ fn content_bounds_from_coverage(
 }
 
 fn coverage_from_rgba(source: &RgbaImage) -> SourceCoverage {
-    let has_transparency = source.pixels().any(|p| p[3] < 255);
+    let mut has_transparency = false;
+    let mut min_luma = u8::MAX;
+    let mut max_luma = u8::MIN;
+    let mut seen_luma = false;
+
+    for pixel in source.pixels() {
+        has_transparency |= pixel[3] < 255;
+        if pixel[3] == 0 {
+            continue;
+        }
+        let luma = luminance_byte(pixel[0], pixel[1], pixel[2]);
+        min_luma = min_luma.min(luma);
+        max_luma = max_luma.max(luma);
+        seen_luma = true;
+    }
 
     if has_transparency {
         let mut coverage =
             Vec::with_capacity((source.width() as usize) * (source.height() as usize));
-        let use_luma_shaping = transparent_pixels_have_luma_signal(source);
+        let use_luma_shaping =
+            seen_luma && max_luma.saturating_sub(min_luma) >= TRANSPARENT_LUMA_SIGNAL_EPSILON;
         for pixel in source.pixels() {
             if use_luma_shaping {
                 let luma = luminance_byte(pixel[0], pixel[1], pixel[2]);
@@ -456,24 +478,6 @@ fn coverage_from_rgba(source: &RgbaImage) -> SourceCoverage {
     }
 }
 
-fn transparent_pixels_have_luma_signal(source: &RgbaImage) -> bool {
-    let mut min_luma = u8::MAX;
-    let mut max_luma = u8::MIN;
-    let mut seen = false;
-
-    for pixel in source.pixels() {
-        if pixel[3] == 0 {
-            continue;
-        }
-        let luma = luminance_byte(pixel[0], pixel[1], pixel[2]);
-        min_luma = min_luma.min(luma);
-        max_luma = max_luma.max(luma);
-        seen = true;
-    }
-
-    seen && max_luma.saturating_sub(min_luma) >= TRANSPARENT_LUMA_SIGNAL_EPSILON
-}
-
 fn luminance_byte(r: u8, g: u8, b: u8) -> u8 {
     (((77u16 * r as u16) + (150u16 * g as u16) + (29u16 * b as u16)) >> 8) as u8
 }
@@ -494,8 +498,31 @@ pub(crate) fn load_source_rgba(path: &Path, target_hint: u32) -> Result<RgbaImag
 }
 
 pub(crate) fn load_raster_image(path: &Path) -> Result<(DynamicImage, ImageFormat)> {
-    let reader =
-        ImageReader::open(path).with_context(|| format!("failed to open {}", path.display()))?;
+    let data = fs::read(path).with_context(|| format!("failed to read {}", path.display()))?;
+    decode_raster_image_bytes(path, data)
+}
+
+fn load_source_rgba_with_fingerprint(path: &Path, target_hint: u32) -> Result<LoadedSourceRgba> {
+    let data = fs::read(path).with_context(|| format!("failed to read {}", path.display()))?;
+    let fingerprint = fingerprint_bytes(&data);
+    let ext = path
+        .extension()
+        .and_then(|ext| ext.to_str())
+        .map(|s| s.to_ascii_lowercase())
+        .unwrap_or_default();
+
+    let image = if ext == "svg" {
+        render_svg_data(path, &data, target_hint)?
+    } else {
+        let (img, _) = decode_raster_image_bytes(path, data)?;
+        img.to_rgba8()
+    };
+
+    Ok(LoadedSourceRgba { image, fingerprint })
+}
+
+fn decode_raster_image_bytes(path: &Path, data: Vec<u8>) -> Result<(DynamicImage, ImageFormat)> {
+    let reader = ImageReader::new(Cursor::new(data));
     let mut reader = reader
         .with_guessed_format()
         .with_context(|| format!("failed to inspect image format for {}", path.display()))?;
@@ -514,8 +541,12 @@ pub(crate) fn load_raster_image(path: &Path) -> Result<(DynamicImage, ImageForma
 
 fn render_svg(path: &Path, target_hint: u32) -> Result<RgbaImage> {
     let data = fs::read(path).with_context(|| format!("failed to read {}", path.display()))?;
+    render_svg_data(path, &data, target_hint)
+}
+
+fn render_svg_data(path: &Path, data: &[u8], target_hint: u32) -> Result<RgbaImage> {
     let options = usvg::Options::default();
-    let tree = usvg::Tree::from_data(&data, &options)
+    let tree = usvg::Tree::from_data(data, &options)
         .with_context(|| format!("failed to parse SVG {}", path.display()))?;
 
     let size = tree.size().to_int_size();
@@ -545,6 +576,15 @@ fn render_svg(path: &Path, target_hint: u32) -> Result<RgbaImage> {
     }
     ImageBuffer::from_raw(out_w, out_h, pixels)
         .ok_or_else(|| anyhow::anyhow!("failed to convert rendered SVG to RGBA image"))
+}
+
+fn fingerprint_bytes(data: &[u8]) -> String {
+    let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
+    for byte in data {
+        hash ^= u64::from(*byte);
+        hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    format!("fnv1a64:{hash:016x}")
 }
 
 fn estimate_background_rgb(source: &RgbaImage) -> [u8; 3] {

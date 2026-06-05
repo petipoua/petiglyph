@@ -1,6 +1,6 @@
 use anyhow::{Context, Result, bail};
 use image::codecs::gif::GifDecoder;
-use image::{AnimationDecoder, DynamicImage, ImageFormat, Rgb, RgbImage};
+use image::{AnimationDecoder, DynamicImage, ImageFormat, RgbImage};
 use std::ffi::OsStr;
 use std::fs;
 use std::fs::File;
@@ -303,20 +303,25 @@ pub(crate) fn apply_grayscale_processing_to_image_file(
     let (image, format) = load_raster_image(frame_path)
         .with_context(|| format!("failed to decode extracted frame {}", frame_path.display()))?;
     let mut image = image.to_rgba8();
+    let adjustment_lut = grayscale_adjustment_lut(options);
 
     for pixel in image.pixels_mut() {
         let luma = luminance_byte(pixel[0], pixel[1], pixel[2]);
-        let adjusted = apply_grayscale_adjustments(luma, options);
+        let adjusted = adjustment_lut[usize::from(luma)];
         pixel[0] = adjusted;
         pixel[1] = adjusted;
         pixel[2] = adjusted;
     }
 
     let output = if format == ImageFormat::Jpeg {
-        let rgb = RgbImage::from_fn(image.width(), image.height(), |x, y| {
-            let pixel = image.get_pixel(x, y);
-            Rgb([pixel[0], pixel[1], pixel[2]])
-        });
+        let mut rgb_raw = Vec::with_capacity(
+            (image.width() as usize).saturating_mul(image.height() as usize) * 3,
+        );
+        for pixel in image.pixels() {
+            rgb_raw.extend_from_slice(&pixel.0[..3]);
+        }
+        let rgb = RgbImage::from_raw(image.width(), image.height(), rgb_raw)
+            .ok_or_else(|| anyhow::anyhow!("failed to construct grayscale JPEG image"))?;
         DynamicImage::ImageRgb8(rgb)
     } else {
         DynamicImage::ImageRgba8(image)
@@ -354,6 +359,14 @@ fn temp_rewrite_path(path: &Path) -> PathBuf {
 fn luminance_byte(r: u8, g: u8, b: u8) -> u8 {
     // Integer approximation of BT.601 luma.
     (((77u16 * r as u16) + (150u16 * g as u16) + (29u16 * b as u16)) >> 8) as u8
+}
+
+fn grayscale_adjustment_lut(options: AnimationGrayscaleOptions) -> [u8; 256] {
+    let mut lut = [0u8; 256];
+    for (value, adjusted) in lut.iter_mut().enumerate() {
+        *adjusted = apply_grayscale_adjustments(value as u8, options);
+    }
+    lut
 }
 
 fn apply_grayscale_adjustments(value: u8, options: AnimationGrayscaleOptions) -> u8 {
