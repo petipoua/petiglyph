@@ -1077,7 +1077,29 @@ fn cli_tui_non_tty_with_manifest_errors_cleanly() {
 }
 
 #[test]
-fn cli_json_commands_do_not_trigger_ffmpeg_prompt_or_state() {
+fn cli_tui_is_blocked_by_missing_ffmpeg_before_terminal_launch() {
+    let workspace = make_temp_dir("tui-missing-ffmpeg");
+    let home = workspace.join("home");
+    fs::create_dir_all(&home).expect("home dir is created");
+    let fake_path = fake_path_without_ffmpeg(&workspace);
+    let output = run_petiglyph(&workspace, &["tui"], Some(&home), Some(&fake_path));
+    assert!(
+        !output.status.success(),
+        "tui should fail when ffmpeg is missing"
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("FFmpeg was not found."),
+        "stderr should report the missing ffmpeg prerequisite: {stderr}"
+    );
+    assert!(
+        !stderr.contains("interactive petiglyph TUI requires a terminal"),
+        "ffmpeg prerequisite should be enforced before terminal/TUI launch checks: {stderr}"
+    );
+}
+
+#[test]
+fn cli_json_commands_fail_before_dispatch_when_ffmpeg_is_missing() {
     let workspace = make_temp_dir("json-no-ffmpeg-prompt");
     let home = workspace.join("home");
     fs::create_dir_all(&home).expect("home dir is created");
@@ -1091,13 +1113,22 @@ fn cli_json_commands_do_not_trigger_ffmpeg_prompt_or_state() {
         Some(&home),
         Some(&fake_path),
     );
-    assert!(list.status.success(), "list --json should succeed");
-    let list_payload = parse_json_stdout(&list);
-    assert_api_envelope(&list_payload, "list", true);
-    let list_stdout = String::from_utf8_lossy(&list.stdout);
     assert!(
-        !list_stdout.contains("FFmpeg was not found."),
-        "json output must not include ffmpeg prompt text"
+        !list.status.success(),
+        "list --json should fail when ffmpeg is missing"
+    );
+    let list_payload = parse_json_stdout(&list);
+    assert_api_envelope(&list_payload, "list", false);
+    assert!(
+        list_payload["error"]["message"]
+            .as_str()
+            .expect("list error message")
+            .contains("FFmpeg was not found."),
+        "json error should report missing ffmpeg: {list_payload}"
+    );
+    assert!(
+        list.stderr.is_empty(),
+        "json prerequisite failure should keep stderr clean"
     );
 
     let build = run_petiglyph(
@@ -1106,13 +1137,22 @@ fn cli_json_commands_do_not_trigger_ffmpeg_prompt_or_state() {
         Some(&home),
         Some(&fake_path),
     );
-    assert!(build.status.success(), "build --json should succeed");
-    let build_payload = parse_json_stdout(&build);
-    assert_api_envelope(&build_payload, "build", true);
-    let build_stdout = String::from_utf8_lossy(&build.stdout);
     assert!(
-        !build_stdout.contains("FFmpeg was not found."),
-        "json output must not include ffmpeg prompt text"
+        !build.status.success(),
+        "build --json should fail when ffmpeg is missing"
+    );
+    let build_payload = parse_json_stdout(&build);
+    assert_api_envelope(&build_payload, "build", false);
+    assert!(
+        build_payload["error"]["message"]
+            .as_str()
+            .expect("build error message")
+            .contains("FFmpeg was not found."),
+        "json error should report missing ffmpeg: {build_payload}"
+    );
+    assert!(
+        build.stderr.is_empty(),
+        "json prerequisite failure should keep stderr clean"
     );
 
     assert!(
@@ -1281,7 +1321,7 @@ fn cli_doctor_repair_json_removes_stale_project_lock() {
 }
 
 #[test]
-fn cli_create_non_interactive_without_no_launch_skips_tui() {
+fn cli_create_is_blocked_before_project_creation_when_ffmpeg_is_missing() {
     let workspace = make_temp_dir("create-non-interactive");
     let home = workspace.join("home");
     fs::create_dir_all(&home).expect("home dir is created");
@@ -1293,19 +1333,19 @@ fn cli_create_non_interactive_without_no_launch_skips_tui() {
         Some(&fake_path),
     );
     assert!(
-        output.status.success(),
-        "create should succeed without --no-launch in non-tty contexts"
+        !output.status.success(),
+        "create should fail before project creation when ffmpeg is missing"
     );
-    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
-        stdout.contains("non-interactive shell detected; skipping automatic TUI launch"),
-        "create output should report non-interactive skip: {stdout}"
+        stderr.contains("FFmpeg was not found."),
+        "create output should report missing ffmpeg: {stderr}"
     );
     assert!(
-        workspace
+        !workspace
             .join("create-no-launch-implicit/petiglyph.toml")
             .exists(),
-        "project manifest should be created"
+        "project manifest should not be created"
     );
     let state_path = ffmpeg_prompt_state_path(&home);
     assert!(

@@ -6,7 +6,6 @@ use std::fs;
 use std::io::{self, IsTerminal};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
-use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::animation_media::{self, is_avif_image, static_import_file_name};
 use crate::artifact_warning::incompatible_artifact_warning;
@@ -26,8 +25,6 @@ use crate::project::{
 use crate::tui::{tui, tui_workspace};
 
 const CLI_VERSION: &str = env!("CARGO_PKG_VERSION");
-const FFMPEG_SETUP_PROMPT_STATE_FILE_NAME: &str = ".ffmpeg-setup-prompt-v1.json";
-const FFMPEG_SETUP_PROMPT_STATE_VERSION: u32 = 1;
 
 #[derive(Debug, Parser)]
 #[command(
@@ -631,8 +628,7 @@ pub(crate) struct DefaultTuiTarget {
 pub(crate) fn run() {
     let cli = Cli::parse();
     crate::glyph_debug::set_debug_enabled(cli.debug);
-    maybe_offer_first_run_ffmpeg_setup(&cli);
-    let exit_code = match run_cli(cli) {
+    let exit_code = match enforce_ffmpeg_runtime_requirement(&cli).and_then(|()| run_cli(cli)) {
         Ok(()) => 0,
         Err(CliRunError::Plain(error)) => {
             let rendered = format!("{error:#}");
@@ -667,78 +663,61 @@ struct CommandInvocation {
     args: Vec<String>,
 }
 
-fn maybe_offer_first_run_ffmpeg_setup(cli: &Cli) {
-    if !should_offer_first_run_ffmpeg_setup(cli) || ffmpeg_available_on_path() {
-        return;
+fn enforce_ffmpeg_runtime_requirement(cli: &Cli) -> std::result::Result<(), CliRunError> {
+    if ffmpeg_available_on_path() {
+        return Ok(());
     }
-
-    let Some(state_path) = ffmpeg_setup_prompt_state_path() else {
-        return;
-    };
-    if state_path.exists() {
-        return;
-    }
-
     let hint = ffmpeg_install_hint_for_current_system();
-    println!("FFmpeg was not found.");
-    println!();
-    println!("petiglyph requires FFmpeg for video/animated media processing.");
-    println!();
-    println!("Detected system: {}", hint.detected_system);
-    println!("Suggested command:");
-    println!();
-    println!("  {}", hint.suggested_command);
-    println!();
-    let outcome = if cli.ffmpeg_auto_install {
+
+    if let Some(command) = json_command_name(cli) {
+        return Err(CliRunError::Json {
+            command,
+            error: missing_ffmpeg_error(&hint),
+        });
+    }
+
+    if cli.ffmpeg_auto_install {
+        eprintln!("FFmpeg was not found.");
+        eprintln!("Attempting install with:");
+        eprintln!();
+        eprintln!("  {}", hint.suggested_command);
+        eprintln!();
         match run_ffmpeg_install_command(&hint) {
             Ok(()) => {
                 if ffmpeg_available_on_path() {
-                    println!("FFmpeg install completed and is now available on PATH.");
-                    "auto_install_success"
+                    eprintln!("FFmpeg install completed and is now available on PATH.");
+                    return Ok(());
                 } else {
-                    println!(
-                        "FFmpeg install command completed, but `ffmpeg` is still not on PATH."
-                    );
-                    println!("You may need to restart your terminal session.");
-                    "auto_install_not_on_path"
+                    return Err(CliRunError::Plain(anyhow::anyhow!(
+                        "{}\n\nFFmpeg install command completed, but `ffmpeg` is still not on PATH. You may need to restart your terminal session.",
+                        missing_ffmpeg_message(&hint)
+                    )));
                 }
             }
             Err(error) => {
-                eprintln!("FFmpeg install command failed: {error}");
-                "auto_install_failed"
+                return Err(CliRunError::Plain(anyhow::anyhow!(
+                    "{}\n\nFFmpeg install command failed: {error:#}",
+                    missing_ffmpeg_message(&hint)
+                )));
             }
         }
-    } else {
-        println!("Copy and run the suggested command above, then restart petiglyph.");
-        println!("After FFmpeg is available on PATH, video and animated media import will work.");
-        "hint_only"
-    };
-
-    if let Err(error) = record_ffmpeg_setup_prompt_state(&state_path, outcome, &hint) {
-        eprintln!("warning: failed to persist FFmpeg setup prompt state: {error}");
     }
+
+    Err(CliRunError::Plain(missing_ffmpeg_error(&hint)))
 }
 
-fn should_offer_first_run_ffmpeg_setup(cli: &Cli) -> bool {
+fn missing_ffmpeg_error(hint: &FfmpegInstallHint) -> anyhow::Error {
+    anyhow::anyhow!(missing_ffmpeg_message(hint))
+}
+
+fn missing_ffmpeg_message(hint: &FfmpegInstallHint) -> String {
     if ffmpeg_prompt_globally_disabled() {
-        return false;
+        return "FFmpeg was not found. Install FFmpeg and make sure `ffmpeg` is available on PATH before running petiglyph.".to_string();
     }
 
-    if !io::stdin().is_terminal() || !io::stdout().is_terminal() {
-        return false;
-    }
-
-    if command_emits_json(cli) {
-        return false;
-    }
-
-    matches!(
-        cli.command,
-        None | Some(CliCommand::Create { .. })
-            | Some(CliCommand::Tui { .. })
-            | Some(CliCommand::Build { .. })
-            | Some(CliCommand::Sample { .. })
-            | Some(CliCommand::InstallFont { .. })
+    format!(
+        "FFmpeg was not found.\n\npetiglyph requires FFmpeg for media processing and will not start without it.\n\nDetected system: {}\nSuggested command:\n\n  {}\n\nInstall FFmpeg, make sure `ffmpeg` is available on PATH, then restart petiglyph.",
+        hint.detected_system, hint.suggested_command
     )
 }
 
@@ -750,45 +729,44 @@ fn ffmpeg_prompt_globally_disabled_from_env(value: Option<std::ffi::OsString>) -
     value.is_some_and(|value| !value.is_empty() && value != "0")
 }
 
-fn command_emits_json(cli: &Cli) -> bool {
-    matches!(
-        cli.command,
-        Some(CliCommand::List { json: true })
-            | Some(CliCommand::Delete { json: true, .. })
-            | Some(CliCommand::SetThreshold { json: true, .. })
-            | Some(CliCommand::ClearThreshold { json: true, .. })
-            | Some(CliCommand::Build { json: true, .. })
-            | Some(CliCommand::Sample { json: true, .. })
-            | Some(CliCommand::InstallFont { json: true, .. })
-            | Some(CliCommand::UninstallFont { json: true, .. })
-            | Some(CliCommand::UninstallAllFonts { json: true })
-            | Some(CliCommand::Doctor { json: true, .. })
-            | Some(CliCommand::Glyph {
-                command: GlyphCommand::Create { json: true, .. }
-                    | GlyphCommand::SetThreshold { json: true, .. }
-                    | GlyphCommand::ClearThreshold { json: true, .. }
-                    | GlyphCommand::SetInvert { json: true, .. },
-            })
-            | Some(CliCommand::Grid {
-                command: GridCommand::Create { json: true, .. },
-            })
-            | Some(CliCommand::Composition {
-                command: CompositionCommand::Set { json: true, .. }
-                    | CompositionCommand::Clear { json: true, .. },
-            })
-            | Some(CliCommand::Animation {
-                command: AnimationCommand::CreateStandard { json: true, .. }
-                    | AnimationCommand::CreateGrid { json: true, .. }
-                    | AnimationCommand::SetFps { json: true, .. }
-                    | AnimationCommand::Delete { json: true, .. },
-            })
-    )
-}
-
-fn ffmpeg_setup_prompt_state_path() -> Option<PathBuf> {
-    crate::install::managed_install_dir()
-        .ok()
-        .map(|dir| dir.join(FFMPEG_SETUP_PROMPT_STATE_FILE_NAME))
+fn json_command_name(cli: &Cli) -> Option<&'static str> {
+    match &cli.command {
+        Some(CliCommand::List { json: true }) => Some("list"),
+        Some(CliCommand::Delete { json: true, .. }) => Some("delete"),
+        Some(CliCommand::SetThreshold { json: true, .. }) => Some("set-threshold"),
+        Some(CliCommand::ClearThreshold { json: true, .. }) => Some("clear-threshold"),
+        Some(CliCommand::Build { json: true, .. }) => Some("build"),
+        Some(CliCommand::Sample { json: true, .. }) => Some("sample"),
+        Some(CliCommand::InstallFont { json: true, .. }) => Some("install-font"),
+        Some(CliCommand::UninstallFont { json: true, .. }) => Some("uninstall-font"),
+        Some(CliCommand::UninstallAllFonts { json: true }) => Some("uninstall-all-fonts"),
+        Some(CliCommand::Doctor { json: true, .. }) => Some("doctor"),
+        Some(CliCommand::Glyph { command }) => match command {
+            GlyphCommand::Create { json: true, .. } => Some("glyph.create"),
+            GlyphCommand::SetThreshold { json: true, .. } => Some("glyph.set-threshold"),
+            GlyphCommand::ClearThreshold { json: true, .. } => Some("glyph.clear-threshold"),
+            GlyphCommand::SetInvert { json: true, .. } => Some("glyph.set-invert"),
+            _ => None,
+        },
+        Some(CliCommand::Grid {
+            command: GridCommand::Create { json: true, .. },
+        }) => Some("grid.create"),
+        Some(CliCommand::Composition { command }) => match command {
+            CompositionCommand::Set { json: true, .. } => Some("composition.set"),
+            CompositionCommand::Clear { json: true, .. } => Some("composition.clear"),
+            _ => None,
+        },
+        Some(CliCommand::Animation { command }) => match command {
+            AnimationCommand::CreateStandard { json: true, .. } => {
+                Some("animation.create-standard")
+            }
+            AnimationCommand::CreateGrid { json: true, .. } => Some("animation.create-grid"),
+            AnimationCommand::SetFps { json: true, .. } => Some("animation.set-fps"),
+            AnimationCommand::Delete { json: true, .. } => Some("animation.delete"),
+            _ => None,
+        },
+        _ => None,
+    }
 }
 
 fn ffmpeg_available_on_path() -> bool {
@@ -900,35 +878,6 @@ fn windows_path_extensions() -> Vec<String> {
                 ".cmd".to_string(),
             ]
         })
-}
-
-fn now_unix_ms() -> u128 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_millis()
-}
-
-fn record_ffmpeg_setup_prompt_state(
-    state_path: &Path,
-    outcome: &str,
-    hint: &FfmpegInstallHint,
-) -> Result<()> {
-    if let Some(parent) = state_path.parent() {
-        fs::create_dir_all(parent)
-            .with_context(|| format!("failed to create {}", parent.display()))?;
-    }
-    let payload = serde_json::json!({
-        "version": FFMPEG_SETUP_PROMPT_STATE_VERSION,
-        "recorded_unix_ms": now_unix_ms(),
-        "recorded_by_cli_version": CLI_VERSION,
-        "outcome": outcome,
-        "suggested_command": hint.suggested_command,
-        "detected_system": hint.detected_system,
-    });
-    let raw = serde_json::to_string_pretty(&payload)
-        .context("failed to serialize ffmpeg prompt state")?;
-    fs::write(state_path, raw).with_context(|| format!("failed to write {}", state_path.display()))
 }
 
 fn ffmpeg_install_hint_for_current_system() -> FfmpegInstallHint {
