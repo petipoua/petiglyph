@@ -18,7 +18,9 @@
 
 # Local throwaway petiglyph projects
 /.scratch/
-!/test-assets/
+**/test-*/
+!**/test-assets/
+!**/tests/
 /test_parse*
 /test_ws*
 /pp-*/
