@@ -2137,6 +2137,92 @@ fn grid_animation_frames_preserve_full_source_frame_before_tile_split() {
 }
 
 #[test]
+fn grid_animation_composed_frame_entries_preserve_parent_source_frame() {
+    let project_dir = make_temp_dir("grid-animation-composed-entry-full-frame-fit");
+    let input_dir = project_dir.join("icons");
+    fs::create_dir_all(&input_dir).expect("icons dir is created");
+
+    let mut img = RgbaImage::from_pixel(40, 20, Rgba([255, 255, 255, 0]));
+    for y in 5..15 {
+        for x in 30..40 {
+            img.put_pixel(x, y, Rgba([0, 0, 0, 255]));
+        }
+    }
+    let source_path = input_dir.join("frame-grid.png");
+    img.save(&source_path).expect("frame image is written");
+
+    let mut compositions = BTreeMap::new();
+    compositions.insert(
+        "frame-grid.png".to_string(),
+        CompositionDef {
+            rows: 2,
+            cols: 1,
+            horizontal_bleed: BleedLevel::Weak,
+            vertical_bleed: BleedLevel::Off,
+        },
+    );
+    let config = RuntimeConfig {
+        project_dir: project_dir.clone(),
+        project_id: "project".to_string(),
+        input_dir: input_dir.clone(),
+        out_dir: project_dir.join("build"),
+        font_name: "Petiglyph".to_string(),
+        glyph_size: 16,
+        base_threshold: 64,
+        threshold_overrides: BTreeMap::new(),
+        invert_overrides: BTreeMap::new(),
+        compositions,
+        animations: vec![AnimationDef {
+            name: "grid-run".to_string(),
+            animation_type: AnimationType::Grid,
+            fps: 12,
+            frames: vec!["frame-grid.png#compose:2x2:0:1".to_string()],
+            rows: Some(2),
+            cols: Some(1),
+            horizontal_bleed: Some(BleedLevel::Weak),
+            vertical_bleed: Some(BleedLevel::Off),
+            grayscale_processing: None,
+        }],
+        codepoint_start: 0x10_0000,
+    };
+
+    let glyphs = preprocess_sources_for_config(&[source_path.clone()], &config)
+        .expect("animation grid preprocess succeeds");
+    assert_eq!(glyphs.len(), 4);
+
+    let tile_width = terminal_cell_width_for_height(16);
+    let tile_height = 16;
+    let emitted_cols = 2u32;
+    let source = image::open(&source_path)
+        .expect("source image opens")
+        .to_rgba8();
+    let expected_grid =
+        fit_full_alpha_to_canvas(&source, emitted_cols * tile_width, 2 * tile_height);
+
+    for glyph in &glyphs {
+        let tile = glyph
+            .composition_tile
+            .as_ref()
+            .expect("all glyphs should be composition tiles");
+        let expected_coverage = crop_expected_coverage_tile(
+            &expected_grid,
+            emitted_cols * tile_width,
+            (tile.col as u32) * tile_width,
+            (tile.row as u32) * tile_height,
+            tile_width,
+            tile_height,
+        );
+        assert_eq!(
+            glyph.coverage, expected_coverage,
+            "grid animation composed frame entries should preserve the parent frame before splitting row={}, col={}",
+            tile.row, tile.col
+        );
+    }
+
+    fs::remove_dir_all(project_dir).expect("temp project dir is removed");
+}
+
+#[test]
 fn preprocess_composition_tiles_keep_raw_internal_threshold_gradient() {
     let project_dir = make_temp_dir("composition-sealed-seams");
     let input_dir = project_dir.join("icons");
@@ -4113,6 +4199,8 @@ fn glyphs_install_button_reroutes_to_home_install() {
     assert_eq!(app.view, AppView::Welcome);
     assert_eq!(app.welcome_focus, WelcomeFocus::InstallButton);
     assert!(!app.welcome_input_editing);
+
+    wait_for_background_tasks(&mut app);
 
     fs::remove_dir_all(project_dir).expect("temp project dir is removed");
 }
