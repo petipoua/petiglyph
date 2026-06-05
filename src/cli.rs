@@ -8,6 +8,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use crate::animation_media::{self, is_avif_image, static_import_file_name};
 use crate::artifact_warning::incompatible_artifact_warning;
 use crate::build::is_supported_source;
 use crate::build::{BuildOptions, BuildSummary, build_outputs_with_options};
@@ -2555,19 +2556,22 @@ fn import_static_sources(
         if !src.is_file() {
             anyhow::bail!("input is not a file: {}", src.display());
         }
-        if !is_supported_source(&src) {
+        if !is_supported_source(&src) && !is_avif_image(&src) {
             anyhow::bail!("unsupported image type: {}", src.display());
         }
-        let file_name = src
-            .file_name()
+        let file_name = static_import_file_name(&src)
             .ok_or_else(|| anyhow::anyhow!("input has no file name: {}", src.display()))?;
-        let mut dest = input_dir.join(file_name);
+        let mut dest = input_dir.join(&file_name);
         if dest.exists() {
-            dest = next_available_import_destination(input_dir, file_name);
+            dest = next_available_import_destination(input_dir, file_name.as_os_str());
         }
-        fs::copy(&src, &dest).with_context(|| {
-            format!("failed to import {} into {}", src.display(), dest.display())
-        })?;
+        if is_avif_image(&src) {
+            animation_media::convert_avif_image_to_png(&src, &dest)?;
+        } else {
+            fs::copy(&src, &dest).with_context(|| {
+                format!("failed to import {} into {}", src.display(), dest.display())
+            })?;
+        }
         if processing.grayscale_enabled && should_apply_static_import_grayscale(&dest) {
             crate::animation_media::apply_grayscale_processing_to_image_file(
                 &dest,
@@ -2610,7 +2614,7 @@ fn next_available_import_destination(input_dir: &Path, file_name: &std::ffi::OsS
 fn should_apply_static_import_grayscale(path: &Path) -> bool {
     matches!(
         path.extension().and_then(|ext| ext.to_str()).map(|e| e.to_ascii_lowercase()),
-        Some(ext) if matches!(ext.as_str(), "png" | "jpg" | "jpeg" | "webp" | "avif" | "bmp")
+        Some(ext) if matches!(ext.as_str(), "png" | "jpg" | "jpeg" | "webp" | "bmp")
     )
 }
 

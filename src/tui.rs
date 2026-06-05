@@ -12011,17 +12011,17 @@ fn import_image_files_to_input(
             continue;
         }
 
-        if !is_supported_source(&source) {
+        if !is_supported_source(&source) && !animation_media::is_avif_image(&source) {
             skipped_unsupported += 1;
             continue;
         }
 
-        let Some(file_name) = source.file_name() else {
+        let Some(file_name) = animation_media::static_import_file_name(&source) else {
             skipped_missing += 1;
             continue;
         };
 
-        let canonical_destination = input_dir.join(file_name);
+        let canonical_destination = input_dir.join(&file_name);
         if paths_resolve_to_same_file(&source, &canonical_destination) {
             imported_source_keys.push(source_key_from_input_path(
                 input_dir,
@@ -12043,14 +12043,19 @@ fn import_image_files_to_input(
             continue;
         }
 
-        let (destination, was_renamed) = next_available_import_destination(input_dir, file_name);
-        fs::copy(&source, &destination).with_context(|| {
-            format!(
-                "failed to import {} into {}",
-                source.display(),
-                destination.display()
-            )
-        })?;
+        let (destination, was_renamed) =
+            next_available_import_destination(input_dir, file_name.as_os_str());
+        if animation_media::is_avif_image(&source) {
+            animation_media::convert_avif_image_to_png(&source, &destination)?;
+        } else {
+            fs::copy(&source, &destination).with_context(|| {
+                format!(
+                    "failed to import {} into {}",
+                    source.display(),
+                    destination.display()
+                )
+            })?;
+        }
         if processing.grayscale_enabled && should_apply_static_import_grayscale(&destination) {
             let _ = animation_media::apply_grayscale_processing_to_image_file(
                 &destination,
@@ -12552,6 +12557,7 @@ mod tests {
     use std::collections::BTreeMap;
     use std::fs;
     use std::path::PathBuf;
+    use std::process::Command;
     use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
     fn make_temp_dir(name: &str) -> PathBuf {
@@ -12596,6 +12602,30 @@ mod tests {
             }
         }
         img.save(path).expect("test jpg is written");
+    }
+
+    fn write_test_avif_with_ffmpeg(path: &std::path::Path) -> bool {
+        let source_png = path.with_file_name(".petiglyph-test-avif-source.png");
+        write_test_png(&source_png);
+
+        let Some(ffmpeg) = resolve_command_path("ffmpeg") else {
+            let _ = fs::remove_file(&source_png);
+            return false;
+        };
+
+        let output = Command::new(ffmpeg)
+            .arg("-v")
+            .arg("error")
+            .arg("-y")
+            .arg("-i")
+            .arg(&source_png)
+            .arg("-frames:v")
+            .arg("1")
+            .arg(path)
+            .output();
+        let _ = fs::remove_file(&source_png);
+
+        output.is_ok_and(|output| output.status.success())
     }
 
     fn write_test_svg(path: &std::path::Path) {
@@ -14770,6 +14800,77 @@ mod tests {
         );
         assert_eq!(app.glyphs.len(), initial_count);
         assert!(matches!(app.home_workflow, HomeWorkflow::Launcher));
+    }
+
+    #[test]
+    fn glyph_creation_drop_avif_imports_png_source() {
+        let project_dir = make_temp_dir("glyph-creation-drop-avif");
+        let manifest_path = project_dir.join("petiglyph.toml");
+        write_manifest(&manifest_path, &Manifest::default()).expect("manifest is written");
+        let icons_dir = project_dir.join("icons");
+        fs::create_dir_all(&icons_dir).expect("icons dir is created");
+
+        let external_dir = project_dir.join("external");
+        fs::create_dir_all(&external_dir).expect("external dir is created");
+        let dropped = external_dir.join("dropped.avif");
+        if !write_test_avif_with_ffmpeg(&dropped) {
+            fs::remove_dir_all(project_dir).expect("temp project dir is removed");
+            return;
+        }
+
+        let config = RuntimeConfig {
+            project_dir: project_dir.clone(),
+            project_id: "test-glyph-creation-drop-avif".to_string(),
+            input_dir: icons_dir.clone(),
+            out_dir: project_dir.join("build"),
+            font_name: "Petiglyph".to_string(),
+            glyph_size: 8,
+            base_threshold: 64,
+            threshold_overrides: BTreeMap::new(),
+            invert_overrides: BTreeMap::new(),
+            compositions: BTreeMap::new(),
+            animations: Vec::new(),
+            codepoint_start: 0x10_0000,
+        };
+        let mut app = App::new(manifest_path, config);
+
+        app.start_home_workflow(HomeCreationKind::Glyph);
+        handle_paste_event_for_test(&mut app, &dropped.display().to_string())
+            .expect("AVIF drop should start import");
+        drain_background_tasks(&mut app);
+
+        assert!(
+            icons_dir.join("dropped.png").is_file(),
+            "AVIF drop should be converted into a canonical PNG source"
+        );
+        assert!(
+            !icons_dir.join("dropped.avif").exists(),
+            "raw AVIF should not be copied into icons"
+        );
+        assert_eq!(
+            app.home_workflow_recent_imported_source_keys,
+            vec!["dropped.png"]
+        );
+        assert!(matches!(
+            app.home_workflow,
+            HomeWorkflow::Import(HomeCreationKind::Glyph)
+        ));
+
+        handle_key(&mut app, KeyCode::Enter).expect("enter should open glyph tweaking");
+        assert!(matches!(
+            app.home_workflow,
+            HomeWorkflow::Tweaking(HomeCreationKind::Glyph)
+        ));
+
+        app.animation_import_settings.focus = AnimationImportSettingsFocus::Continue;
+        handle_key(&mut app, KeyCode::Enter).expect("finish should complete glyph workflow");
+
+        assert_eq!(app.view, AppView::Glyphs);
+        assert!(matches!(app.home_workflow, HomeWorkflow::Launcher));
+        assert_eq!(app.glyphs.len(), 1);
+        assert_eq!(app.glyphs[0].glyph.source_parent_key, "dropped.png");
+
+        fs::remove_dir_all(project_dir).expect("temp project dir is removed");
     }
 
     #[test]

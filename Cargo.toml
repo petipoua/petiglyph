@@ -14,7 +14,7 @@ categories = ["command-line-utilities", "graphics"]
 anyhow = "1.0"
 clap = { version = "4.5", features = ["derive"] }
 crossterm = "0.29"
-image = { version = "0.25", default-features = false, features = ["avif", "bmp", "gif", "jpeg", "png", "webp"] }
+image = { version = "0.25", default-features = false, features = ["bmp", "gif", "jpeg", "png", "webp"] }
 ratatui = "0.30"
 resvg = "0.45"
 serde = { version = "1.0", features = ["derive"] }

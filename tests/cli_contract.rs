@@ -56,6 +56,25 @@ fn write_test_png(path: &Path) {
     img.save(path).expect("test image should be written");
 }
 
+fn write_test_avif_with_ffmpeg(path: &Path) -> bool {
+    let source_png = path.with_file_name(".petiglyph-test-avif-source.png");
+    write_test_png(&source_png);
+
+    let output = Command::new("ffmpeg")
+        .arg("-v")
+        .arg("error")
+        .arg("-y")
+        .arg("-i")
+        .arg(&source_png)
+        .arg("-frames:v")
+        .arg("1")
+        .arg(path)
+        .output();
+    let _ = fs::remove_file(&source_png);
+
+    output.is_ok_and(|output| output.status.success())
+}
+
 fn run_petiglyph(
     cwd: &Path,
     args: &[&str],
@@ -712,6 +731,50 @@ fn cli_glyph_create_json_imports_and_persists_defaults() {
     assert!(
         manifest_content.contains("[invert_overrides]"),
         "manifest should persist invert override section"
+    );
+}
+
+#[test]
+fn cli_glyph_create_avif_imports_as_png_source() {
+    let workspace = make_temp_dir("glyph-create-avif");
+    let (project_dir, manifest_path) = create_project_with_icon(&workspace, "glyph-create-avif");
+    let source = workspace.join("glyph-source.avif");
+    if !write_test_avif_with_ffmpeg(&source) {
+        fs::remove_dir_all(workspace).expect("workspace should be removed");
+        return;
+    }
+
+    let output = run_petiglyph(
+        &project_dir,
+        &[
+            "glyph",
+            "create",
+            "--input",
+            source.to_str().expect("source path should be utf8"),
+            "--threshold",
+            "97",
+            "--json",
+        ],
+        None,
+        None,
+    );
+    assert!(
+        output.status.success(),
+        "glyph create should convert AVIF to PNG: stdout={}, stderr={}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let payload = parse_json_stdout(&output);
+    assert_api_envelope(&payload, "glyph.create", true);
+    assert_eq!(payload["data"]["imported_sources"][0], "glyph-source.png");
+    assert!(project_dir.join("icons/glyph-source.png").is_file());
+    assert!(!project_dir.join("icons/glyph-source.avif").exists());
+
+    let manifest_content = fs::read_to_string(&manifest_path).expect("manifest should be readable");
+    assert!(
+        manifest_content.contains("\"glyph-source.png\" = 97"),
+        "manifest should persist threshold override against converted PNG source"
     );
 }
 

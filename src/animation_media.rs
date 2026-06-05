@@ -224,6 +224,78 @@ fn import_expanded_frames(
     Ok(())
 }
 
+pub(crate) fn is_avif_image(path: &Path) -> bool {
+    path.extension()
+        .and_then(|ext| ext.to_str())
+        .is_some_and(|ext| ext.eq_ignore_ascii_case("avif"))
+}
+
+pub(crate) fn static_import_file_name(source: &Path) -> Option<PathBuf> {
+    if !is_avif_image(source) {
+        return source.file_name().map(PathBuf::from);
+    }
+
+    let stem = source
+        .file_stem()
+        .and_then(|value| value.to_str())
+        .filter(|value| !value.is_empty())
+        .unwrap_or("glyph");
+    Some(PathBuf::from(format!("{stem}.png")))
+}
+
+pub(crate) fn convert_avif_image_to_png(source: &Path, destination: &Path) -> Result<()> {
+    let Some(ffmpeg_path) = resolve_command_path("ffmpeg") else {
+        bail!("ffmpeg not found; install ffmpeg to import AVIF images");
+    };
+
+    let temp_path = temp_png_import_path(destination);
+    let output = Command::new(&ffmpeg_path)
+        .arg("-v")
+        .arg("error")
+        .arg("-y")
+        .arg("-i")
+        .arg(source)
+        .arg("-frames:v")
+        .arg("1")
+        .arg(&temp_path)
+        .output()
+        .with_context(|| format!("failed to run ffmpeg for {}", source.display()))?;
+
+    if !output.status.success() {
+        let _ = fs::remove_file(&temp_path);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        bail!(
+            "AVIF conversion failed for {}: {}",
+            source.display(),
+            stderr.trim()
+        );
+    }
+
+    fs::rename(&temp_path, destination).with_context(|| {
+        let _ = fs::remove_file(&temp_path);
+        format!(
+            "failed to place converted AVIF at {}",
+            destination.display()
+        )
+    })?;
+    Ok(())
+}
+
+fn temp_png_import_path(destination: &Path) -> PathBuf {
+    let file_name = destination
+        .file_name()
+        .and_then(|value| value.to_str())
+        .unwrap_or("image.png");
+    let nonce = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|value| value.as_nanos())
+        .unwrap_or_default();
+    destination.with_file_name(format!(
+        ".{file_name}.petiglyph-avif-{}-{nonce}.tmp.png",
+        std::process::id()
+    ))
+}
+
 pub(crate) fn apply_grayscale_processing_to_image_file(
     frame_path: &Path,
     options: AnimationGrayscaleOptions,
@@ -310,7 +382,7 @@ fn import_one_file(
 
     let file_name = preferred_file_name
         .map(PathBuf::from)
-        .or_else(|| source.file_name().map(PathBuf::from))
+        .or_else(|| static_import_file_name(source))
         .ok_or_else(|| anyhow::anyhow!("missing file name for {}", source.display()))?;
 
     let canonical_destination = input_dir.join(&file_name);
@@ -336,13 +408,17 @@ fn import_one_file(
     }
 
     let (destination, was_renamed) = next_available_import_destination(input_dir, &file_name);
-    fs::copy(source, &destination).with_context(|| {
-        format!(
-            "failed to import {} into {}",
-            source.display(),
-            destination.display()
-        )
-    })?;
+    if is_avif_image(source) {
+        convert_avif_image_to_png(source, &destination)?;
+    } else {
+        fs::copy(source, &destination).with_context(|| {
+            format!(
+                "failed to import {} into {}",
+                source.display(),
+                destination.display()
+            )
+        })?;
+    }
 
     result
         .imported_source_keys

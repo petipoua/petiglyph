@@ -892,7 +892,7 @@ pub(crate) fn is_supported_source(path: &Path) -> bool {
             let ext = ext.to_ascii_lowercase();
             matches!(
                 ext.as_str(),
-                "png" | "jpg" | "jpeg" | "webp" | "avif" | "bmp" | "gif" | "svg"
+                "png" | "jpg" | "jpeg" | "webp" | "bmp" | "gif" | "svg"
             )
         }
         None => false,

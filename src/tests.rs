@@ -1601,9 +1601,9 @@ fn bitmap_to_bdf_rows_packs_pixels_into_hex_rows() {
 }
 
 #[test]
-fn supported_source_extensions_include_avif() {
-    assert!(is_supported_source(Path::new("icon.avif")));
-    assert!(is_supported_source(Path::new("ICON.AVIF")));
+fn supported_source_extensions_exclude_import_only_avif() {
+    assert!(!is_supported_source(Path::new("icon.avif")));
+    assert!(!is_supported_source(Path::new("ICON.AVIF")));
     assert!(!is_supported_source(Path::new("icon.tiff")));
 }
 
