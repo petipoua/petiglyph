@@ -137,6 +137,7 @@ fn drag_images_here_lines(
     accent: Color,
     imported_count: usize,
     animation_media_mode: bool,
+    windows_picker_mode: bool,
     processing_spinner: Option<&str>,
     inline_notice: Option<&str>,
 ) -> Vec<Line<'static>> {
@@ -157,11 +158,7 @@ fn drag_images_here_lines(
     let bottom_border = format!("╰{}╯", dashed_pattern(inner_width));
     let side_for_row = |row: usize| if row % 2 == 0 { " " } else { "│" };
     let centered_label = center_label(
-        if animation_media_mode {
-            "DRAG/PASTE MEDIA HERE"
-        } else {
-            "DRAG/PASTE IMAGES HERE"
-        },
+        creation_workflow_import_area_label(animation_media_mode, windows_picker_mode),
         inner_width,
     );
     let counter_text = if let Some(spinner) = processing_spinner {
@@ -347,4 +344,3 @@ fn installed_animation_preview_lines(
         .get(frame_index)
         .map(|block| installed_font_block_display_lines(block, max_chars))
 }
-

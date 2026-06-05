@@ -5,18 +5,6 @@ fn is_animated_home_creation(kind: HomeCreationKind) -> bool {
     )
 }
 
-fn home_import_missing_sources_message(kind: HomeCreationKind) -> &'static str {
-    match kind {
-        HomeCreationKind::Glyph => "drop at least one source image in the popup, then press Enter",
-        HomeCreationKind::Grid => {
-            "create grid: drop exactly one image in the popup, then press Enter"
-        }
-        HomeCreationKind::AnimatedGlyph | HomeCreationKind::AnimatedGridGlyph => {
-            "drop at least one frame media file in the popup, then press Enter"
-        }
-    }
-}
-
 fn home_enter_tweaking_message(kind: HomeCreationKind) -> &'static str {
     match kind {
         HomeCreationKind::Glyph => {
@@ -568,6 +556,9 @@ fn handle_home_creation_key(app: &mut App, key: KeyEvent) -> Result<()> {
                     return Ok(());
                 }
                 if !app.has_imported_home_sources(kind) {
+                    if app.prompt_windows_home_import_picker(kind)? {
+                        return Ok(());
+                    }
                     app.status = Some(home_import_missing_sources_message(kind).to_string());
                     return Ok(());
                 }

@@ -433,6 +433,7 @@ fn draw_home_import_drop_ui(
         kind,
         HomeCreationKind::AnimatedGlyph | HomeCreationKind::AnimatedGridGlyph
     );
+    let windows_picker_mode = windows_creation_workflow_uses_picker();
     let imported_count = if animation_media_mode {
         app.animation_selection_order.len()
     } else {
@@ -454,15 +455,13 @@ fn draw_home_import_drop_ui(
         accent,
         imported_count,
         animation_media_mode,
+        windows_picker_mode,
         processing_spinner,
         inline_notice,
     );
     if drag_lines.is_empty() {
-        let fallback = if animation_media_mode {
-            " Drop, paste, or drag media files here."
-        } else {
-            " Drop, paste, or drag image files here."
-        };
+        let fallback =
+            creation_workflow_import_fallback_label(animation_media_mode, windows_picker_mode);
         frame.render_widget(Paragraph::new(fallback), layout[0]);
     } else {
         frame.render_widget(
@@ -475,7 +474,7 @@ fn draw_home_import_drop_ui(
         Paragraph::new(Line::from(vec![
             Span::styled(" Enter ", Style::default().fg(accent)),
             Span::styled(
-                "go to tweaking step after import",
+                import_step_enter_help(),
                 Style::default().fg(muted),
             ),
         ])),

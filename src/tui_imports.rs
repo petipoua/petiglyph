@@ -1,3 +1,205 @@
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct WindowsCreationWorkflowPickerConfig {
+    title: &'static str,
+    filter: &'static str,
+    multiselect: bool,
+}
+
+fn windows_creation_workflow_uses_picker_for_os(os: &str) -> bool {
+    os == "windows"
+}
+
+fn windows_creation_workflow_uses_picker() -> bool {
+    windows_creation_workflow_uses_picker_for_os(env::consts::OS)
+}
+
+fn creation_workflow_import_area_label(
+    animation_media_mode: bool,
+    windows_picker_mode: bool,
+) -> &'static str {
+    match (windows_picker_mode, animation_media_mode) {
+        (true, true) => "PICK/PASTE MEDIA HERE",
+        (true, false) => "PICK/PASTE IMAGES HERE",
+        (false, true) => "DRAG/PASTE MEDIA HERE",
+        (false, false) => "DRAG/PASTE IMAGES HERE",
+    }
+}
+
+fn creation_workflow_import_fallback_label(
+    animation_media_mode: bool,
+    windows_picker_mode: bool,
+) -> &'static str {
+    match (windows_picker_mode, animation_media_mode) {
+        (true, true) => " Pick media files here with the Windows file picker.",
+        (true, false) => " Pick image files here with the Windows file picker.",
+        (false, true) => " Drop, paste, or drag media files here.",
+        (false, false) => " Drop, paste, or drag image files here.",
+    }
+}
+
+fn home_workflow_import_hint_for_os(kind: HomeCreationKind, os: &str) -> &'static str {
+    if windows_creation_workflow_uses_picker_for_os(os) {
+        return match kind {
+            HomeCreationKind::Glyph | HomeCreationKind::Grid => {
+                "pick files in the Windows file picker for this popup."
+            }
+            HomeCreationKind::AnimatedGlyph | HomeCreationKind::AnimatedGridGlyph => {
+                "pick images/GIFs/videos in the Windows file picker for this popup."
+            }
+        };
+    }
+
+    match kind {
+        HomeCreationKind::AnimatedGlyph | HomeCreationKind::AnimatedGridGlyph => {
+            "drop, paste, or drag images/GIFs/videos in this popup."
+        }
+        HomeCreationKind::Glyph | HomeCreationKind::Grid => {
+            "drop, paste, or drag files in this popup."
+        }
+    }
+}
+
+fn home_workflow_import_hint(kind: HomeCreationKind) -> &'static str {
+    home_workflow_import_hint_for_os(kind, env::consts::OS)
+}
+
+fn home_import_missing_sources_message_for_os(kind: HomeCreationKind, os: &str) -> &'static str {
+    if windows_creation_workflow_uses_picker_for_os(os) {
+        return match kind {
+            HomeCreationKind::Glyph => {
+                "pick at least one source image in the Windows file picker, then press Enter"
+            }
+            HomeCreationKind::Grid => {
+                "create grid: pick exactly one image in the Windows file picker, then press Enter"
+            }
+            HomeCreationKind::AnimatedGlyph | HomeCreationKind::AnimatedGridGlyph => {
+                "pick at least one frame media file in the Windows file picker, then press Enter"
+            }
+        };
+    }
+
+    match kind {
+        HomeCreationKind::Glyph => "drop at least one source image in the popup, then press Enter",
+        HomeCreationKind::Grid => {
+            "create grid: drop exactly one image in the popup, then press Enter"
+        }
+        HomeCreationKind::AnimatedGlyph | HomeCreationKind::AnimatedGridGlyph => {
+            "drop at least one frame media file in the popup, then press Enter"
+        }
+    }
+}
+
+fn home_import_missing_sources_message(kind: HomeCreationKind) -> &'static str {
+    home_import_missing_sources_message_for_os(kind, env::consts::OS)
+}
+
+fn import_step_enter_help_for_os(os: &str) -> &'static str {
+    if windows_creation_workflow_uses_picker_for_os(os) {
+        "open file picker / continue after import"
+    } else {
+        "go to tweaking step after import"
+    }
+}
+
+fn import_step_enter_help() -> &'static str {
+    import_step_enter_help_for_os(env::consts::OS)
+}
+
+fn windows_creation_workflow_picker_config(
+    kind: HomeCreationKind,
+) -> WindowsCreationWorkflowPickerConfig {
+    match kind {
+        HomeCreationKind::Glyph => WindowsCreationWorkflowPickerConfig {
+            title: "Pick source images for petiglyph",
+            filter: "Supported images|*.png;*.jpg;*.jpeg;*.webp;*.bmp;*.gif;*.svg;*.avif|All files|*.*",
+            multiselect: true,
+        },
+        HomeCreationKind::Grid => WindowsCreationWorkflowPickerConfig {
+            title: "Pick one source image for the petiglyph grid",
+            filter: "Supported images|*.png;*.jpg;*.jpeg;*.webp;*.bmp;*.gif;*.svg;*.avif|All files|*.*",
+            multiselect: false,
+        },
+        HomeCreationKind::AnimatedGlyph => WindowsCreationWorkflowPickerConfig {
+            title: "Pick animation media for petiglyph",
+            filter: "Supported media|*.png;*.jpg;*.jpeg;*.webp;*.bmp;*.svg;*.avif;*.gif;*.mp4;*.mov;*.mkv;*.webm;*.avi;*.m4v|All files|*.*",
+            multiselect: true,
+        },
+        HomeCreationKind::AnimatedGridGlyph => WindowsCreationWorkflowPickerConfig {
+            title: "Pick animation media for the petiglyph animated grid",
+            filter: "Supported media|*.png;*.jpg;*.jpeg;*.webp;*.bmp;*.svg;*.avif;*.gif;*.mp4;*.mov;*.mkv;*.webm;*.avi;*.m4v|All files|*.*",
+            multiselect: true,
+        },
+    }
+}
+
+fn powershell_single_quoted_string(value: &str) -> String {
+    value.replace('\'', "''")
+}
+
+fn windows_creation_workflow_picker_script(config: WindowsCreationWorkflowPickerConfig) -> String {
+    let title = powershell_single_quoted_string(config.title);
+    let filter = powershell_single_quoted_string(config.filter);
+    let multiselect = if config.multiselect { "$true" } else { "$false" };
+    format!(
+        "Add-Type -AssemblyName System.Windows.Forms | Out-Null\n\
+$dialog = New-Object System.Windows.Forms.OpenFileDialog\n\
+$dialog.Title = '{title}'\n\
+$dialog.Filter = '{filter}'\n\
+$dialog.Multiselect = {multiselect}\n\
+$dialog.CheckFileExists = $true\n\
+$dialog.CheckPathExists = $true\n\
+$dialog.RestoreDirectory = $true\n\
+if ($dialog.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) {{\n\
+  $dialog.FileNames | ForEach-Object {{ [Console]::Out.WriteLine($_) }}\n\
+}}\n"
+    )
+}
+
+fn open_windows_creation_workflow_picker(kind: HomeCreationKind) -> Result<Option<String>> {
+    if !windows_creation_workflow_uses_picker() {
+        return Ok(None);
+    }
+
+    let script =
+        windows_creation_workflow_picker_script(windows_creation_workflow_picker_config(kind));
+    let mut attempted = Vec::new();
+    let mut errors = Vec::new();
+
+    for command in ["powershell.exe", "pwsh.exe", "powershell", "pwsh"] {
+        let Some(resolved) = resolve_command_path(command) else {
+            continue;
+        };
+        attempted.push(command);
+        let output = std::process::Command::new(&resolved)
+            .args(["-NoProfile", "-NonInteractive", "-STA", "-Command", &script])
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .output()
+            .with_context(|| format!("failed to launch {command} for Windows file picker"))?;
+        if output.status.success() {
+            let payload = String::from_utf8_lossy(&output.stdout).trim().to_string();
+            if payload.is_empty() {
+                return Ok(None);
+            }
+            return Ok(Some(payload));
+        }
+
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        if stderr.is_empty() {
+            errors.push(format!("{command} exited with status {}", output.status));
+        } else {
+            errors.push(format!("{command}: {stderr}"));
+        }
+    }
+
+    if attempted.is_empty() {
+        bail!("Windows file picker requires `powershell` or `pwsh` on PATH");
+    }
+
+    bail!("Windows file picker failed: {}", errors.join(" | "))
+}
+
 fn looks_like_path_payload(payload: &str) -> bool {
     let trimmed = payload.trim();
     if trimmed.is_empty() {

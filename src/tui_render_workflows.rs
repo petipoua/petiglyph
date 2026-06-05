@@ -306,14 +306,7 @@ fn draw_home_creation_popup(frame: &mut Frame, app: &App, area: Rect, accent: Co
                 } else if tweaking {
                     format!("{workflow_name}: tweak grayscale/threshold with live preview.")
                 } else {
-                    let import_hint = if matches!(
-                        kind,
-                        HomeCreationKind::AnimatedGlyph | HomeCreationKind::AnimatedGridGlyph
-                    ) {
-                        "drop, paste, or drag images/GIFs/videos in this popup."
-                    } else {
-                        "drop, paste, or drag files in this popup."
-                    };
+                    let import_hint = home_workflow_import_hint(kind);
                     format!("{workflow_name}: {import_hint}")
                 },
                 Style::default()
@@ -862,4 +855,3 @@ fn bleed_toggle_line(label: &'static str, level: BleedLevel) -> Line<'static> {
         Span::raw(" "),
     ])
 }
-

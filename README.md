@@ -52,7 +52,7 @@ cd my-font
 petiglyph
 ```
 
-After `create`, add source images to `icons/` or drop/paste files into the Home panel creation workflows. Use the TUI to tune thresholds, compose grids, define animations, build, install, and sample the font.
+After `create`, add source images to `icons/` or import files through the Home panel creation workflows. On Windows, the four Home creation workflows open a native file picker instead of relying on terminal drag/drop. Use the TUI to tune thresholds, compose grids, define animations, build, install, and sample the font.
 
 ## Home Panel Creation Workflows
 
@@ -76,6 +76,12 @@ Keyboard controls during the import popup:
 
 - `Enter` continues to the next workflow step
 - `Esc` cancels the workflow
+
+Windows import behavior:
+
+- In `cmd.exe`/PowerShell, all four Home creation workflows open a native Windows file picker for the import step.
+- `Create grid` restricts the picker to a single selected image; the other workflows allow multi-select.
+- After picking files, press `Enter` again to continue to the next workflow step.
 
 Animated workflow import input types:
 

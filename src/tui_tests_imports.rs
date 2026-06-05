@@ -1049,13 +1049,30 @@
     #[test]
     fn drag_images_placeholder_handles_small_and_regular_regions() {
         assert!(
-            drag_images_here_lines(6, 2, ratatui::style::Color::Cyan, 0, false, None, None)
-                .is_empty(),
+            drag_images_here_lines(
+                6,
+                2,
+                ratatui::style::Color::Cyan,
+                0,
+                false,
+                false,
+                None,
+                None,
+            )
+            .is_empty(),
             "very small regions should skip drag placeholder rendering"
         );
 
-        let lines =
-            drag_images_here_lines(40, 7, ratatui::style::Color::Cyan, 3, false, None, None);
+        let lines = drag_images_here_lines(
+            40,
+            7,
+            ratatui::style::Color::Cyan,
+            3,
+            false,
+            false,
+            None,
+            None,
+        );
         assert_eq!(lines.len(), 7, "placeholder should fill requested height");
         let rendered = lines
             .iter()
@@ -1083,8 +1100,16 @@
             "placeholder should show a checkmark when images have been added"
         );
 
-        let zero_lines =
-            drag_images_here_lines(40, 7, ratatui::style::Color::Cyan, 0, false, None, None);
+        let zero_lines = drag_images_here_lines(
+            40,
+            7,
+            ratatui::style::Color::Cyan,
+            0,
+            false,
+            false,
+            None,
+            None,
+        );
         let zero_rendered = zero_lines
             .iter()
             .map(|line| {
@@ -1107,8 +1132,16 @@
             "placeholder should not show checkmark when no images were added"
         );
 
-        let media_lines =
-            drag_images_here_lines(40, 7, ratatui::style::Color::Cyan, 2, true, None, None);
+        let media_lines = drag_images_here_lines(
+            40,
+            7,
+            ratatui::style::Color::Cyan,
+            2,
+            true,
+            false,
+            None,
+            None,
+        );
         let media_rendered = media_lines
             .iter()
             .map(|line| {
@@ -1131,8 +1164,16 @@
             "animation placeholder should show media counter"
         );
 
-        let processing_lines =
-            drag_images_here_lines(40, 7, ratatui::style::Color::Cyan, 0, true, Some("|"), None);
+        let processing_lines = drag_images_here_lines(
+            40,
+            7,
+            ratatui::style::Color::Cyan,
+            0,
+            true,
+            false,
+            Some("|"),
+            None,
+        );
         let processing_rendered = processing_lines
             .iter()
             .map(|line| {
@@ -1159,6 +1200,7 @@
             ratatui::style::Color::Cyan,
             1,
             false,
+            false,
             None,
             Some("Replaced image: grid_1.png -> grid_2.png"),
         );
@@ -1177,6 +1219,59 @@
                 .any(|line| line.contains("Replaced image: grid_1.png -> grid_2.png")),
             "placeholder should show inline replacement notice when provided"
         );
+    }
+
+    #[test]
+    fn windows_creation_workflow_picker_copy_mentions_picker() {
+        assert_eq!(
+            super::home_import_missing_sources_message_for_os(HomeCreationKind::Glyph, "windows"),
+            "pick at least one source image in the Windows file picker, then press Enter"
+        );
+        assert_eq!(
+            super::home_import_missing_sources_message_for_os(HomeCreationKind::Grid, "windows"),
+            "create grid: pick exactly one image in the Windows file picker, then press Enter"
+        );
+        assert_eq!(
+            super::home_workflow_import_hint_for_os(HomeCreationKind::AnimatedGlyph, "windows"),
+            "pick images/GIFs/videos in the Windows file picker for this popup."
+        );
+        assert_eq!(
+            super::import_step_enter_help_for_os("windows"),
+            "open file picker / continue after import"
+        );
+        assert_eq!(
+            super::creation_workflow_import_fallback_label(false, true),
+            " Pick image files here with the Windows file picker."
+        );
+        assert_eq!(
+            super::creation_workflow_import_fallback_label(true, true),
+            " Pick media files here with the Windows file picker."
+        );
+        assert_eq!(
+            super::creation_workflow_import_area_label(false, true),
+            "PICK/PASTE IMAGES HERE"
+        );
+        assert_eq!(
+            super::creation_workflow_import_area_label(true, true),
+            "PICK/PASTE MEDIA HERE"
+        );
+    }
+
+    #[test]
+    fn windows_picker_config_matches_workflow_constraints() {
+        let glyph = super::windows_creation_workflow_picker_config(HomeCreationKind::Glyph);
+        assert!(glyph.multiselect);
+        assert!(glyph.filter.contains("*.gif"));
+
+        let grid = super::windows_creation_workflow_picker_config(HomeCreationKind::Grid);
+        assert!(!grid.multiselect);
+        assert!(grid.title.contains("one source image"));
+
+        let animated =
+            super::windows_creation_workflow_picker_config(HomeCreationKind::AnimatedGridGlyph);
+        assert!(animated.multiselect);
+        assert!(animated.filter.contains("*.mp4"));
+        assert!(animated.filter.contains("*.m4v"));
     }
 
     #[test]

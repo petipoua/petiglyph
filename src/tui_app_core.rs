@@ -93,6 +93,31 @@ impl App {
         }
     }
 
+    fn prompt_windows_home_import_picker(&mut self, kind: HomeCreationKind) -> Result<bool> {
+        if cfg!(test) || !windows_creation_workflow_uses_picker() {
+            return Ok(false);
+        }
+
+        let Some(payload) = open_windows_creation_workflow_picker(kind)? else {
+            self.status =
+                Some("Windows file picker canceled; press Enter to open it again".to_string());
+            return Ok(true);
+        };
+
+        self.home_workflow_error = None;
+        self.import_dropped_images(&payload)?;
+        if !is_animated_home_creation(kind) && self.home_import_task.is_some() {
+            self.status = Some(
+                if matches!(kind, HomeCreationKind::Grid) {
+                    "loading selected image...".to_string()
+                } else {
+                    "loading selected images...".to_string()
+                },
+            );
+        }
+        Ok(true)
+    }
+
     fn start_home_workflow(&mut self, kind: HomeCreationKind) {
         self.home_workflow = HomeWorkflow::Import(kind);
         self.discard_next_animation_import_result = false;
@@ -113,6 +138,11 @@ impl App {
             self.clear_animation_draft();
             self.glyph_tool_mode = GlyphToolMode::ImportAnimationFrames;
             self.selecting_for_animation_frames = true;
+        }
+        if let Err(err) = self.prompt_windows_home_import_picker(kind) {
+            let detail = format_status_from_error(&self.manifest_path, &err.to_string());
+            self.home_workflow_error = Some(format!("Windows file picker failed: {detail}"));
+            self.status = Some(format!("Windows file picker failed: {detail}"));
         }
     }
 
