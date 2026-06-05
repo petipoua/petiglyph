@@ -9,9 +9,22 @@ set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT_DIR"
+START_SECONDS=$SECONDS
 
 log() {
   printf '[preflight] %s\n' "$*"
+}
+
+format_elapsed() {
+  local elapsed="$1"
+  local minutes=$((elapsed / 60))
+  local seconds=$((elapsed % 60))
+
+  if ((minutes > 0)); then
+    printf '%dm %02ds' "$minutes" "$seconds"
+  else
+    printf '%ds' "$seconds"
+  fi
 }
 
 run_step() {
@@ -31,4 +44,4 @@ run_step "distribution matrix sync check" ./scripts/distribution_matrix.py --che
 run_step "runtime smoke (linux/macos)" ./scripts/clipboard_smoke.sh --skip-clipboard-checks
 run_step "tui e2e hty journeys 1..10" ./scripts/tui_e2e_hty.sh --journey 1,2,3,4,5,6,7,8,9,10
 
-log "All preflight checks passed"
+log "All preflight checks passed in $(format_elapsed "$((SECONDS - START_SECONDS))")"
