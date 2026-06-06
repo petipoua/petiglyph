@@ -115,7 +115,6 @@ pub(crate) enum WelcomeFocus {
     ProjectList,
     CreateInput,
     HomeCreateButtons,
-    BuildButton,
     InstallButton,
     DeleteProjectButton,
     InstalledFontList,

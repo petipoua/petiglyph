@@ -613,7 +613,6 @@
         assert!(!app.verbose_paths, "verbose paths should start off");
 
         for focus in [
-            super::WelcomeFocus::BuildButton,
             super::WelcomeFocus::InstallButton,
             super::WelcomeFocus::DeleteProjectButton,
         ] {

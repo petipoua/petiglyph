@@ -655,7 +655,6 @@ fn handle_welcome_key(app: &mut App, key: KeyEvent) -> Result<()> {
                         WelcomeFocus::HomeCreateButtons
                     }
                 },
-                WelcomeFocus::BuildButton => WelcomeFocus::VerbosePathsToggle,
                 WelcomeFocus::InstallButton => WelcomeFocus::VerbosePathsToggle,
                 WelcomeFocus::DeleteProjectButton => WelcomeFocus::VerbosePathsToggle,
                 WelcomeFocus::InstalledFontList => {
@@ -707,19 +706,6 @@ fn handle_welcome_key(app: &mut App, key: KeyEvent) -> Result<()> {
                         WelcomeFocus::InstalledFontList
                     } else {
                         WelcomeFocus::CreateInput
-                    }
-                }
-                WelcomeFocus::BuildButton => {
-                    if app.active_project.is_some() {
-                        app.home_launcher_focus = HomeLauncherFocus::CreateGlyph;
-                        WelcomeFocus::HomeCreateButtons
-                    } else if app.installed_fonts.is_empty() {
-                        WelcomeFocus::BuildButton
-                    } else {
-                        app.selected_installed_font = 0;
-                        app.selected_installed_font_sub_index = 0;
-                        app.installed_font_horizontal_focus_uninstall = false;
-                        WelcomeFocus::InstalledFontList
                     }
                 }
                 WelcomeFocus::InstallButton => {
@@ -805,7 +791,6 @@ fn handle_welcome_key(app: &mut App, key: KeyEvent) -> Result<()> {
                         WelcomeFocus::ProjectList
                     }
                 }
-                WelcomeFocus::BuildButton => WelcomeFocus::CreateInput,
                 WelcomeFocus::InstallButton => WelcomeFocus::CreateInput,
                 WelcomeFocus::DeleteProjectButton => WelcomeFocus::InstallButton,
                 WelcomeFocus::HomeCreateButtons => match app.home_launcher_focus {
@@ -847,13 +832,6 @@ fn handle_welcome_key(app: &mut App, key: KeyEvent) -> Result<()> {
                         WelcomeFocus::InstallButton
                     } else {
                         WelcomeFocus::ProjectList
-                    }
-                }
-                WelcomeFocus::BuildButton => {
-                    if home_project_actions_enabled {
-                        WelcomeFocus::InstallButton
-                    } else {
-                        WelcomeFocus::CreateInput
                     }
                 }
                 WelcomeFocus::InstallButton => {
@@ -941,10 +919,6 @@ fn handle_welcome_key(app: &mut App, key: KeyEvent) -> Result<()> {
                     app.welcome_input_editing = true;
                     app.status = None;
                 }
-            }
-            WelcomeFocus::BuildButton => {
-                app.welcome_input_editing = false;
-                trigger_install_action(app)?;
             }
             WelcomeFocus::InstallButton => {
                 app.welcome_input_editing = false;

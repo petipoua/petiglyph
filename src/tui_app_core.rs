@@ -757,9 +757,7 @@ impl App {
         if self.active_project.is_none()
             && matches!(
                 self.welcome_focus,
-                WelcomeFocus::BuildButton
-                    | WelcomeFocus::InstallButton
-                    | WelcomeFocus::DeleteProjectButton
+                WelcomeFocus::InstallButton | WelcomeFocus::DeleteProjectButton
             )
         {
             self.welcome_focus = if self.projects.is_empty() {
