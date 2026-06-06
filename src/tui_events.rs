@@ -194,12 +194,14 @@ fn handle_key_event(app: &mut App, key: KeyEvent) -> Result<()> {
                 app.welcome_focus = WelcomeFocus::InstallButton;
             }
             app.view = AppView::Welcome;
+            app.panel_selection = AppView::Welcome;
             app.grid_config = None;
             app.selecting_for_grid = false;
         }
         KeyCode::Char('2') => {
             app.welcome_input_editing = false;
             app.view = AppView::Glyphs;
+            app.panel_selection = AppView::Glyphs;
             app.normalize_glyphs_focus();
         }
         KeyCode::Tab => {
@@ -208,6 +210,7 @@ fn handle_key_event(app: &mut App, key: KeyEvent) -> Result<()> {
                 AppView::Welcome => AppView::Glyphs,
                 AppView::Glyphs => AppView::Welcome,
             };
+            app.panel_selection = app.view;
             if app.view == AppView::Glyphs {
                 app.normalize_glyphs_focus();
             }
@@ -221,6 +224,7 @@ fn handle_key_event(app: &mut App, key: KeyEvent) -> Result<()> {
                 AppView::Welcome => AppView::Glyphs,
                 AppView::Glyphs => AppView::Welcome,
             };
+            app.panel_selection = app.view;
             if app.view == AppView::Glyphs {
                 app.normalize_glyphs_focus();
             }
@@ -373,8 +377,37 @@ fn draw_ui(frame: &mut Frame, app: &App) {
     };
 
     // Header
-    let titles = [" 1 Home ", " 2 Glyphs "];
-    let tabs = Tabs::new(titles.into_iter().map(Line::from).collect::<Vec<_>>())
+    let panel_tabs_focused = match app.view {
+        AppView::Welcome => app.welcome_focus == WelcomeFocus::PanelTabs,
+        AppView::Glyphs => app.glyphs_focus == GlyphsFocus::PanelTabs,
+    };
+    let active_index = match app.view {
+        AppView::Welcome => 0,
+        AppView::Glyphs => 1,
+    };
+    let selected_index = if panel_tabs_focused {
+        match app.panel_selection {
+            AppView::Welcome => 0,
+            AppView::Glyphs => 1,
+        }
+    } else {
+        active_index
+    };
+    let titles = [" 1 Home ", " 2 Glyphs "]
+        .into_iter()
+        .enumerate()
+        .map(|(index, title)| {
+            Line::from(Span::styled(
+                title,
+                if index == active_index && index != selected_index {
+                    Style::default().fg(accent).add_modifier(Modifier::BOLD)
+                } else {
+                    Style::default().fg(Color::White)
+                },
+            ))
+        })
+        .collect::<Vec<_>>();
+    let tabs = Tabs::new(titles)
         .block(
             Block::default()
                 .borders(Borders::ALL)
@@ -387,17 +420,19 @@ fn draw_ui(frame: &mut Frame, app: &App) {
                     Span::styled(format!(" v{} ", CLI_VERSION), Style::default().fg(muted)),
                 ])),
         )
-        .select(match app.view {
-            AppView::Welcome => 0,
-            AppView::Glyphs => 1,
-        })
+        .select(selected_index)
         .style(Style::default().fg(Color::White))
-        .highlight_style(
+        .highlight_style(if panel_tabs_focused {
+            Style::default()
+                .fg(Color::Black)
+                .bg(Color::Yellow)
+                .add_modifier(Modifier::BOLD)
+        } else {
             Style::default()
                 .fg(Color::Black)
                 .bg(accent)
-                .add_modifier(Modifier::BOLD),
-        )
+                .add_modifier(Modifier::BOLD)
+        })
         .divider("");
 
     frame.render_widget(tabs, root[0]);

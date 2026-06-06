@@ -4219,6 +4219,40 @@ fn tab_cycles_panels_and_glyph_controls_stay_in_glyph_view() {
         working_invert: false,
     });
 
+    app.welcome_focus = WelcomeFocus::ProjectList;
+    app.selected_project = 0;
+    handle_key(&mut app, KeyCode::Up).expect("up from the first project should focus panels");
+    assert_eq!(app.welcome_focus, WelcomeFocus::PanelTabs);
+    assert_eq!(app.panel_selection, AppView::Welcome);
+    handle_key(&mut app, KeyCode::Right).expect("right should select Glyphs in the panel line");
+    assert_eq!(app.panel_selection, AppView::Glyphs);
+    handle_key(&mut app, KeyCode::Enter).expect("enter should activate the selected panel");
+    assert_eq!(app.view, AppView::Glyphs);
+    assert_eq!(app.glyphs_focus, GlyphsFocus::PanelTabs);
+
+    handle_key(&mut app, KeyCode::Left).expect("left should select Home in the panel line");
+    assert_eq!(app.panel_selection, AppView::Welcome);
+    handle_key(&mut app, KeyCode::Enter).expect("enter should activate Home");
+    assert_eq!(app.view, AppView::Welcome);
+    assert_eq!(app.welcome_focus, WelcomeFocus::PanelTabs);
+    handle_key(&mut app, KeyCode::Down).expect("down should leave the panel line");
+    assert_eq!(app.welcome_focus, WelcomeFocus::VerbosePathsToggle);
+    handle_key(&mut app, KeyCode::Up).expect("up from verbose should focus panels");
+    assert_eq!(app.welcome_focus, WelcomeFocus::PanelTabs);
+    assert_eq!(app.panel_selection, AppView::Welcome);
+
+    app.view = AppView::Glyphs;
+    app.panel_selection = AppView::Glyphs;
+    app.glyphs_focus = GlyphsFocus::InstallButton;
+    handle_key(&mut app, KeyCode::Up).expect("up from the Glyphs top control should focus panels");
+    assert_eq!(app.glyphs_focus, GlyphsFocus::PanelTabs);
+    handle_key(&mut app, KeyCode::Down).expect("down should return to the Glyphs top control");
+    assert_eq!(app.glyphs_focus, GlyphsFocus::InstallButton);
+
+    app.view = AppView::Welcome;
+    app.panel_selection = AppView::Welcome;
+    app.welcome_focus = WelcomeFocus::CreateInput;
+
     // Glyph-specific keys do nothing outside Glyphs view.
     assert_eq!(app.view, AppView::Welcome);
     handle_key(&mut app, KeyCode::Right).expect("key handling should succeed");

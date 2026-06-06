@@ -111,6 +111,7 @@ enum InstalledFontMetadataSample {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum WelcomeFocus {
+    PanelTabs,
     VerbosePathsToggle,
     ProjectList,
     CreateInput,
@@ -302,6 +303,7 @@ pub(crate) enum AppView {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum GlyphsFocus {
+    PanelTabs,
     InstallButton,
     List,
     Preview,
@@ -503,6 +505,7 @@ pub(crate) struct App {
     pub(crate) quit: bool,
     pub(crate) status: Option<String>,
     pub(crate) view: AppView,
+    pub(crate) panel_selection: AppView,
     pub(crate) glyphs_focus: GlyphsFocus,
     pub(crate) grid_config: Option<GridConfig>,
     pub(crate) selecting_for_grid: bool,

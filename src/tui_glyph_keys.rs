@@ -239,7 +239,9 @@ fn handle_glyphs_key(app: &mut App, key: KeyEvent) -> Result<()> {
             app.quit = true;
         }
         KeyCode::Down | KeyCode::Char('j') => {
-            if app.glyphs_focus == GlyphsFocus::InstallButton {
+            if app.glyphs_focus == GlyphsFocus::PanelTabs {
+                app.glyphs_focus = GlyphsFocus::InstallButton;
+            } else if app.glyphs_focus == GlyphsFocus::InstallButton {
                 app.glyphs_focus = GlyphsFocus::List;
             } else if app.glyphs_focus == GlyphsFocus::List {
                 let row_count = app.visible_glyph_rows().len();
@@ -274,7 +276,10 @@ fn handle_glyphs_key(app: &mut App, key: KeyEvent) -> Result<()> {
                     app.clamp_glyph_selection();
                 }
             } else if app.glyphs_focus == GlyphsFocus::InstallButton {
-                // keep focus on the button
+                app.glyphs_focus = GlyphsFocus::PanelTabs;
+                app.panel_selection = app.view;
+            } else if app.glyphs_focus == GlyphsFocus::PanelTabs {
+                // keep focus on the panel line
             } else {
                 match app.glyph_preview_control {
                     GlyphPreviewControl::Threshold => {
@@ -296,6 +301,8 @@ fn handle_glyphs_key(app: &mut App, key: KeyEvent) -> Result<()> {
         KeyCode::Left | KeyCode::Char('h') | KeyCode::Char('-') => {
             if matches!(code, KeyCode::Char('-')) {
                 adjust_selected_threshold_by(app, -1);
+            } else if app.glyphs_focus == GlyphsFocus::PanelTabs {
+                app.panel_selection = AppView::Welcome;
             } else if app.glyphs_focus == GlyphsFocus::InstallButton {
                 // no-op while install button is focused
             } else if app.glyphs_focus == GlyphsFocus::List {
@@ -345,6 +352,8 @@ fn handle_glyphs_key(app: &mut App, key: KeyEvent) -> Result<()> {
         KeyCode::Right | KeyCode::Char('l') | KeyCode::Char('+') | KeyCode::Char('=') => {
             if matches!(code, KeyCode::Char('+') | KeyCode::Char('=')) {
                 adjust_selected_threshold_by(app, 1);
+            } else if app.glyphs_focus == GlyphsFocus::PanelTabs {
+                app.panel_selection = AppView::Glyphs;
             } else if app.glyphs_focus == GlyphsFocus::InstallButton {
                 // no-op while install button is focused
             } else if app.glyphs_focus == GlyphsFocus::List {
@@ -390,6 +399,15 @@ fn handle_glyphs_key(app: &mut App, key: KeyEvent) -> Result<()> {
             }
         }
         KeyCode::Enter | KeyCode::Char(' ') => {
+            if app.glyphs_focus == GlyphsFocus::PanelTabs {
+                if code == KeyCode::Enter {
+                    app.view = app.panel_selection;
+                    if app.view == AppView::Welcome {
+                        app.welcome_focus = WelcomeFocus::PanelTabs;
+                    }
+                }
+                return Ok(());
+            }
             if app.glyphs_focus == GlyphsFocus::InstallButton {
                 app.view = AppView::Welcome;
                 app.welcome_focus = WelcomeFocus::InstallButton;
@@ -629,13 +647,18 @@ fn handle_welcome_key(app: &mut App, key: KeyEvent) -> Result<()> {
         }
         KeyCode::Up | KeyCode::Char('k') if !app.welcome_input_editing => {
             app.welcome_focus = match app.welcome_focus {
-                WelcomeFocus::VerbosePathsToggle => WelcomeFocus::VerbosePathsToggle,
+                WelcomeFocus::PanelTabs => WelcomeFocus::PanelTabs,
+                WelcomeFocus::VerbosePathsToggle => {
+                    app.panel_selection = app.view;
+                    WelcomeFocus::PanelTabs
+                }
                 WelcomeFocus::ProjectList => {
                     if app.selected_project > 0 {
                         app.selected_project -= 1;
                         WelcomeFocus::ProjectList
                     } else {
-                        WelcomeFocus::VerbosePathsToggle
+                        app.panel_selection = app.view;
+                        WelcomeFocus::PanelTabs
                     }
                 }
                 WelcomeFocus::CreateInput if !app.projects.is_empty() => {
@@ -681,6 +704,14 @@ fn handle_welcome_key(app: &mut App, key: KeyEvent) -> Result<()> {
         }
         KeyCode::Down | KeyCode::Char('j') if !app.welcome_input_editing => {
             app.welcome_focus = match app.welcome_focus {
+                WelcomeFocus::PanelTabs => {
+                    if !app.projects.is_empty() {
+                        app.selected_project = 0;
+                        WelcomeFocus::ProjectList
+                    } else {
+                        WelcomeFocus::VerbosePathsToggle
+                    }
+                }
                 WelcomeFocus::VerbosePathsToggle => {
                     if app.active_project.is_some() {
                         WelcomeFocus::InstallButton
@@ -783,6 +814,10 @@ fn handle_welcome_key(app: &mut App, key: KeyEvent) -> Result<()> {
         }
         KeyCode::Left | KeyCode::Char('h') if !app.welcome_input_editing => {
             app.welcome_focus = match app.welcome_focus {
+                WelcomeFocus::PanelTabs => {
+                    app.panel_selection = AppView::Welcome;
+                    WelcomeFocus::PanelTabs
+                }
                 WelcomeFocus::VerbosePathsToggle => {
                     if app.projects.is_empty() {
                         WelcomeFocus::CreateInput
@@ -818,6 +853,10 @@ fn handle_welcome_key(app: &mut App, key: KeyEvent) -> Result<()> {
         }
         KeyCode::Right | KeyCode::Char('l') if !app.welcome_input_editing => {
             app.welcome_focus = match app.welcome_focus {
+                WelcomeFocus::PanelTabs => {
+                    app.panel_selection = AppView::Glyphs;
+                    WelcomeFocus::PanelTabs
+                }
                 WelcomeFocus::VerbosePathsToggle => WelcomeFocus::VerbosePathsToggle,
                 WelcomeFocus::CreateInput => {
                     if home_project_actions_enabled {
@@ -866,6 +905,12 @@ fn handle_welcome_key(app: &mut App, key: KeyEvent) -> Result<()> {
             };
         }
         KeyCode::Enter => match app.welcome_focus {
+            WelcomeFocus::PanelTabs => {
+                app.view = app.panel_selection;
+                if app.view == AppView::Glyphs {
+                    app.glyphs_focus = GlyphsFocus::PanelTabs;
+                }
+            }
             WelcomeFocus::VerbosePathsToggle => {
                 app.welcome_input_editing = false;
                 app.verbose_paths = !app.verbose_paths;
