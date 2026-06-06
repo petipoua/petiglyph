@@ -25,7 +25,7 @@ fn scan_projects_in_folder(folder: &Path) -> Result<Vec<WelcomeProject>> {
         .collect()
 }
 
-fn scan_installed_petiglyph_fonts(cwd: &Path) -> Result<Vec<InstalledFontSample>> {
+pub(crate) fn scan_installed_petiglyph_fonts(cwd: &Path) -> Result<Vec<InstalledFontSample>> {
     let manifest_probe = cwd.join("petiglyph.toml");
     let install_dir = install_dir_for_manifest(&manifest_probe)?;
     if !install_dir.is_dir() {
@@ -61,12 +61,7 @@ fn scan_installed_petiglyph_fonts(cwd: &Path) -> Result<Vec<InstalledFontSample>
         let (raw_blocks, animation_rows, animation_previews, animation_exports) =
             match metadata_sample {
                 Some(InstalledFontMetadataSample::Matched(payload)) => payload,
-                Some(InstalledFontMetadataSample::MissingSampleForMatchedMetadata) => {
-                    // Stale installs can linger after temp/test projects are deleted.
-                    // Hide them from the installed-font inventory until reinstalled.
-                    continue;
-                }
-                _ => {
+                Some(InstalledFontMetadataSample::MissingSampleForMatchedMetadata) | _ => {
                     let (sample, truncated) = fs::read(&path)
                         .ok()
                         .and_then(|bytes| {

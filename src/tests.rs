@@ -23,7 +23,7 @@ use crate::cli::{
 use crate::image_pipeline::terminal_cell_width_for_height;
 use crate::install::{
     DEFAULT_INSTALL_NAME_MODE, FontInstallNameMode, effective_font_name,
-    expected_install_ttf_path_for_mode, reserve_project_unicode_range,
+    expected_install_ttf_path_for_mode, install_dir_for_manifest, reserve_project_unicode_range,
 };
 use crate::project::{
     AnimationDef, AnimationType, BleedLevel, CompositionDef, Manifest, RuntimeConfig,
@@ -37,6 +37,7 @@ use crate::tui::{
     handle_paste_event_for_test, install_action_name, installed_font_block_display_lines,
     persist_threshold_override, regroup_installed_sample_blocks, render_ui_for_test,
     requested_keyboard_enhancement_flags, resolve_installed_font_path_with,
+    scan_installed_petiglyph_fonts,
     sample_glyphs_from_ttf_bytes, should_dispatch_key_kind, switch_notice_visible,
     wrap_sample_for_display,
 };
@@ -2951,6 +2952,72 @@ fn sample_glyphs_from_ttf_bytes_limits_preview_to_requested_count() {
     assert!(truncated, "sample should be marked as truncated");
 
     fs::remove_dir_all(project_dir).expect("temp project dir is removed");
+}
+
+#[test]
+fn scan_installed_petiglyph_fonts_keeps_deleted_project_fonts_visible() {
+    let workspace_dir = make_temp_dir("deleted-project-installed-fonts-workspace");
+    let project_dir = make_temp_dir("deleted-project-installed-fonts-project");
+    let input_dir = project_dir.join("icons");
+    let out_dir = project_dir.join("build");
+    fs::create_dir_all(&input_dir).expect("icons dir is created");
+    fs::create_dir_all(&out_dir).expect("build dir is created");
+    write_test_png(&input_dir.join("alpha.png"));
+
+    let manifest_path = project_dir.join("petiglyph.toml");
+    let manifest = Manifest {
+        font_name: "Deleted Project Font".to_string(),
+        project_id: Some("deleted-project-font-test".to_string()),
+        ..Manifest::default()
+    };
+    write_manifest(&manifest_path, &manifest).expect("manifest is written");
+
+    let config = load_runtime_config(&manifest_path, None, None, None, None, None)
+        .expect("runtime config loads");
+    let summary = build_outputs(&config).expect("build succeeds");
+
+    let install_dir = install_dir_for_manifest(&manifest_path).expect("install dir resolves");
+    fs::create_dir_all(&install_dir).expect("install dir is created");
+    let installed_ttf = install_dir.join("deleted-project-font.ttf");
+    fs::copy(&summary.ttf_path, &installed_ttf).expect("ttf is copied into managed install dir");
+
+    let metadata_path = install_dir.join(".petiglyph-install-deleted-project-font-test.json");
+    let metadata = serde_json::json!({
+        "manifest_path": manifest_path.display().to_string(),
+        "font_name": manifest.font_name,
+        "installed_ttf": installed_ttf.display().to_string(),
+        "version": env!("CARGO_PKG_VERSION"),
+        "project_id": manifest.project_id,
+        "install_key": "deleted-project-font-test",
+        "animation_snapshots": [],
+    });
+    fs::write(
+        &metadata_path,
+        serde_json::to_string(&metadata).expect("metadata serializes"),
+    )
+    .expect("metadata is written");
+
+    fs::remove_dir_all(&project_dir).expect("project dir is deleted");
+
+    let installed_fonts =
+        scan_installed_petiglyph_fonts(&workspace_dir).expect("installed fonts scan succeeds");
+    let retained = installed_fonts
+        .iter()
+        .find(|font| font.path == installed_ttf)
+        .expect("deleted-project installed font should remain visible");
+
+    assert!(
+        !retained.blocks.is_empty(),
+        "fallback installed font preview should be present"
+    );
+    assert!(
+        retained.animation_rows.is_empty(),
+        "deleted project fallback should not invent animation metadata"
+    );
+
+    fs::remove_file(&metadata_path).expect("metadata is removed");
+    fs::remove_file(&installed_ttf).expect("installed ttf is removed");
+    fs::remove_dir_all(&workspace_dir).expect("workspace dir is removed");
 }
 
 #[test]
