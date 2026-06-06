@@ -2,8 +2,8 @@
         AnimationConfig, AnimationConfigFocus, AnimationImportSettingsFocus,
         AnimationImportSettingsState, AnimationImportTaskOutput, AnimationPreview, AnimationType,
         App, AppView, BleedLevel, DropImportResult, ExistingImportPolicy, GlyphPreviewControl,
-        GlyphToolMode, HomeCreationKind, HomeWorkflow, InteractiveGlyph, KeyCode, KeyEvent,
-        RuntimeConfig, TuiLaunchOverrides, VisibleGlyphRow, animation_frame_source_for_preview,
+        GlyphToolMode, GlyphsFocus, HomeCreationKind, HomeWorkflow, InteractiveGlyph, KeyCode,
+        KeyEvent, RuntimeConfig, TuiLaunchOverrides, VisibleGlyphRow, animation_frame_source_for_preview,
         animation_has_non_uniform_frame_invert, animation_has_non_uniform_frame_thresholds,
         collect_dropped_paths, composition_preview_lines_stable_frame,
         continue_home_workflow_after_tweaking, default_animation_name_from_frames,
@@ -178,6 +178,52 @@
             handle_key(&mut app, key).expect("quit shortcut should be handled");
             assert!(app.quit, "{key:?} should quit from {view:?}");
         }
+
+        fs::remove_dir_all(project_dir).expect("temp dir is removed");
+    }
+
+    #[test]
+    fn q_quits_from_glyphs_preview_focus() {
+        let project_dir = make_temp_dir("glyphs-preview-quit-shortcut");
+        let manifest_path = project_dir.join("petiglyph.toml");
+        let config = RuntimeConfig {
+            project_dir: project_dir.clone(),
+            project_id: "test-glyphs-preview-quit-shortcut".to_string(),
+            input_dir: project_dir.join("icons"),
+            out_dir: project_dir.join("build"),
+            font_name: "Petiglyph".to_string(),
+            glyph_size: 8,
+            base_threshold: 64,
+            threshold_overrides: BTreeMap::new(),
+            invert_overrides: BTreeMap::new(),
+            compositions: BTreeMap::new(),
+            animations: Vec::new(),
+            codepoint_start: 0x10_0000,
+        };
+
+        let mut app = App::new(manifest_path, config);
+        app.glyphs = vec![InteractiveGlyph {
+            glyph: PreprocessedGlyph {
+                source_path: project_dir.join("icons/alpha.png"),
+                source_key: "alpha.png".to_string(),
+                source_parent_key: "alpha.png".to_string(),
+                glyph_name: "alpha".to_string(),
+                width: 1,
+                height: 1,
+                coverage: vec![255],
+                image_fingerprint: "fnv1a64:test".to_string(),
+                composition_tile: None,
+            },
+            working_threshold: 64,
+            saved_threshold: None,
+            saved_invert: false,
+            working_invert: false,
+        }];
+        app.view = AppView::Glyphs;
+        app.glyphs_focus = GlyphsFocus::Preview;
+
+        handle_key(&mut app, KeyCode::Char('q')).expect("quit shortcut should be handled");
+        assert!(app.quit, "q should quit from glyph preview focus");
 
         fs::remove_dir_all(project_dir).expect("temp dir is removed");
     }

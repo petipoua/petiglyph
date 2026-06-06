@@ -220,7 +220,7 @@ fn handle_glyphs_key(app: &mut App, key: KeyEvent) -> Result<()> {
     }
 
     match code {
-        KeyCode::Esc | KeyCode::Char('q') => {
+        KeyCode::Esc => {
             if app.selecting_for_grid {
                 app.selecting_for_grid = false;
                 app.status = Some("grid selection canceled".to_string());
@@ -234,6 +234,9 @@ fn handle_glyphs_key(app: &mut App, key: KeyEvent) -> Result<()> {
             } else {
                 app.quit = true;
             }
+        }
+        KeyCode::Char('q') => {
+            app.quit = true;
         }
         KeyCode::Down | KeyCode::Char('j') => {
             if app.glyphs_focus == GlyphsFocus::InstallButton {
