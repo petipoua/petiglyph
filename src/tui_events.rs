@@ -416,100 +416,33 @@ fn draw_ui(frame: &mut Frame, app: &App) {
     draw_first_install_notice_popup(frame, app, area, accent, muted);
 
     // Footer
-    let mut footer_spans = vec![
-        Span::styled(" q/esc ", Style::default().fg(accent)),
-        Span::raw("quit  "),
-        Span::styled(" tab ", Style::default().fg(accent)),
-        Span::raw("next panel  "),
-        Span::styled(" 1-2 ", Style::default().fg(accent)),
-        Span::raw("jump panel  "),
-        Span::styled(" R ", Style::default().fg(accent)),
-        Span::raw("rescan  "),
-        Span::styled(" v ", Style::default().fg(accent)),
-        Span::raw("verbose paths  "),
-        Span::styled(" i ", Style::default().fg(accent)),
-        Span::raw(if app.current_project_is_installed() {
-            "reinstall  "
+    let mut footer_spans =
+        if app.welcome_input_editing
+            || app.renaming_input.is_some()
+            || app.delete_project_confirm_selection.is_some()
+        {
+            vec![
+                Span::styled(" Enter ", Style::default().fg(accent)),
+                Span::raw("confirm  "),
+                Span::styled(" Esc ", Style::default().fg(accent)),
+                Span::raw("cancel"),
+            ]
         } else {
-            "install  "
-        }),
-    ];
-
-    if app.view == AppView::Welcome {
-        let enter_help = if app.welcome_input_editing {
-            "stop typing  "
-        } else if app.delete_project_confirm_selection.is_some() {
-            "confirm  "
-        } else if app.welcome_focus == WelcomeFocus::VerbosePathsToggle {
-            "toggle verbose paths  "
-        } else if app.welcome_focus == WelcomeFocus::ProjectList {
-            if app.renaming_input.is_some() {
-                "confirm rename  "
-            } else {
-                "open project  "
-            }
-        } else if app.welcome_focus == WelcomeFocus::BuildButton {
-            if app.current_project_is_installed() {
-                "reinstall  "
-            } else {
-                "install  "
-            }
-        } else if app.welcome_focus == WelcomeFocus::InstallButton {
-            if app.current_project_is_installed() {
-                "reinstall  "
-            } else {
-                "install  "
-            }
-        } else if app.welcome_focus == WelcomeFocus::DeleteProjectButton {
-            "delete project  "
-        } else if app.welcome_focus == WelcomeFocus::InstalledFontList {
-            "uninstall  "
-        } else {
-            "start creating  "
+            let (navigate_label, action_label) = match app.view {
+                AppView::Welcome => ("navigate  ", "action  "),
+                AppView::Glyphs => ("glyph  ", "expand  "),
+            };
+            vec![
+                Span::styled(" Tab ", Style::default().fg(accent)),
+                Span::raw("panel  "),
+                Span::styled(" \u{2191}/\u{2193} ", Style::default().fg(accent)),
+                Span::raw(navigate_label),
+                Span::styled(" Enter ", Style::default().fg(accent)),
+                Span::raw(action_label),
+                Span::styled(" q ", Style::default().fg(accent)),
+                Span::raw("quit"),
+            ]
         };
-        footer_spans.extend(vec![
-            Span::styled(" \u{2191}/\u{2193} ", Style::default().fg(accent)),
-            Span::raw("select  "),
-            Span::styled(" \u{2190}/\u{2192} ", Style::default().fg(accent)),
-            Span::raw("switch section  "),
-            Span::styled(" Enter ", Style::default().fg(accent)),
-            Span::raw(enter_help),
-            Span::styled(" Backspace ", Style::default().fg(accent)),
-            Span::raw("delete char  "),
-        ]);
-        if app.welcome_input_editing {
-            footer_spans.extend(vec![
-                Span::styled(" Esc ", Style::default().fg(accent)),
-                Span::raw("stop typing  "),
-            ]);
-        } else if app.delete_project_confirm_selection.is_some() {
-            footer_spans.extend(vec![
-                Span::styled(" Esc ", Style::default().fg(accent)),
-                Span::raw("cancel delete  "),
-            ]);
-        } else if app.renaming_input.is_some() {
-            footer_spans.extend(vec![
-                Span::styled(" Esc ", Style::default().fg(accent)),
-                Span::raw("cancel rename  "),
-            ]);
-        }
-    }
-    if app.view == AppView::Glyphs {
-        footer_spans.extend(vec![
-            Span::styled(" \u{2191}/\u{2193} ", Style::default().fg(accent)),
-            Span::raw("select  "),
-            Span::styled(" Enter/Space ", Style::default().fg(accent)),
-            Span::raw("expand  "),
-            Span::styled(" c/C ", Style::default().fg(accent)),
-            Span::raw("add/remove composition  "),
-            Span::styled(" \u{2190}/\u{2192} ", Style::default().fg(accent)),
-            Span::raw("thresh +/-1  "),
-            Span::styled(" PgUp/PgDn ", Style::default().fg(accent)),
-            Span::raw("thresh +/-10  "),
-            Span::styled(" r ", Style::default().fg(accent)),
-            Span::raw("reset  "),
-        ]);
-    }
 
     if let Some(status) = &app.status {
         footer_spans.push(Span::styled(" | ", Style::default().fg(muted)));
@@ -567,4 +500,3 @@ fn draw_ui(frame: &mut Frame, app: &App) {
         );
     }
 }
-
