@@ -35,6 +35,8 @@
 !/npm/petiglyph-*/bin/.gitkeep
 
 # Common local caches
+.DS_Store
+**/.DS_Store
 /node_modules/
 /.venv/
 /venv/
