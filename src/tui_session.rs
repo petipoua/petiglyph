@@ -514,6 +514,7 @@ enum VisibleGlyphRow {
         source_key: String,
         rows: usize,
         cols: usize,
+        emitted_cols: usize,
         first_child_idx: usize,
     },
     CompositionChild {

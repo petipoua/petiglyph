@@ -686,7 +686,7 @@ fn draw_glyphs_view(
                         VisibleGlyphRow::CompositionParent {
                             source_key,
                             rows,
-                            cols,
+                            emitted_cols,
                             ..
                         } => {
                             let tiles = app
@@ -704,7 +704,7 @@ fn draw_glyphs_view(
                                 threshold,
                                 invert,
                                 *rows,
-                                *cols,
+                                *emitted_cols,
                                 preview_area.width.saturating_sub(4) / 2,
                                 preview_area.height.saturating_sub(6),
                             );

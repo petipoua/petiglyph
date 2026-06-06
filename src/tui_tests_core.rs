@@ -773,6 +773,70 @@
     }
 
     #[test]
+    fn visible_grid_row_uses_user_selected_columns() {
+        let project_dir = make_temp_dir("visible-grid-logical-columns");
+        let mut compositions = BTreeMap::new();
+        compositions.insert(
+            "grid.png".to_string(),
+            CompositionDef {
+                rows: 8,
+                cols: 8,
+                horizontal_bleed: BleedLevel::Weak,
+                vertical_bleed: BleedLevel::Off,
+            },
+        );
+        let config = RuntimeConfig {
+            project_dir: project_dir.clone(),
+            project_id: "test-visible-grid-logical-columns".to_string(),
+            input_dir: project_dir.join("icons"),
+            out_dir: project_dir.join("build"),
+            font_name: "Petiglyph".to_string(),
+            glyph_size: 8,
+            base_threshold: 64,
+            threshold_overrides: BTreeMap::new(),
+            invert_overrides: BTreeMap::new(),
+            compositions,
+            animations: Vec::new(),
+            codepoint_start: 0x10_0000,
+        };
+        let mut app = App::new(project_dir.join("petiglyph.toml"), config);
+        app.glyphs = vec![InteractiveGlyph {
+            glyph: PreprocessedGlyph {
+                source_path: project_dir.join("icons/grid.png"),
+                source_key: "grid.png#compose:8x16:0:0".to_string(),
+                source_parent_key: "grid.png".to_string(),
+                glyph_name: "grid_r1_c1".to_string(),
+                width: 1,
+                height: 1,
+                coverage: vec![255],
+                image_fingerprint: "fnv1a64:test".to_string(),
+                composition_tile: Some(CompositionTileInfo {
+                    rows: 8,
+                    cols: 16,
+                    row: 0,
+                    col: 0,
+                    horizontal_bleed: BleedLevel::Weak,
+                    vertical_bleed: BleedLevel::Off,
+                }),
+            },
+            working_threshold: 64,
+            saved_threshold: None,
+            saved_invert: false,
+            working_invert: false,
+        }];
+
+        assert!(matches!(
+            app.visible_glyph_rows().as_slice(),
+            [VisibleGlyphRow::CompositionParent {
+                rows: 8,
+                cols: 8,
+                emitted_cols: 16,
+                ..
+            }]
+        ));
+    }
+
+    #[test]
     fn visible_glyph_rows_groups_animation_frames_under_animation_parent() {
         let project_dir = make_temp_dir("animation-row-grouping");
         let manifest_path = project_dir.join("petiglyph.toml");

@@ -858,10 +858,17 @@ impl App {
                         idx = idx.saturating_add(tile.rows.saturating_mul(tile.cols).max(1));
                         continue;
                     }
+                    let (display_rows, display_cols) = self
+                        .config
+                        .compositions
+                        .get(&source_key)
+                        .map(|definition| (definition.rows, definition.cols))
+                        .unwrap_or((tile.rows, tile.cols));
                     rows.push(VisibleGlyphRow::CompositionParent {
                         source_key: source_key.clone(),
-                        rows: tile.rows,
-                        cols: tile.cols,
+                        rows: display_rows,
+                        cols: display_cols,
+                        emitted_cols: tile.cols,
                         first_child_idx: idx,
                     });
                     let span = tile.rows.saturating_mul(tile.cols);
