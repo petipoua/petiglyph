@@ -49,6 +49,8 @@ Font cache refresh:
 - macOS: CoreText session registration/unregistration for the installed TTF URL.
 - Windows: PowerShell broadcast of `WM_FONTCHANGE` through `SendMessageTimeout`.
 
+On every platform, fully quit and reopen all terminal applications after installing a font. If glyphs still appear as errors or `[?]`, reboot the computer to fully reset processes using the old font state.
+
 Linux-only fontconfig behavior:
 
 - `~/.config/fontconfig/conf.d/99-petiglyph.conf` is maintained while managed fonts exist.

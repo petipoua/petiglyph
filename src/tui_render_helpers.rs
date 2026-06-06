@@ -31,9 +31,12 @@ fn detected_terminal_name() -> Option<&'static str> {
 
 fn installed_fonts_restart_warning() -> String {
     if let Some(name) = detected_terminal_name() {
-        return format!("restart all {name} terminals to render newly installed glyphs");
+        return format!(
+            "restart all {name} terminals to show new glyphs; if they still appear as errors or [?], reboot the computer"
+        );
     }
-    "restart all terminals to render newly installed glyphs".to_string()
+    "restart all terminals to show new glyphs; if they still appear as errors or [?], reboot the computer"
+        .to_string()
 }
 
 fn format_count_k(value: usize) -> String {
@@ -51,16 +54,13 @@ fn supplementary_pua_usage_line(summary: Option<&crate::install::PuaUsageSummary
         return "supplementary PUA usage unavailable on this machine.".to_string();
     };
 
-    let mut line = format!(
+    let line = format!(
         "PUA usage: petiglyph {} / {} used; external {}; available {}",
         format_count_k(summary.petiglyph_occupied),
         format_count_k(summary.supplementary_pua_total),
         format_count_k(summary.external_occupied),
         format_count_k(summary.available)
     );
-    if summary.petiglyph_occupied >= 10_000 {
-        line.push_str(" (petiglyph usage > 10k)");
-    }
     line
 }
 

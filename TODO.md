@@ -213,7 +213,7 @@ Tasks:
 - [x] Add a CI job that runs `petiglyph --help`, `petiglyph doctor --json`, and `petiglyph tui </dev/null` on Linux, macOS, and Windows.
 - [x] Use an isolated temporary `HOME`/`USERPROFILE`/`LOCALAPPDATA` for install/uninstall tests so developer state does not affect results.
 - [ ] Validate Windows per-user font installation on a real Windows runner or VM. If copying to `%LOCALAPPDATA%/Microsoft/Windows/Fonts/petiglyph/` plus `WM_FONTCHANGE` is insufficient, add HKCU font registry registration and uninstall cleanup.
-- [x] Validate macOS detects TTFs from `~/Library/Fonts/` after CoreText session registration. Terminal applications must be fully quit and reopened; logout or reboot is not required.
+- [x] Validate macOS detects TTFs from `~/Library/Fonts/` after CoreText session registration. Terminal applications must be fully quit and reopened; if glyphs still render incorrectly, reboot the computer.
 - [ ] Validate Linux install on a minimal image where `fontconfig` may be absent.
 
 Validation:

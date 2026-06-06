@@ -318,7 +318,7 @@ Linux and Windows installs use a flat `petiglyph` directory under the user font 
 
 `install-font` is idempotent for a given effective font name.
 
-`sample` performs a managed install before printing glyphs. On macOS, fully quit and reopen terminal applications after a new install so they rebuild their own font fallback state.
+`sample` performs a managed install before printing glyphs. After a new install, fully quit and reopen all terminal applications so they rebuild their font state. If the glyphs still appear as errors or `[?]`, reboot the computer.
 
 Install artifacts are immutable per build:
 
@@ -326,7 +326,7 @@ Install artifacts are immutable per build:
 - active metadata is atomically switched to the new artifact
 - previous active artifact for the same project/font identity is removed after switch
 
-On macOS, Petiglyph registers and unregisters installed TTF URLs with CoreText for the current login session. Fully quit and reopen terminal applications after installation so they rebuild their own font fallback state; logging out or rebooting is not required.
+On macOS, Petiglyph registers and unregisters installed TTF URLs with CoreText for the current login session. Fully quit and reopen all terminal applications after installation. If the glyphs still appear as errors or `[?]`, reboot the computer to fully reset processes using the old font state.
 
 `uninstall-font` removes the active immutable artifact for the current manifest font identity.
 

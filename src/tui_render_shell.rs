@@ -113,7 +113,7 @@ fn draw_first_install_notice_popup(
     let restart_target = detected_terminal_name()
         .map(|name| format!("all {name} terminals"))
         .unwrap_or_else(|| "all terminals".to_string());
-    let popup = centered_popup_rect(area, 106, 15);
+    let popup = centered_popup_rect(area, 106, 16);
     frame.render_widget(Clear, popup);
     let block = Block::default()
         .borders(Borders::ALL)
@@ -126,24 +126,22 @@ fn draw_first_install_notice_popup(
     let lines = vec![
         Line::from(""),
         Line::from(vec![Span::styled(
-            format!(
-                "To load the newly installed glyphs of a new font, you need to restart {restart_target}."
-            ),
+            format!("Restart {restart_target} to load the newly installed glyphs."),
             Style::default()
                 .fg(Color::Yellow)
                 .add_modifier(Modifier::BOLD),
         )]),
         Line::from(""),
         Line::from(Span::styled(
-            "If you do not restart, this current terminal session may render glyphs as errors.",
+            "If glyphs still appear as errors or [?] after restarting the terminals, reboot your computer.",
             Style::default().fg(Color::White),
         )),
         Line::from(Span::styled(
-            "Preview output can be misleading until the terminal process is restarted.",
+            "This fully resets the processes that may still be using the old font state.",
             Style::default().fg(Color::White),
         )),
         Line::from(Span::styled(
-            "After restart, relaunch petiglyph and verify sample/preview again.",
+            "Then relaunch petiglyph and check the sample/preview again.",
             Style::default().fg(Color::White),
         )),
         Line::from(""),
