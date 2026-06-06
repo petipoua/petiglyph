@@ -415,49 +415,13 @@ fn draw_grid_config_ui(
     let inner = block.inner(area);
     frame.render_widget(block, area);
 
-    let rows_style = if config.focus == GridConfigFocus::Rows {
-        Style::default()
-            .fg(Color::Black)
-            .bg(Color::Yellow)
-            .add_modifier(Modifier::BOLD)
-    } else {
-        Style::default().fg(Color::White).bg(Color::DarkGray)
-    };
-    let cols_style = if config.focus == GridConfigFocus::Cols {
-        Style::default()
-            .fg(Color::Black)
-            .bg(Color::Yellow)
-            .add_modifier(Modifier::BOLD)
-    } else {
-        Style::default().fg(Color::White).bg(Color::DarkGray)
-    };
-    let horizontal_bleed_border_style = if config.focus == GridConfigFocus::HorizontalBleed {
-        Style::default()
-            .fg(Color::Black)
-            .bg(Color::Yellow)
-            .add_modifier(Modifier::BOLD)
-    } else {
-        Style::default().fg(Color::White).bg(Color::DarkGray)
-    };
-    let vertical_bleed_border_style = if config.focus == GridConfigFocus::VerticalBleed {
-        Style::default()
-            .fg(Color::Black)
-            .bg(Color::Yellow)
-            .add_modifier(Modifier::BOLD)
-    } else {
-        Style::default().fg(Color::White).bg(Color::DarkGray)
-    };
-    let create_style = if config.focus == GridConfigFocus::Create {
-        Style::default()
-            .fg(Color::Black)
-            .bg(Color::Yellow)
-            .add_modifier(Modifier::BOLD)
-    } else {
-        Style::default()
-            .fg(Color::Black)
-            .bg(Color::Blue)
-            .add_modifier(Modifier::BOLD)
-    };
+    let rows_style = home_panel_button_style(config.focus == GridConfigFocus::Rows, accent);
+    let cols_style = home_panel_button_style(config.focus == GridConfigFocus::Cols, accent);
+    let horizontal_bleed_style =
+        home_panel_button_style(config.focus == GridConfigFocus::HorizontalBleed, accent);
+    let vertical_bleed_style =
+        home_panel_button_style(config.focus == GridConfigFocus::VerticalBleed, accent);
+    let create_style = home_panel_button_style(config.focus == GridConfigFocus::Create, accent);
 
     let layout = Layout::default()
         .direction(Direction::Vertical)
@@ -503,67 +467,30 @@ fn draw_grid_config_ui(
         layout[0],
     );
 
-    frame.render_widget(
-        Paragraph::new(rows_text)
-            .block(
-                Block::default()
-                    .borders(Borders::ALL)
-                    .border_style(rows_style),
-            )
-            .style(rows_style),
+    render_home_panel_button(
+        frame,
         size_layout[0],
+        Line::from(vec![Span::styled(rows_text, rows_style)]),
     );
-    frame.render_widget(
-        Paragraph::new(cols_text)
-            .block(
-                Block::default()
-                    .borders(Borders::ALL)
-                    .border_style(cols_style),
-            )
-            .style(cols_style),
+    render_home_panel_button(
+        frame,
         size_layout[1],
+        Line::from(vec![Span::styled(cols_text, cols_style)]),
     );
-    frame.render_widget(
-        Paragraph::new(bleed_toggle_line(
-            " Left/right bleed ",
-            config.horizontal_bleed,
-        ))
-        .block(
-            Block::default()
-                .borders(Borders::ALL)
-                .border_style(horizontal_bleed_border_style),
-        )
-        .style(Style::default().fg(Color::White).bg(Color::DarkGray)),
+    render_home_panel_button(
+        frame,
         size_layout[2],
+        bleed_toggle_button_line(" Left/right bleed ", config.horizontal_bleed, horizontal_bleed_style),
     );
-    frame.render_widget(
-        Paragraph::new(bleed_toggle_line(
-            " Top/bottom bleed ",
-            config.vertical_bleed,
-        ))
-        .block(
-            Block::default()
-                .borders(Borders::ALL)
-                .border_style(vertical_bleed_border_style),
-        )
-        .style(Style::default().fg(Color::White).bg(Color::DarkGray)),
+    render_home_panel_button(
+        frame,
         size_layout[3],
+        bleed_toggle_button_line(" Top/bottom bleed ", config.vertical_bleed, vertical_bleed_style),
     );
-    frame.render_widget(
-        Paragraph::new(create_text)
-            .centered()
-            .block(
-                Block::default()
-                    .borders(Borders::ALL)
-                    .border_type(if config.focus == GridConfigFocus::Create {
-                        BorderType::Thick
-                    } else {
-                        BorderType::Rounded
-                    })
-                    .border_style(create_style),
-            )
-            .style(create_style),
+    render_home_panel_button(
+        frame,
         size_layout[5],
+        Line::from(vec![Span::styled(create_text, create_style)]),
     );
 
     let help_text = vec![Line::from(vec![
@@ -623,11 +550,8 @@ fn draw_animation_config_ui(
     let inner = block.inner(area);
     frame.render_widget(block, area);
 
-    let focused_style = Style::default()
-        .fg(Color::Black)
-        .bg(Color::Yellow)
-        .add_modifier(Modifier::BOLD);
-    let idle_style = Style::default().fg(Color::White).bg(Color::DarkGray);
+    let focused_style = home_panel_button_style(true, accent);
+    let idle_style = home_panel_button_style(false, accent);
     let style_for = |focus: AnimationConfigFocus| {
         if config.focus == focus {
             focused_style
@@ -635,14 +559,7 @@ fn draw_animation_config_ui(
             idle_style
         }
     };
-    let create_style = if config.focus == AnimationConfigFocus::Create {
-        focused_style
-    } else {
-        Style::default()
-            .fg(Color::Black)
-            .bg(Color::Blue)
-            .add_modifier(Modifier::BOLD)
-    };
+    let create_style = home_panel_button_style(config.focus == AnimationConfigFocus::Create, accent);
 
     let layout = Layout::default()
         .direction(Direction::Vertical)
@@ -710,65 +627,42 @@ fn draw_animation_config_ui(
         layout[2],
     );
     let fps_style = style_for(AnimationConfigFocus::Fps);
-    frame.render_widget(
-        Paragraph::new(format!(" FPS: {} ", config.fps))
-            .block(
-                Block::default()
-                    .borders(Borders::ALL)
-                    .border_style(fps_style),
-            )
-            .style(fps_style),
+    render_home_panel_button(
+        frame,
         fields[0],
+        Line::from(vec![Span::styled(format!(" FPS: {} ", config.fps), fps_style)]),
     );
 
     let create_idx = if config.animation_type == AnimationType::Grid {
         let rows_style = style_for(AnimationConfigFocus::Rows);
-        frame.render_widget(
-            Paragraph::new(format!(" Rows: {} ", config.rows))
-                .block(
-                    Block::default()
-                        .borders(Borders::ALL)
-                        .border_style(rows_style),
-                )
-                .style(rows_style),
+        render_home_panel_button(
+            frame,
             fields[1],
+            Line::from(vec![Span::styled(format!(" Rows: {} ", config.rows), rows_style)]),
         );
         let cols_style = style_for(AnimationConfigFocus::Cols);
-        frame.render_widget(
-            Paragraph::new(format!(" Cols: {} ", config.cols))
-                .block(
-                    Block::default()
-                        .borders(Borders::ALL)
-                        .border_style(cols_style),
-                )
-                .style(cols_style),
+        render_home_panel_button(
+            frame,
             fields[2],
+            Line::from(vec![Span::styled(format!(" Cols: {} ", config.cols), cols_style)]),
         );
-        frame.render_widget(
-            Paragraph::new(bleed_toggle_line(
+        render_home_panel_button(
+            frame,
+            fields[3],
+            bleed_toggle_button_line(
                 " Left/right bleed ",
                 config.horizontal_bleed,
-            ))
-            .block(
-                Block::default()
-                    .borders(Borders::ALL)
-                    .border_style(style_for(AnimationConfigFocus::HorizontalBleed)),
-            )
-            .style(style_for(AnimationConfigFocus::HorizontalBleed)),
-            fields[3],
+                style_for(AnimationConfigFocus::HorizontalBleed),
+            ),
         );
-        frame.render_widget(
-            Paragraph::new(bleed_toggle_line(
+        render_home_panel_button(
+            frame,
+            fields[4],
+            bleed_toggle_button_line(
                 " Top/bottom bleed ",
                 config.vertical_bleed,
-            ))
-            .block(
-                Block::default()
-                    .borders(Borders::ALL)
-                    .border_style(style_for(AnimationConfigFocus::VerticalBleed)),
-            )
-            .style(style_for(AnimationConfigFocus::VerticalBleed)),
-            fields[4],
+                style_for(AnimationConfigFocus::VerticalBleed),
+            ),
         );
         6
     } else {
@@ -783,16 +677,10 @@ fn draw_animation_config_ui(
     } else {
         " Create Animation ".to_string()
     };
-    frame.render_widget(
-        Paragraph::new(create_label)
-            .alignment(Alignment::Center)
-            .style(create_style)
-            .block(
-                Block::default()
-                    .borders(Borders::ALL)
-                    .border_style(create_style),
-            ),
+    render_home_panel_button(
+        frame,
         fields[create_idx],
+        Line::from(vec![Span::styled(create_label, create_style)]),
     );
 
     frame.render_widget(
@@ -836,22 +724,16 @@ fn bleed_level_label(level: BleedLevel) -> &'static str {
     }
 }
 
-fn bleed_toggle_line(label: &'static str, level: BleedLevel) -> Line<'static> {
+fn bleed_toggle_button_line(label: &'static str, level: BleedLevel, button_style: Style) -> Line<'static> {
     let value = bleed_level_label(level);
     let value_style = match level {
-        BleedLevel::Off => Style::default()
-            .fg(Color::LightRed)
-            .add_modifier(Modifier::BOLD),
-        BleedLevel::Weak => Style::default()
-            .fg(Color::Green)
-            .add_modifier(Modifier::BOLD),
-        BleedLevel::Strong => Style::default()
-            .fg(Color::Yellow)
-            .add_modifier(Modifier::BOLD),
+        BleedLevel::Off => button_style.fg(Color::LightRed),
+        BleedLevel::Weak => button_style.fg(Color::Green),
+        BleedLevel::Strong => button_style.fg(Color::Yellow),
     };
     Line::from(vec![
-        Span::raw(label),
+        Span::styled(label, button_style),
         Span::styled(value, value_style),
-        Span::raw(" "),
+        Span::styled(" ", button_style),
     ])
 }

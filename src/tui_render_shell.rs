@@ -716,21 +716,15 @@ fn draw_animation_import_workflow_ui(
         preview_inner,
     );
 
-    let focused_style = Style::default()
-        .fg(Color::Black)
-        .bg(Color::Yellow)
-        .add_modifier(Modifier::BOLD);
-    let idle_style = Style::default().fg(Color::White).bg(Color::DarkGray);
+    let focused_style = home_panel_button_style(true, accent);
+    let idle_style = home_panel_button_style(false, accent);
     let continue_style = if app.animation_import_settings.focus
         == AnimationImportSettingsFocus::Continue
         && app.animation_import_settings.grayscale_editor.is_none()
     {
         focused_style
     } else {
-        Style::default()
-            .fg(Color::Black)
-            .bg(Color::Blue)
-            .add_modifier(Modifier::BOLD)
+        idle_style
     };
     let button_width = 18;
     let visible_focuses = import_settings_visible_focuses(kind);
@@ -809,13 +803,7 @@ fn draw_animation_import_workflow_ui(
             AnimationImportSettingsFocus::Back => "Back".to_string(),
             AnimationImportSettingsFocus::SkipAll => "Skip All".to_string(),
         };
-        frame.render_widget(
-            Paragraph::new(label)
-                .alignment(Alignment::Center)
-                .block(Block::default().borders(Borders::ALL).border_style(style))
-                .style(style),
-            area,
-        );
+        render_home_panel_button(frame, area, Line::from(vec![Span::styled(label, style)]));
     }
 
     let options_line = if let Some(editor) = &app.animation_import_settings.grayscale_editor {
@@ -837,38 +825,29 @@ fn draw_animation_import_workflow_ui(
                 idle_style
             }
         };
-        frame.render_widget(
-            Paragraph::new(format!(" Brightness: {:+} ", editor.draft.brightness))
-                .block(
-                    Block::default()
-                        .borders(Borders::ALL)
-                        .border_style(knob_style(GrayscaleKnobFocus::Brightness)),
-                )
-                .style(knob_style(GrayscaleKnobFocus::Brightness)),
+        render_home_panel_button(
+            frame,
             knobs[0],
+            Line::from(vec![Span::styled(
+                format!(" Brightness: {:+} ", editor.draft.brightness),
+                knob_style(GrayscaleKnobFocus::Brightness),
+            )]),
         );
-        frame.render_widget(
-            Paragraph::new(format!(" Contrast: {:+} ", editor.draft.contrast))
-                .block(
-                    Block::default()
-                        .borders(Borders::ALL)
-                        .border_style(knob_style(GrayscaleKnobFocus::Contrast)),
-                )
-                .style(knob_style(GrayscaleKnobFocus::Contrast)),
+        render_home_panel_button(
+            frame,
             knobs[2],
+            Line::from(vec![Span::styled(
+                format!(" Contrast: {:+} ", editor.draft.contrast),
+                knob_style(GrayscaleKnobFocus::Contrast),
+            )]),
         );
-        frame.render_widget(
-            Paragraph::new(format!(
-                " Gamma: {:.2} ",
-                editor.draft.gamma_percent as f32 / 100.0
-            ))
-            .block(
-                Block::default()
-                    .borders(Borders::ALL)
-                    .border_style(knob_style(GrayscaleKnobFocus::Gamma)),
-            )
-            .style(knob_style(GrayscaleKnobFocus::Gamma)),
+        render_home_panel_button(
+            frame,
             knobs[4],
+            Line::from(vec![Span::styled(
+                format!(" Gamma: {:.2} ", editor.draft.gamma_percent as f32 / 100.0),
+                knob_style(GrayscaleKnobFocus::Gamma),
+            )]),
         );
         Line::from(vec![
             Span::styled(" Captive edit: ", Style::default().fg(accent)),

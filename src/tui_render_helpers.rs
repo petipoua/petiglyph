@@ -259,6 +259,24 @@ fn center_label(label: &str, width: usize) -> String {
     format!("{}{}{}", " ".repeat(left), label, " ".repeat(right))
 }
 
+fn home_panel_button_style(selected: bool, accent: Color) -> Style {
+    if selected {
+        Style::default()
+            .fg(Color::Black)
+            .bg(accent)
+            .add_modifier(Modifier::BOLD)
+    } else {
+        Style::default()
+            .fg(Color::White)
+            .bg(Color::DarkGray)
+            .add_modifier(Modifier::BOLD)
+    }
+}
+
+fn render_home_panel_button(frame: &mut Frame, area: Rect, line: Line<'static>) {
+    frame.render_widget(Paragraph::new(line).alignment(Alignment::Center), area);
+}
+
 pub(crate) fn wrap_sample_for_display(sample: &str, max_chars: usize) -> Vec<String> {
     if sample.is_empty() {
         return Vec::new();

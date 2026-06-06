@@ -756,6 +756,202 @@
         );
     }
 
+    fn render_area_buffer<F>(width: u16, height: u16, draw: F) -> ratatui::buffer::Buffer
+    where
+        F: FnOnce(&mut ratatui::Frame),
+    {
+        let backend = ratatui::backend::TestBackend::new(width, height);
+        let mut terminal = ratatui::Terminal::new(backend).expect("test terminal should create");
+        terminal.draw(draw).expect("area should render");
+        terminal.backend().buffer().clone()
+    }
+
+    fn find_text_in_buffer(
+        buffer: &ratatui::buffer::Buffer,
+        needle: &str,
+    ) -> Option<(u16, u16)> {
+        for y in 0..buffer.area.height {
+            let mut row = String::with_capacity(buffer.area.width as usize);
+            for x in 0..buffer.area.width {
+                row.push_str(buffer[(x, y)].symbol());
+            }
+            if let Some(index) = row.find(needle) {
+                return Some((index as u16, y));
+            }
+        }
+        None
+    }
+
+    fn buffer_row(buffer: &ratatui::buffer::Buffer, y: u16) -> String {
+        let mut row = String::with_capacity(buffer.area.width as usize);
+        for x in 0..buffer.area.width {
+            row.push_str(buffer[(x, y)].symbol());
+        }
+        row
+    }
+
+    #[test]
+    fn glyph_creation_tweak_controls_render_as_home_style_buttons() {
+        let project_dir = make_temp_dir("glyph-workflow-thin-buttons");
+        let manifest_path = project_dir.join("petiglyph.toml");
+        write_manifest(&manifest_path, &Manifest::default()).expect("manifest is written");
+        let config = RuntimeConfig {
+            project_dir: project_dir.clone(),
+            project_id: "test-glyph-workflow-thin-buttons".to_string(),
+            input_dir: project_dir.join("icons"),
+            out_dir: project_dir.join("build"),
+            font_name: "Petiglyph".to_string(),
+            glyph_size: 8,
+            base_threshold: 64,
+            threshold_overrides: BTreeMap::new(),
+            invert_overrides: BTreeMap::new(),
+            compositions: BTreeMap::new(),
+            animations: Vec::new(),
+            codepoint_start: 0x10_0000,
+        };
+        let mut app = App::new(manifest_path, config);
+        app.start_home_workflow(HomeCreationKind::Glyph);
+        app.home_workflow = HomeWorkflow::Tweaking(HomeCreationKind::Glyph);
+        app.animation_import_settings.focus = AnimationImportSettingsFocus::GrayscaleToggle;
+
+        let buffer = render_area_buffer(140, 12, |frame| {
+            draw_animation_import_workflow_ui(
+                frame,
+                &app,
+                ratatui::layout::Rect::new(0, 0, 140, 12),
+                ratatui::style::Color::Cyan,
+                ratatui::style::Color::Gray,
+                HomeCreationKind::Glyph,
+            );
+        });
+        let (x, y) = find_text_in_buffer(&buffer, " Gray: ON ").expect("gray toggle should render");
+        let row = buffer_row(&buffer, y);
+        let start = x as usize;
+        let end = start + " Gray: ON ".len();
+        let window_start = start.saturating_sub(2);
+        let window_end = (end + 2).min(row.len());
+
+        assert_eq!(buffer[(x, y)].style().bg, Some(ratatui::style::Color::Cyan));
+        assert!(
+            !row[window_start..window_end].contains('│'),
+            "flat tweak button should not render boxed vertical borders: {row}"
+        );
+    }
+
+    #[test]
+    fn grid_creation_config_controls_render_as_home_style_buttons() {
+        let project_dir = make_temp_dir("grid-workflow-thin-buttons");
+        let manifest_path = project_dir.join("petiglyph.toml");
+        write_manifest(&manifest_path, &Manifest::default()).expect("manifest is written");
+        let config = RuntimeConfig {
+            project_dir: project_dir.clone(),
+            project_id: "test-grid-workflow-thin-buttons".to_string(),
+            input_dir: project_dir.join("icons"),
+            out_dir: project_dir.join("build"),
+            font_name: "Petiglyph".to_string(),
+            glyph_size: 8,
+            base_threshold: 64,
+            threshold_overrides: BTreeMap::new(),
+            invert_overrides: BTreeMap::new(),
+            compositions: BTreeMap::new(),
+            animations: Vec::new(),
+            codepoint_start: 0x10_0000,
+        };
+        let mut app = App::new(manifest_path, config);
+        app.home_workflow = HomeWorkflow::ConfigureGrid;
+        app.grid_config = Some(GridConfig {
+            source_key: "grid_source.png".to_string(),
+            rows: 3,
+            cols: 4,
+            horizontal_bleed: BleedLevel::Weak,
+            vertical_bleed: BleedLevel::Off,
+            focus: GridConfigFocus::Rows,
+        });
+
+        let buffer = render_area_buffer(140, 14, |frame| {
+            draw_grid_config_ui(
+                frame,
+                &app,
+                app.grid_config.as_ref().expect("grid config should exist"),
+                ratatui::layout::Rect::new(0, 0, 140, 14),
+                ratatui::style::Color::Cyan,
+                ratatui::style::Color::Gray,
+            );
+        });
+        let (x, y) = find_text_in_buffer(&buffer, " Rows: 3 ").expect("rows control should render");
+        let row = buffer_row(&buffer, y);
+        let start = x as usize;
+        let end = start + " Rows: 3 ".len();
+        let window_start = start.saturating_sub(2);
+        let window_end = (end + 2).min(row.len());
+
+        assert_eq!(buffer[(x, y)].style().bg, Some(ratatui::style::Color::Cyan));
+        assert!(
+            !row[window_start..window_end].contains('│'),
+            "flat grid config button should not render boxed vertical borders: {row}"
+        );
+    }
+
+    #[test]
+    fn animated_grid_creation_config_controls_render_as_home_style_buttons() {
+        let project_dir = make_temp_dir("animated-grid-workflow-thin-buttons");
+        let manifest_path = project_dir.join("petiglyph.toml");
+        write_manifest(&manifest_path, &Manifest::default()).expect("manifest is written");
+        let config = RuntimeConfig {
+            project_dir: project_dir.clone(),
+            project_id: "test-animated-grid-workflow-thin-buttons".to_string(),
+            input_dir: project_dir.join("icons"),
+            out_dir: project_dir.join("build"),
+            font_name: "Petiglyph".to_string(),
+            glyph_size: 8,
+            base_threshold: 64,
+            threshold_overrides: BTreeMap::new(),
+            invert_overrides: BTreeMap::new(),
+            compositions: BTreeMap::new(),
+            animations: Vec::new(),
+            codepoint_start: 0x10_0000,
+        };
+        let mut app = App::new(manifest_path, config);
+        app.home_workflow = HomeWorkflow::ConfigureAnimation(AnimationType::Grid);
+        app.glyph_tool_mode = GlyphToolMode::ConfigureAnimation(AnimationConfig {
+            selected_frames: vec!["frame_01.png".to_string()],
+            animation_name: "runner".to_string(),
+            animation_type: AnimationType::Grid,
+            fps: 12,
+            rows: 2,
+            cols: 3,
+            horizontal_bleed: BleedLevel::Weak,
+            vertical_bleed: BleedLevel::Strong,
+            grayscale_processing: None,
+            focus: AnimationConfigFocus::Fps,
+        });
+
+        let buffer = render_area_buffer(140, 14, |frame| {
+            if let GlyphToolMode::ConfigureAnimation(config) = &app.glyph_tool_mode {
+                draw_animation_config_ui(
+                    frame,
+                    &app,
+                    config,
+                    ratatui::layout::Rect::new(0, 0, 140, 14),
+                    ratatui::style::Color::Cyan,
+                    ratatui::style::Color::Gray,
+                );
+            }
+        });
+        let (x, y) = find_text_in_buffer(&buffer, " FPS: 12 ").expect("fps control should render");
+        let row = buffer_row(&buffer, y);
+        let start = x as usize;
+        let end = start + " FPS: 12 ".len();
+        let window_start = start.saturating_sub(2);
+        let window_end = (end + 2).min(row.len());
+
+        assert_eq!(buffer[(x, y)].style().bg, Some(ratatui::style::Color::Cyan));
+        assert!(
+            !row[window_start..window_end].contains('│'),
+            "flat animation config button should not render boxed vertical borders: {row}"
+        );
+    }
+
     #[test]
     fn glyph_creation_cancel_removes_workflow_imports() {
         let project_dir = make_temp_dir("glyph-creation-cancel-removes-imports");
