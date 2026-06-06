@@ -209,6 +209,20 @@ fn create_project_with_icon(workspace: &Path, project_name: &str) -> (PathBuf, P
     (project_dir, manifest_path)
 }
 
+#[cfg(target_os = "macos")]
+fn macos_registered_fonts() -> String {
+    let output = Command::new("atsutil")
+        .args(["fonts", "-list"])
+        .output()
+        .expect("atsutil font listing should run");
+    assert!(
+        output.status.success(),
+        "atsutil font listing should succeed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    String::from_utf8(output.stdout).expect("atsutil font listing should be utf8")
+}
+
 #[cfg(target_os = "linux")]
 fn make_fake_fc_cache_path(workspace: &Path) -> String {
     let fake_bin = workspace.join("fake-bin");
@@ -1869,7 +1883,13 @@ fn cli_install_identity_isolated_even_for_slug_collisions() {
 #[test]
 fn cli_install_and_uninstall_json_lifecycle_is_idempotent_macos() {
     let workspace = make_temp_dir("install-lifecycle-macos");
-    let (project_dir, _) = create_project_with_icon(&workspace, "demo-font");
+    let unique_suffix = workspace
+        .file_name()
+        .and_then(|name| name.to_str())
+        .and_then(|name| name.rsplit('-').next())
+        .unwrap_or("unique");
+    let project_name = format!("demo-font-{unique_suffix}");
+    let (project_dir, _) = create_project_with_icon(&workspace, &project_name);
     let home = workspace.join("home");
     fs::create_dir_all(&home).expect("home dir is created");
 
@@ -1885,6 +1905,9 @@ fn cli_install_and_uninstall_json_lifecycle_is_idempotent_macos() {
         install_1_payload["data"]["replaced_previous_ttf_count"].as_u64(),
         Some(0)
     );
+    let font_name = install_1_payload["data"]["build"]["font_name"]
+        .as_str()
+        .expect("installed font name");
 
     let installed_ttf_1 = PathBuf::from(
         install_1_payload["data"]["installed_ttf"]
@@ -1900,6 +1923,10 @@ fn cli_install_and_uninstall_json_lifecycle_is_idempotent_macos() {
                 .is_some_and(|ext| ext.eq_ignore_ascii_case("ttf")),
         "install should write a ttf under ~/Library/Fonts on macOS"
     );
+    assert!(
+        macos_registered_fonts().contains(font_name),
+        "CoreText should expose the installed family immediately"
+    );
 
     let install_2 = run_petiglyph(&project_dir, &["install-font", "--json"], Some(&home), None);
     assert!(install_2.status.success(), "second install should succeed");
@@ -1909,6 +1936,44 @@ fn cli_install_and_uninstall_json_lifecycle_is_idempotent_macos() {
         install_2_payload["data"]["replaced_previous_ttf_count"].as_u64(),
         Some(0),
         "second identical install should keep immutable artifact without replacement"
+    );
+
+    let replacement_icon = project_dir.join("icons").join("alpha.png");
+    let mut replacement = RgbaImage::from_pixel(8, 8, Rgba([255, 255, 255, 0]));
+    replacement.put_pixel(1, 1, Rgba([0, 0, 0, 255]));
+    replacement.put_pixel(6, 6, Rgba([0, 0, 0, 255]));
+    replacement
+        .save(&replacement_icon)
+        .expect("replacement test image should be written");
+
+    let install_3 = run_petiglyph(&project_dir, &["install-font", "--json"], Some(&home), None);
+    assert!(
+        install_3.status.success(),
+        "changed font install should succeed"
+    );
+    let install_3_payload = parse_json_stdout(&install_3);
+    assert_api_envelope(&install_3_payload, "install-font", true);
+    assert_eq!(
+        install_3_payload["data"]["replaced_previous_ttf_count"].as_u64(),
+        Some(1),
+        "changed font install should replace the previous immutable artifact"
+    );
+    let installed_ttf_3 = PathBuf::from(
+        install_3_payload["data"]["installed_ttf"]
+            .as_str()
+            .expect("replacement installed ttf"),
+    );
+    assert_ne!(
+        installed_ttf_1, installed_ttf_3,
+        "changed font content should use a new immutable path"
+    );
+    assert!(
+        !installed_ttf_1.exists(),
+        "previous immutable artifact should be removed after replacement"
+    );
+    assert!(
+        macos_registered_fonts().contains(font_name),
+        "CoreText should retain the family after immutable artifact replacement"
     );
 
     let uninstall_1 = run_petiglyph(
@@ -1931,6 +1996,10 @@ fn cli_install_and_uninstall_json_lifecycle_is_idempotent_macos() {
         uninstall_1_payload["data"]["removed_ttf_count"].as_u64(),
         Some(1)
     );
+    assert!(
+        !macos_registered_fonts().contains(font_name),
+        "CoreText should stop exposing the family immediately after uninstall"
+    );
 
     let uninstall_2 = run_petiglyph(
         &project_dir,
@@ -1949,9 +2018,8 @@ fn cli_install_and_uninstall_json_lifecycle_is_idempotent_macos() {
         Some("already_absent")
     );
 
-    assert_eq!(
-        installed_ttf_1.exists(),
-        false,
+    assert!(
+        !installed_ttf_3.exists(),
         "immutable install artifact should be fully removed on uninstall"
     );
 

@@ -40,13 +40,13 @@ Supported distribution surfaces in this repository are:
 User font roots:
 
 - Linux: `~/.local/share/fonts/petiglyph/`
-- macOS: `~/Library/Fonts/petiglyph/`
+- macOS: `~/Library/Fonts/` for TTF files, with managed metadata under `~/Library/Fonts/petiglyph/`
 - Windows: `%LOCALAPPDATA%/Microsoft/Windows/Fonts/petiglyph/`, falling back under `~/AppData/Local/` if `LOCALAPPDATA` is unavailable
 
 Font cache refresh:
 
 - Linux: `fc-cache -f <font_root>`.
-- macOS: `atsutil databases -removeUser`.
+- macOS: CoreText session registration/unregistration for the installed TTF URL.
 - Windows: PowerShell broadcast of `WM_FONTCHANGE` through `SendMessageTimeout`.
 
 Linux-only fontconfig behavior:
@@ -58,7 +58,7 @@ Linux-only fontconfig behavior:
 
 Managed state:
 
-- Immutable installed TTF artifacts, metadata, first-install state, the Unicode registry, and registry/install locks live under the managed `petiglyph/` font directory.
+- Immutable installed TTF artifacts, metadata, first-install state, the Unicode registry, and registry/install locks live under the managed `petiglyph/` font directory, except macOS TTF artifacts which live directly in `~/Library/Fonts/`.
 - `uninstall-all-fonts` removes managed petiglyph fonts, metadata, machine state, registry files, and the managed directory when empty.
 - Install and Unicode registry writes are file-lock protected and stale locks are repairable with `doctor --repair`.
 

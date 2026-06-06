@@ -314,17 +314,19 @@ Install naming mode:
 - TUI (`petiglyph` / `petiglyph tui` then `i`): uses project-scoped effective font identity `<project>-<font>`
 - CLI (`petiglyph install-font`): uses project-scoped effective font identity `<project>-<font>`
 
-Both are installed into a flat `petiglyph` directory under the user font root.
+Linux and Windows installs use a flat `petiglyph` directory under the user font root. macOS installs TTF files directly in `~/Library/Fonts/` and keeps Petiglyph metadata in `~/Library/Fonts/petiglyph/`.
 
 `install-font` is idempotent for a given effective font name.
 
-`sample` performs a managed install before printing glyphs so the sample codepoints are immediately available without terminal restart/cache-manual steps.
+`sample` performs a managed install before printing glyphs. On macOS, fully quit and reopen terminal applications after a new install so they rebuild their own font fallback state.
 
 Install artifacts are immutable per build:
 
 - installed files use progressive immutable names: `<font_slug>.ttf` first, then `<font_slug>_<hash>.ttf` with hash length auto-expanding only on conflicts
 - active metadata is atomically switched to the new artifact
 - previous active artifact for the same project/font identity is removed after switch
+
+On macOS, Petiglyph registers and unregisters installed TTF URLs with CoreText for the current login session. Fully quit and reopen terminal applications after installation so they rebuild their own font fallback state; logging out or rebooting is not required.
 
 `uninstall-font` removes the active immutable artifact for the current manifest font identity.
 

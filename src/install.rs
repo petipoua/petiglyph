@@ -16,6 +16,166 @@ use crate::project::{
     AnimationType, format_codepoint, load_runtime_config, parse_codepoint, read_manifest, slugify,
 };
 
+#[cfg(target_os = "macos")]
+mod macos_font_manager {
+    use anyhow::{Context, Result, bail};
+    use std::ffi::{CStr, c_char, c_void};
+    use std::os::unix::ffi::OsStrExt;
+    use std::path::Path;
+    use std::ptr;
+
+    type CFIndex = isize;
+    type CFStringEncoding = u32;
+    type CTFontManagerScope = u32;
+
+    const K_CF_STRING_ENCODING_UTF8: CFStringEncoding = 0x0800_0100;
+    const K_CT_FONT_MANAGER_SCOPE_NONE: CTFontManagerScope = 0;
+    const K_CT_FONT_MANAGER_SCOPE_SESSION: CTFontManagerScope = 3;
+
+    #[link(name = "CoreFoundation", kind = "framework")]
+    unsafe extern "C" {
+        fn CFURLCreateFromFileSystemRepresentation(
+            allocator: *const c_void,
+            buffer: *const u8,
+            buffer_length: CFIndex,
+            is_directory: bool,
+        ) -> *const c_void;
+        fn CFErrorCopyDescription(error: *const c_void) -> *const c_void;
+        fn CFStringGetCString(
+            string: *const c_void,
+            buffer: *mut c_char,
+            buffer_size: CFIndex,
+            encoding: CFStringEncoding,
+        ) -> u8;
+        fn CFRelease(value: *const c_void);
+    }
+
+    #[link(name = "CoreText", kind = "framework")]
+    unsafe extern "C" {
+        fn CTFontManagerGetScopeForURL(font_url: *const c_void) -> CTFontManagerScope;
+        fn CTFontManagerRegisterFontsForURL(
+            font_url: *const c_void,
+            scope: CTFontManagerScope,
+            error: *mut *const c_void,
+        ) -> bool;
+        fn CTFontManagerUnregisterFontsForURL(
+            font_url: *const c_void,
+            scope: CTFontManagerScope,
+            error: *mut *const c_void,
+        ) -> bool;
+    }
+
+    struct OwnedCf(*const c_void);
+
+    impl Drop for OwnedCf {
+        fn drop(&mut self) {
+            if !self.0.is_null() {
+                // SAFETY: OwnedCf only wraps retained Core Foundation objects.
+                unsafe { CFRelease(self.0) };
+            }
+        }
+    }
+
+    fn font_url(path: &Path) -> Result<OwnedCf> {
+        let path_bytes = path.as_os_str().as_bytes();
+        let path_length =
+            CFIndex::try_from(path_bytes.len()).context("font path is too long for CoreText")?;
+        // SAFETY: The byte slice remains alive for the call and Core Foundation copies it.
+        let url = unsafe {
+            CFURLCreateFromFileSystemRepresentation(
+                ptr::null(),
+                path_bytes.as_ptr(),
+                path_length,
+                false,
+            )
+        };
+        if url.is_null() {
+            bail!(
+                "CoreText could not create a file URL for {}",
+                path.display()
+            );
+        }
+        Ok(OwnedCf(url))
+    }
+
+    fn error_description(error: *const c_void) -> String {
+        if error.is_null() {
+            return "unknown CoreText error".to_string();
+        }
+
+        // SAFETY: CoreText returned a valid retained CFErrorRef.
+        let description = unsafe { CFErrorCopyDescription(error) };
+        if description.is_null() {
+            return "unknown CoreText error".to_string();
+        }
+        let description = OwnedCf(description);
+        let mut buffer = vec![0 as c_char; 2048];
+        // SAFETY: The destination buffer is writable and sized as reported.
+        let copied = unsafe {
+            CFStringGetCString(
+                description.0,
+                buffer.as_mut_ptr(),
+                buffer.len() as CFIndex,
+                K_CF_STRING_ENCODING_UTF8,
+            )
+        };
+        if copied == 0 {
+            return "CoreText returned an unreadable error".to_string();
+        }
+        // SAFETY: CFStringGetCString writes a NUL-terminated string on success.
+        unsafe { CStr::from_ptr(buffer.as_ptr()) }
+            .to_string_lossy()
+            .into_owned()
+    }
+
+    pub(super) fn register(path: &Path) -> Result<()> {
+        let url = font_url(path)?;
+        // SAFETY: url contains a valid CFURLRef.
+        let current_scope = unsafe { CTFontManagerGetScopeForURL(url.0) };
+        if current_scope != K_CT_FONT_MANAGER_SCOPE_NONE {
+            return Ok(());
+        }
+
+        let mut error = ptr::null();
+        // SAFETY: url contains a valid CFURLRef and error is a writable out pointer.
+        let registered = unsafe {
+            CTFontManagerRegisterFontsForURL(url.0, K_CT_FONT_MANAGER_SCOPE_SESSION, &mut error)
+        };
+        let error = OwnedCf(error);
+        if !registered {
+            bail!(
+                "CoreText failed to register {}: {}",
+                path.display(),
+                error_description(error.0)
+            );
+        }
+        Ok(())
+    }
+
+    pub(super) fn unregister(path: &Path) -> Result<()> {
+        let url = font_url(path)?;
+        // SAFETY: url contains a valid CFURLRef.
+        let current_scope = unsafe { CTFontManagerGetScopeForURL(url.0) };
+        if current_scope == K_CT_FONT_MANAGER_SCOPE_NONE {
+            return Ok(());
+        }
+
+        let mut error = ptr::null();
+        // SAFETY: url contains a valid CFURLRef and error is a writable out pointer.
+        let unregistered =
+            unsafe { CTFontManagerUnregisterFontsForURL(url.0, current_scope, &mut error) };
+        let error = OwnedCf(error);
+        if !unregistered {
+            bail!(
+                "CoreText failed to unregister {}: {}",
+                path.display(),
+                error_description(error.0)
+            );
+        }
+        Ok(())
+    }
+}
+
 const INSTALL_METADATA_PREFIX: &str = ".petiglyph-install-";
 const INSTALL_METADATA_SUFFIX: &str = ".json";
 const INSTALL_LOCK_FILE_NAME: &str = ".petiglyph-install.lock";
@@ -1337,6 +1497,34 @@ fn run_refresh_command(mut command: ProcessCommand, description: &str) -> Result
     Ok(())
 }
 
+fn register_installed_font(path: &Path, platform: FontPlatform) -> Result<()> {
+    if matches!(platform, FontPlatform::Macos) {
+        #[cfg(target_os = "macos")]
+        {
+            return macos_font_manager::register(path);
+        }
+        #[cfg(not(target_os = "macos"))]
+        {
+            bail!("CoreText font registration is only available on macOS");
+        }
+    }
+    Ok(())
+}
+
+fn unregister_installed_font(path: &Path, platform: FontPlatform) -> Result<()> {
+    if matches!(platform, FontPlatform::Macos) {
+        #[cfg(target_os = "macos")]
+        {
+            return macos_font_manager::unregister(path);
+        }
+        #[cfg(not(target_os = "macos"))]
+        {
+            bail!("CoreText font unregistration is only available on macOS");
+        }
+    }
+    Ok(())
+}
+
 fn refresh_font_cache(font_root: &Path, platform: FontPlatform) -> Result<()> {
     match platform {
         FontPlatform::Linux => run_refresh_command(
@@ -1347,14 +1535,7 @@ fn refresh_font_cache(font_root: &Path, platform: FontPlatform) -> Result<()> {
             },
             "Linux font cache refresh (`fc-cache -f`)",
         ),
-        FontPlatform::Macos => run_refresh_command(
-            {
-                let mut command = ProcessCommand::new("atsutil");
-                command.arg("databases").arg("-removeUser");
-                command
-            },
-            "macOS font cache refresh (`atsutil databases -removeUser`)",
-        ),
+        FontPlatform::Macos => Ok(()),
         FontPlatform::Windows => run_refresh_command(
             {
                 let mut command = ProcessCommand::new("powershell");
@@ -1919,6 +2100,7 @@ pub(crate) fn install_built_font(
         write_atomic_bytes(&install_path, &built_bytes)
             .with_context(|| format!("failed to write {}", install_path.display()))?;
     }
+    register_installed_font(&install_path, platform)?;
 
     let manifest_canonical = manifest_path
         .canonicalize()
@@ -1955,6 +2137,7 @@ pub(crate) fn install_built_font(
         && previous != install_path
         && previous.is_file()
     {
+        unregister_installed_font(&previous, platform)?;
         fs::remove_file(&previous)
             .with_context(|| format!("failed to remove {}", previous.display()))?;
         replaced_previous_ttf_count += 1;
@@ -1962,6 +2145,7 @@ pub(crate) fn install_built_font(
 
     let legacy_path = install_dir.join(font_file_name(font_name));
     if legacy_path != install_path && legacy_path.is_file() {
+        unregister_installed_font(&legacy_path, platform)?;
         fs::remove_file(&legacy_path)
             .with_context(|| format!("failed to remove {}", legacy_path.display()))?;
         replaced_previous_ttf_count += 1;
@@ -2065,6 +2249,7 @@ pub(crate) fn uninstall_project_font(manifest_path: &Path) -> Result<FontUninsta
     let mut removed_ttf_count = 0usize;
     for ttf_path in &ttf_paths_to_remove {
         if ttf_path.is_file() {
+            unregister_installed_font(ttf_path, platform)?;
             fs::remove_file(ttf_path)
                 .with_context(|| format!("failed to remove {}", ttf_path.display()))?;
             removed_ttf_count += 1;
@@ -2158,6 +2343,7 @@ pub(crate) fn uninstall_installed_font_file(installed_ttf: &Path) -> Result<Font
     let metadata_paths = matching_metadata_paths_for_installed_ttf(&install_dir, installed_ttf)?;
     let mut removed_ttf_count = 0usize;
     if installed_ttf.is_file() {
+        unregister_installed_font(installed_ttf, platform)?;
         fs::remove_file(installed_ttf)
             .with_context(|| format!("failed to remove {}", installed_ttf.display()))?;
         removed_ttf_count = 1;
@@ -2278,6 +2464,7 @@ fn uninstall_tool_state_for_font_root(font_root: &Path) -> Result<ToolUninstallR
             removed_metadata_count += 1;
         } else if is_ttf {
             managed_ttf_paths.insert(path.clone());
+            unregister_installed_font(&path, platform)?;
             fs::remove_file(&path)
                 .with_context(|| format!("failed to remove {}", path.display()))?;
             removed_ttf_count += 1;
@@ -2299,6 +2486,7 @@ fn uninstall_tool_state_for_font_root(font_root: &Path) -> Result<ToolUninstallR
                 ttf_path.display()
             );
         }
+        unregister_installed_font(&ttf_path, platform)?;
         fs::remove_file(&ttf_path)
             .with_context(|| format!("failed to remove {}", ttf_path.display()))?;
         removed_ttf_count += 1;

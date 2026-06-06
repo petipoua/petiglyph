@@ -202,10 +202,10 @@ Status: partially implemented. Added cross-platform runtime smoke CI (`runtime-s
 Observation:
 
 - Unit tests simulate several cross-OS clipboard/provider cases.
-- Actual runtime validation has only been performed on local Linux in this inspection.
-- Font installation paths are OS-specific and use external commands:
+- Runtime validation includes local Linux and macOS install/uninstall lifecycles; real Windows runtime validation remains pending.
+- Font availability refresh is OS-specific:
   - Linux: `fc-cache`
-  - macOS: `atsutil`
+  - macOS: CoreText session registration/unregistration
   - Windows: PowerShell `WM_FONTCHANGE` broadcast
 
 Tasks:
@@ -213,7 +213,7 @@ Tasks:
 - [x] Add a CI job that runs `petiglyph --help`, `petiglyph doctor --json`, and `petiglyph tui </dev/null` on Linux, macOS, and Windows.
 - [x] Use an isolated temporary `HOME`/`USERPROFILE`/`LOCALAPPDATA` for install/uninstall tests so developer state does not affect results.
 - [ ] Validate Windows per-user font installation on a real Windows runner or VM. If copying to `%LOCALAPPDATA%/Microsoft/Windows/Fonts/petiglyph/` plus `WM_FONTCHANGE` is insufficient, add HKCU font registry registration and uninstall cleanup.
-- [ ] Validate macOS detects fonts from `~/Library/Fonts/petiglyph/` after `atsutil databases -removeUser`; document whether terminal restart is required.
+- [x] Validate macOS detects TTFs from `~/Library/Fonts/` after CoreText session registration. Terminal applications must be fully quit and reopened; logout or reboot is not required.
 - [ ] Validate Linux install on a minimal image where `fontconfig` may be absent.
 
 Validation:
