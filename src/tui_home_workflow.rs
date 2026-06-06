@@ -365,7 +365,7 @@ fn handle_animation_import_settings_key(app: &mut App, key: KeyEvent) -> Result<
 
     if let Some(editor) = app.animation_import_settings.grayscale_editor.as_mut() {
         match key.code {
-            KeyCode::Esc => {
+            KeyCode::Esc | KeyCode::Char('q') => {
                 app.animation_import_settings.grayscale_options = editor.original;
                 app.animation_import_settings.grayscale_editor = None;
                 app.status = Some("grayscale options edit canceled".to_string());
@@ -520,7 +520,7 @@ fn handle_animation_import_settings_key(app: &mut App, key: KeyEvent) -> Result<
                     focus: GrayscaleKnobFocus::Brightness,
                 });
                 app.status = Some(
-                    "editing grayscale options: \u{2190}/\u{2192} choose knob, \u{2191}/\u{2193} change, Enter apply, Esc cancel"
+                    "editing grayscale options: \u{2190}/\u{2192} choose knob, \u{2191}/\u{2193} change, Enter apply, q/Esc cancel"
                         .to_string(),
                 );
                 Ok(true)
@@ -542,7 +542,7 @@ fn handle_animation_import_settings_key(app: &mut App, key: KeyEvent) -> Result<
 fn handle_home_creation_key(app: &mut App, key: KeyEvent) -> Result<()> {
     match app.home_workflow {
         HomeWorkflow::Import(kind) => match key.code {
-            KeyCode::Esc => {
+            KeyCode::Esc | KeyCode::Char('q') => {
                 app.cancel_home_workflow()?;
                 app.status = Some("home creation workflow canceled".to_string());
             }
@@ -583,7 +583,7 @@ fn handle_home_creation_key(app: &mut App, key: KeyEvent) -> Result<()> {
                 return continue_home_creation_tweaking_enter(app, kind);
             }
             match key.code {
-                KeyCode::Esc => {
+                KeyCode::Esc | KeyCode::Char('q') => {
                     app.cancel_home_workflow()?;
                     app.status = Some("home creation workflow canceled".to_string());
                 }

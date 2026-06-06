@@ -384,7 +384,7 @@ fn draw_home_creation_popup(frame: &mut Frame, app: &App, area: Rect, accent: Co
                 Style::default().fg(muted),
             ),
             Span::styled(
-                "Esc",
+                "q / Esc",
                 Style::default()
                     .fg(Color::Yellow)
                     .add_modifier(Modifier::BOLD),

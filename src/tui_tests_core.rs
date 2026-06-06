@@ -149,6 +149,40 @@
     }
 
     #[test]
+    fn q_and_escape_quit_from_main_tui_panels() {
+        let project_dir = make_temp_dir("main-tui-quit-shortcuts");
+        let manifest_path = project_dir.join("petiglyph.toml");
+        let config = RuntimeConfig {
+            project_dir: project_dir.clone(),
+            project_id: "test-main-tui-quit-shortcuts".to_string(),
+            input_dir: project_dir.join("icons"),
+            out_dir: project_dir.join("build"),
+            font_name: "Petiglyph".to_string(),
+            glyph_size: 8,
+            base_threshold: 64,
+            threshold_overrides: BTreeMap::new(),
+            invert_overrides: BTreeMap::new(),
+            compositions: BTreeMap::new(),
+            animations: Vec::new(),
+            codepoint_start: 0x10_0000,
+        };
+
+        for (view, key) in [
+            (AppView::Welcome, KeyCode::Esc),
+            (AppView::Welcome, KeyCode::Char('q')),
+            (AppView::Glyphs, KeyCode::Esc),
+            (AppView::Glyphs, KeyCode::Char('q')),
+        ] {
+            let mut app = App::new(manifest_path.clone(), config.clone());
+            app.view = view;
+            handle_key(&mut app, key).expect("quit shortcut should be handled");
+            assert!(app.quit, "{key:?} should quit from {view:?}");
+        }
+
+        fs::remove_dir_all(project_dir).expect("temp dir is removed");
+    }
+
+    #[test]
     fn verbose_paths_toggle_switches_with_v_shortcut() {
         let project_dir = make_temp_dir("verbose-toggle");
         let manifest_path = project_dir.join("petiglyph.toml");

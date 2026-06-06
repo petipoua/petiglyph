@@ -813,7 +813,7 @@
             "workflow import should stage file in icons while editing"
         );
 
-        handle_key(&mut app, KeyCode::Esc).expect("esc cancels workflow");
+        handle_key(&mut app, KeyCode::Char('q')).expect("q cancels workflow");
 
         assert!(
             !imported_path.exists(),
@@ -955,7 +955,7 @@
             "workflow import should stage frame in icons while editing"
         );
 
-        handle_key(&mut app, KeyCode::Esc).expect("esc cancels workflow");
+        handle_key(&mut app, KeyCode::Char('q')).expect("q cancels workflow");
 
         assert!(
             !imported_path.exists(),
@@ -1356,4 +1356,3 @@
             "create workflow preview should fit aspect instead of stretching into all vertical space"
         );
     }
-

@@ -7,7 +7,7 @@ fn handle_animation_config_key(
         return Ok(true);
     }
     match key.code {
-        KeyCode::Esc => {
+        KeyCode::Esc | KeyCode::Char('q') => {
             app.glyph_tool_mode = GlyphToolMode::None;
             app.clear_animation_draft();
             app.status = Some("animation configuration canceled".to_string());
@@ -119,7 +119,7 @@ fn handle_glyphs_key(app: &mut App, key: KeyEvent) -> Result<()> {
 
     if let GlyphToolMode::ChooseAnimationType { mut focus } = app.glyph_tool_mode.clone() {
         match code {
-            KeyCode::Esc => {
+            KeyCode::Esc | KeyCode::Char('q') => {
                 app.glyph_tool_mode = GlyphToolMode::None;
                 app.clear_animation_draft();
                 app.status = Some("animation creation canceled".to_string());
@@ -150,7 +150,7 @@ fn handle_glyphs_key(app: &mut App, key: KeyEvent) -> Result<()> {
 
     if let GlyphToolMode::ImportAnimationFrames = app.glyph_tool_mode.clone() {
         match code {
-            KeyCode::Esc => {
+            KeyCode::Esc | KeyCode::Char('q') => {
                 if app.animation_import_task.is_some() {
                     app.status = Some("animation frames are still loading".to_string());
                     return Ok(());
@@ -176,7 +176,7 @@ fn handle_glyphs_key(app: &mut App, key: KeyEvent) -> Result<()> {
 
     if let GlyphToolMode::SelectAnimationFrames(animation_type) = app.glyph_tool_mode.clone() {
         match code {
-            KeyCode::Esc => {
+            KeyCode::Esc | KeyCode::Char('q') => {
                 app.glyph_tool_mode = GlyphToolMode::None;
                 app.clear_animation_draft();
                 app.status = Some("animation frame selection canceled".to_string());
@@ -220,7 +220,7 @@ fn handle_glyphs_key(app: &mut App, key: KeyEvent) -> Result<()> {
     }
 
     match code {
-        KeyCode::Esc => {
+        KeyCode::Esc | KeyCode::Char('q') => {
             if app.selecting_for_grid {
                 app.selecting_for_grid = false;
                 app.status = Some("grid selection canceled".to_string());
@@ -232,12 +232,8 @@ fn handle_glyphs_key(app: &mut App, key: KeyEvent) -> Result<()> {
             } else if app.glyphs_focus == GlyphsFocus::Preview {
                 app.glyphs_focus = GlyphsFocus::List;
             } else {
-                app.view = AppView::Welcome;
-                app.welcome_focus = WelcomeFocus::InstallButton;
+                app.quit = true;
             }
-        }
-        KeyCode::Char('q') => {
-            app.quit = true;
         }
         KeyCode::Down | KeyCode::Char('j') => {
             if app.glyphs_focus == GlyphsFocus::InstallButton {
@@ -1069,4 +1065,3 @@ fn handle_delete_project_confirmation_key(app: &mut App, code: KeyCode) -> Resul
     tui_debug_log("welcome.delete_confirm.exit", app_debug_state(app));
     Ok(())
 }
-

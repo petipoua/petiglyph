@@ -1,7 +1,7 @@
 fn handle_grid_config_key(app: &mut App, config: &mut GridConfig, key: KeyEvent) -> Result<()> {
     let code = key.code;
     match code {
-        KeyCode::Esc => {
+        KeyCode::Esc | KeyCode::Char('q') => {
             app.grid_config = None;
             app.status = Some("grid configuration canceled".to_string());
         }
@@ -280,4 +280,3 @@ fn copy_to_clipboard(text: &str) -> Result<()> {
     let providers = clipboard_providers_for_current_platform();
     copy_to_clipboard_with_runner(text, providers, execute_clipboard_provider)
 }
-

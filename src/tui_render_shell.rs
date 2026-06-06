@@ -288,7 +288,7 @@ fn draw_animation_panel_ui(frame: &mut Frame, app: &App, area: Rect, accent: Col
                 Line::from(""),
                 Line::from(format!("  {standard}   {grid}")),
                 Line::from(""),
-                Line::from("Left/Right to choose, Enter to continue, Esc to cancel."),
+                Line::from("Left/Right to choose, Enter to continue, q/Esc to cancel."),
             ]
         }
         GlyphToolMode::ImportAnimationFrames => {
@@ -317,7 +317,7 @@ fn draw_animation_panel_ui(frame: &mut Frame, app: &App, area: Rect, accent: Col
                     Span::raw("  "),
                     Span::styled(bottom, border_style),
                 ]));
-                lines.push(Line::from("Press Enter when done, Esc to cancel."));
+                lines.push(Line::from("Press Enter when done, q/Esc to cancel."));
             }
             lines.push(Line::from(format!(
                 "Current draft frames: {}",
@@ -329,7 +329,7 @@ fn draw_animation_panel_ui(frame: &mut Frame, app: &App, area: Rect, accent: Col
             Line::from(format!("Selecting {:?} animation frames", animation_type)),
             Line::from(""),
             Line::from("Space toggles selected imported glyph row as frame."),
-            Line::from("Enter to configure, Esc to cancel."),
+            Line::from("Enter to configure, q/Esc to cancel."),
             Line::from(format!(
                 "Current draft frames: {}",
                 app.animation_selection_order.len()
@@ -383,7 +383,7 @@ fn draw_animation_panel_ui(frame: &mut Frame, app: &App, area: Rect, accent: Col
                 "Create animation".to_string(),
             )));
             lines.push(Line::from(
-                "Left/Right move focus, Up/Down adjust, Enter creates, Esc cancels.",
+                "Left/Right move focus, Up/Down adjust, Enter creates, q/Esc cancels.",
             ));
             lines
         }
@@ -875,7 +875,7 @@ fn draw_animation_import_workflow_ui(
         Line::from(vec![
             Span::styled(" Captive edit: ", Style::default().fg(accent)),
             Span::styled(
-                "Left/Right choose knob, Up/Down adjust, Enter apply, Esc cancel",
+                "Left/Right choose knob, Up/Down adjust, Enter apply, q/Esc cancel",
                 Style::default().fg(muted),
             ),
         ])
