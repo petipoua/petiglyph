@@ -277,6 +277,10 @@ fn render_home_panel_button(frame: &mut Frame, area: Rect, line: Line<'static>) 
     frame.render_widget(Paragraph::new(line).alignment(Alignment::Center), area);
 }
 
+fn padded_button_label(label: impl AsRef<str>) -> String {
+    format!(" {} ", label.as_ref())
+}
+
 pub(crate) fn wrap_sample_for_display(sample: &str, max_chars: usize) -> Vec<String> {
     if sample.is_empty() {
         return Vec::new();

@@ -749,9 +749,9 @@ fn draw_animation_import_workflow_ui(
         let label = match focus {
             AnimationImportSettingsFocus::GrayscaleToggle => {
                 if app.animation_import_settings.grayscale_enabled {
-                    "Gray: ON".to_string()
+                    padded_button_label("Gray: ON")
                 } else {
-                    "Gray: OFF".to_string()
+                    padded_button_label("Gray: OFF")
                 }
             }
             AnimationImportSettingsFocus::GrayscaleOptionsButton => {
@@ -767,7 +767,7 @@ fn draw_animation_import_workflow_ui(
                 } else {
                     " *"
                 };
-                format!("Gray Options{dirty}")
+                padded_button_label(format!("Gray Options{dirty}"))
             }
             AnimationImportSettingsFocus::Threshold => {
                 let dirty = if app.animation_import_settings.threshold == app.config.base_threshold
@@ -776,18 +776,21 @@ fn draw_animation_import_workflow_ui(
                 } else {
                     " *"
                 };
-                format!("Th: {}{dirty}", app.animation_import_settings.threshold)
+                padded_button_label(format!(
+                    "Th: {}{dirty}",
+                    app.animation_import_settings.threshold
+                ))
             }
             AnimationImportSettingsFocus::FramesButton => {
                 if !app.animation_selection_order.is_empty() {
                     let total = app.animation_selection_order.len();
                     let idx = app.animation_import_settings.preview_frame_index % total;
-                    format!("Frames: {}/{}", idx + 1, total)
+                    padded_button_label(format!("Frames: {}/{}", idx + 1, total))
                 } else {
-                    "Frames: -".to_string()
+                    padded_button_label("Frames: -")
                 }
             }
-            AnimationImportSettingsFocus::ExportTestImageButton => "Export Test".to_string(),
+            AnimationImportSettingsFocus::ExportTestImageButton => padded_button_label("Export Test"),
             AnimationImportSettingsFocus::Continue => {
                 style = if selected {
                     focused_style
@@ -795,13 +798,13 @@ fn draw_animation_import_workflow_ui(
                     continue_style
                 };
                 if matches!(kind, HomeCreationKind::Glyph) {
-                    glyph_tweak_continue_label(app).to_string()
+                    padded_button_label(glyph_tweak_continue_label(app))
                 } else {
-                    "Continue".to_string()
+                    padded_button_label("Continue")
                 }
             }
-            AnimationImportSettingsFocus::Back => "Back".to_string(),
-            AnimationImportSettingsFocus::SkipAll => "Skip All".to_string(),
+            AnimationImportSettingsFocus::Back => padded_button_label("Back"),
+            AnimationImportSettingsFocus::SkipAll => padded_button_label("Skip All"),
         };
         render_home_panel_button(frame, area, Line::from(vec![Span::styled(label, style)]));
     }
