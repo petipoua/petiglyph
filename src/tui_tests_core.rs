@@ -1123,6 +1123,114 @@
     }
 
     #[test]
+    fn glyph_home_workflow_queues_additional_drop_payload_while_import_is_running() {
+        let project_dir = make_temp_dir("glyph-home-drop-queue-payload");
+        let manifest_path = project_dir.join("petiglyph.toml");
+        write_manifest(&manifest_path, &Manifest::default()).expect("manifest is written");
+        let icons_dir = project_dir.join("icons");
+        fs::create_dir_all(&icons_dir).expect("icons dir is created");
+        let external_dir = project_dir.join("external");
+        fs::create_dir_all(&external_dir).expect("external dir is created");
+        let first_path = external_dir.join("first.png");
+        let second_path = external_dir.join("second.png");
+        write_test_png(&first_path);
+        write_test_png(&second_path);
+
+        let config = RuntimeConfig {
+            project_dir: project_dir.clone(),
+            project_id: "test-glyph-home-drop-queue-payload".to_string(),
+            input_dir: icons_dir,
+            out_dir: project_dir.join("build"),
+            font_name: "Petiglyph".to_string(),
+            glyph_size: 8,
+            base_threshold: 64,
+            threshold_overrides: BTreeMap::new(),
+            invert_overrides: BTreeMap::new(),
+            compositions: BTreeMap::new(),
+            animations: Vec::new(),
+            codepoint_start: 0x10_0000,
+        };
+        let mut app = App::new(manifest_path, config);
+        app.start_home_workflow(HomeCreationKind::Glyph);
+
+        handle_paste_event_for_test(&mut app, &first_path.display().to_string())
+            .expect("first drop should start import task");
+        assert!(app.home_import_task.is_some());
+
+        handle_paste_event_for_test(&mut app, &second_path.display().to_string())
+            .expect("second drop should queue");
+
+        let expected_queued = second_path.display().to_string();
+        assert_eq!(
+            app.queued_drop_payload.as_deref(),
+            Some(expected_queued.as_str()),
+            "second payload should be queued while the first import task is running"
+        );
+        assert!(
+            app.status
+                .as_ref()
+                .is_some_and(|msg| msg.contains("queued additional dropped files")),
+            "queued drop should be acknowledged in status"
+        );
+    }
+
+    #[test]
+    fn glyph_home_workflow_runs_queued_drop_after_current_import_finishes() {
+        let project_dir = make_temp_dir("glyph-home-drop-queue-drain");
+        let manifest_path = project_dir.join("petiglyph.toml");
+        write_manifest(&manifest_path, &Manifest::default()).expect("manifest is written");
+        let icons_dir = project_dir.join("icons");
+        fs::create_dir_all(&icons_dir).expect("icons dir is created");
+        let external_dir = project_dir.join("external");
+        fs::create_dir_all(&external_dir).expect("external dir is created");
+        let first_path = external_dir.join("first.png");
+        let second_path = external_dir.join("second.png");
+        write_test_png(&first_path);
+        write_test_png(&second_path);
+
+        let config = RuntimeConfig {
+            project_dir: project_dir.clone(),
+            project_id: "test-glyph-home-drop-queue-drain".to_string(),
+            input_dir: icons_dir.clone(),
+            out_dir: project_dir.join("build"),
+            font_name: "Petiglyph".to_string(),
+            glyph_size: 8,
+            base_threshold: 64,
+            threshold_overrides: BTreeMap::new(),
+            invert_overrides: BTreeMap::new(),
+            compositions: BTreeMap::new(),
+            animations: Vec::new(),
+            codepoint_start: 0x10_0000,
+        };
+        let mut app = App::new(manifest_path, config);
+        app.start_home_workflow(HomeCreationKind::Glyph);
+
+        handle_paste_event_for_test(&mut app, &first_path.display().to_string())
+            .expect("first drop should start import task");
+        handle_paste_event_for_test(&mut app, &second_path.display().to_string())
+            .expect("second drop should queue");
+
+        drain_background_tasks(&mut app);
+
+        assert!(
+            icons_dir.join("first.png").is_file(),
+            "first dropped image should be imported"
+        );
+        assert!(
+            icons_dir.join("second.png").is_file(),
+            "queued second dropped image should be imported after the first task finishes"
+        );
+        assert_eq!(
+            app.home_workflow_import_count, 2,
+            "workflow import count should include imports from queued payloads"
+        );
+        assert_eq!(
+            app.queued_drop_payload, None,
+            "queued payload should be cleared after it is processed"
+        );
+    }
+
+    #[test]
     fn grid_home_workflow_second_drop_replaces_selected_source() {
         let project_dir = make_temp_dir("grid-home-drop-replace");
         let manifest_path = project_dir.join("petiglyph.toml");

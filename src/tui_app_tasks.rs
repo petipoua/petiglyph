@@ -264,12 +264,16 @@ impl App {
     }
 
     fn import_dropped_images(&mut self, payload: &str) -> Result<()> {
-        if self.install_in_progress()
-            || self.animation_import_task.is_some()
-            || self.home_import_task.is_some()
-        {
+        if self.install_in_progress() {
             self.status =
                 Some("a background task is in progress; wait before importing images".to_string());
+            return Ok(());
+        }
+        if self.animation_import_task.is_some() || self.home_import_task.is_some() {
+            self.queue_drop_payload_while_importing(payload);
+            self.status = Some(
+                "an import is already in progress; queued additional dropped files".to_string(),
+            );
             return Ok(());
         }
 
@@ -335,6 +339,31 @@ impl App {
             processing,
         )?;
         self.finish_static_home_import(import)
+    }
+
+    fn queue_drop_payload_while_importing(&mut self, payload: &str) {
+        if payload.trim().is_empty() {
+            return;
+        }
+        match self.queued_drop_payload.as_mut() {
+            Some(queued) => {
+                queued.push('\n');
+                queued.push_str(payload);
+            }
+            None => self.queued_drop_payload = Some(payload.to_string()),
+        }
+    }
+
+    fn start_queued_drop_import(&mut self) {
+        let Some(payload) = self.queued_drop_payload.take() else {
+            return;
+        };
+        if let Err(err) = self.import_dropped_images(&payload) {
+            self.status = Some(format_status_from_error(
+                &self.manifest_path,
+                &err.to_string(),
+            ));
+        }
     }
 
     fn start_home_import_task(&mut self, payload: String) -> Result<()> {
@@ -958,6 +987,7 @@ impl App {
         if disconnected {
             self.animation_import_task = None;
             self.status = Some("animation frame import task terminated unexpectedly".to_string());
+            self.start_queued_drop_import();
             return;
         }
 
@@ -970,6 +1000,7 @@ impl App {
             Ok(output) => self.finish_animation_import(output),
             Err(err) => self.status = Some(format!("animation frame import failed: {err}")),
         }
+        self.start_queued_drop_import();
     }
 
     fn poll_home_import_task(&mut self) {
@@ -994,6 +1025,7 @@ impl App {
         if disconnected {
             self.home_import_task = None;
             self.status = Some("image import task terminated unexpectedly".to_string());
+            self.start_queued_drop_import();
             return;
         }
 
@@ -1013,6 +1045,7 @@ impl App {
             }
             Err(err) => self.status = Some(format!("image import failed: {err}")),
         }
+        self.start_queued_drop_import();
     }
 
     fn finish_animation_import(&mut self, mut output: AnimationImportTaskOutput) {

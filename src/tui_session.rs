@@ -483,6 +483,7 @@ pub(crate) struct App {
     project_switch_task: Option<ProjectSwitchTask>,
     animation_import_task: Option<AnimationImportTask>,
     home_import_task: Option<HomeImportTask>,
+    queued_drop_payload: Option<String>,
     animation_create_pending: Option<AnimationConfig>,
     animation_create_started_at: Option<Instant>,
     live_glyph_source_count: Option<usize>,

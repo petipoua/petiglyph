@@ -121,6 +121,7 @@ impl App {
     fn start_home_workflow(&mut self, kind: HomeCreationKind) {
         self.home_workflow = HomeWorkflow::Import(kind);
         self.discard_next_animation_import_result = false;
+        self.queued_drop_payload = None;
         self.home_workflow_import_count = 0;
         self.home_workflow_recent_imported_source_keys.clear();
         self.home_workflow_created_source_keys.clear();
@@ -149,6 +150,7 @@ impl App {
     fn reset_home_workflow(&mut self) {
         self.home_workflow = HomeWorkflow::Launcher;
         self.discard_next_animation_import_result = false;
+        self.queued_drop_payload = None;
         self.home_workflow_import_count = 0;
         self.home_workflow_recent_imported_source_keys.clear();
         self.home_workflow_created_source_keys.clear();
@@ -537,6 +539,7 @@ impl App {
             project_switch_task: None,
             animation_import_task: None,
             home_import_task: None,
+            queued_drop_payload: None,
             animation_create_pending: None,
             animation_create_started_at: None,
             live_glyph_source_count: None,
@@ -627,6 +630,7 @@ impl App {
             project_switch_task: None,
             animation_import_task: None,
             home_import_task: None,
+            queued_drop_payload: None,
             animation_create_pending: None,
             animation_create_started_at: None,
             live_glyph_source_count: None,
