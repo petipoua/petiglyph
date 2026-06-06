@@ -322,7 +322,7 @@ impl App {
         });
     }
 
-    fn finish_animation_create(&mut self, output: AnimationCreateTaskOutput) -> Result<()> {
+    fn finish_animation_create(&mut self, output: AnimationCreateTaskOutput) {
         self.config = output.config;
         self.glyphs = output.loaded.glyphs;
         self.live_glyph_source_count = Some(self.glyphs.len());
@@ -356,7 +356,6 @@ impl App {
             .retain(|name| active_animations.contains(name));
         self.clamp_glyph_selection();
 
-        self.refresh_workspace_discovery()?;
         self.glyph_tool_mode = GlyphToolMode::None;
         self.clear_animation_draft();
         self.home_workflow_error = None;
@@ -371,7 +370,6 @@ impl App {
         } else {
             format!("created animation `{}`", output.name)
         });
-        Ok(())
     }
 }
 

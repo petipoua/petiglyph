@@ -242,6 +242,10 @@ impl App {
             return;
         }
 
+        if self.background_task_in_progress() {
+            return;
+        }
+
         let now = Instant::now();
         if self.live_glyph_source_probe_at.is_some_and(|at| {
             now.duration_since(at) < Duration::from_millis(GLYPH_SOURCE_COUNT_REFRESH_MS)
@@ -1036,14 +1040,7 @@ impl App {
 
         self.animation_create_task = None;
         match result {
-            Ok(output) => {
-                if let Err(err) = self.finish_animation_create(output) {
-                    let message = format_status_from_error(&self.manifest_path, &err.to_string());
-                    self.home_workflow_error =
-                        Some(format!("failed to create animation: {message}"));
-                    self.status = Some(message);
-                }
-            }
+            Ok(output) => self.finish_animation_create(output),
             Err(err) => {
                 let message = format_status_from_error(&self.manifest_path, &err);
                 self.home_workflow_error = Some(format!("failed to create animation: {message}"));
@@ -1218,7 +1215,6 @@ impl App {
         self.install_task.is_some()
     }
 
-    #[cfg(test)]
     pub(crate) fn background_task_in_progress(&self) -> bool {
         self.install_in_progress()
             || self.project_switch_task.is_some()

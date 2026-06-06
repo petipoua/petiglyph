@@ -746,11 +746,14 @@
         let project_dir = make_temp_dir("animation-create-spinner-advances");
         let manifest_path = project_dir.join("petiglyph.toml");
         write_manifest(&manifest_path, &Manifest::default()).expect("manifest is written");
+        let icons_dir = project_dir.join("icons");
+        fs::create_dir_all(&icons_dir).expect("icons dir is created");
+        write_test_png(&icons_dir.join("frame.png"));
 
         let config = RuntimeConfig {
             project_dir: project_dir.clone(),
             project_id: "test-animation-create-spinner-advances".to_string(),
-            input_dir: project_dir.join("icons"),
+            input_dir: icons_dir,
             out_dir: project_dir.join("build"),
             font_name: "Petiglyph".to_string(),
             glyph_size: 8,
@@ -770,10 +773,20 @@
             spinner_last_frame_at: Instant::now()
                 - Duration::from_millis(super::FONT_TASK_SPINNER_FRAME_MS * 2),
         });
+        app.live_glyph_source_count = Some(0);
+        app.live_glyph_source_probe_fingerprint = None;
+        app.live_glyph_source_probe_at =
+            Some(Instant::now() - Duration::from_millis(super::GLYPH_SOURCE_COUNT_REFRESH_MS));
 
         assert_eq!(app.animation_create_spinner_frame(), "-");
         app.poll_animation_create_task();
         assert_eq!(app.animation_create_spinner_frame(), "|");
+        app.refresh_live_glyph_source_count();
+        assert_eq!(
+            app.live_glyph_source_count,
+            Some(0),
+            "source scans must stay off the UI thread while creation is running"
+        );
     }
 
     #[test]
