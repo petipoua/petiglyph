@@ -257,10 +257,18 @@ impl App {
         self.home_workflow_error = None;
         let manifest_path = self.manifest_path.clone();
         let input_dir = self.config.input_dir.clone();
+        let launch_overrides = self.launch_overrides.clone();
+        let debug_enabled = self.debug_enabled;
         let (sender, receiver) = mpsc::channel();
         thread::spawn(move || {
-            let result = create_animation_task(manifest_path, input_dir, config)
-                .map_err(|err| err.to_string());
+            let result = create_animation_task(
+                manifest_path,
+                input_dir,
+                launch_overrides,
+                debug_enabled,
+                config,
+            )
+            .map_err(|err| err.to_string());
             let _ = sender.send(result);
         });
         self.animation_create_task = Some(AnimationCreateTask {
@@ -315,7 +323,39 @@ impl App {
     }
 
     fn finish_animation_create(&mut self, output: AnimationCreateTaskOutput) -> Result<()> {
-        self.reload_glyphs()?;
+        self.config = output.config;
+        self.glyphs = output.loaded.glyphs;
+        self.live_glyph_source_count = Some(self.glyphs.len());
+        self.live_glyph_source_probe_fingerprint = Some(output.loaded.source_fingerprint);
+        self.live_glyph_source_probe_at = Some(Instant::now());
+        self.last_build = output.last_build;
+        self.last_sample = output.last_sample;
+        self.installed_font_path = output.installed_font_path;
+        self.debug_log_path = Some(glyph_debug::session_log_path(&self.config.project_dir));
+
+        let active_compositions = self
+            .glyphs
+            .iter()
+            .filter_map(|glyph| {
+                glyph
+                    .glyph
+                    .composition_tile
+                    .as_ref()
+                    .map(|_| glyph.glyph.source_parent_key.clone())
+            })
+            .collect::<BTreeSet<_>>();
+        self.expanded_compositions
+            .retain(|source| active_compositions.contains(source));
+        let active_animations = self
+            .config
+            .animations
+            .iter()
+            .map(|animation| animation.name.clone())
+            .collect::<BTreeSet<_>>();
+        self.expanded_animations
+            .retain(|name| active_animations.contains(name));
+        self.clamp_glyph_selection();
+
         self.refresh_workspace_discovery()?;
         self.glyph_tool_mode = GlyphToolMode::None;
         self.clear_animation_draft();
@@ -338,6 +378,8 @@ impl App {
 fn create_animation_task(
     manifest_path: PathBuf,
     input_dir: PathBuf,
+    launch_overrides: TuiLaunchOverrides,
+    debug_enabled: bool,
     config: AnimationConfig,
 ) -> Result<AnimationCreateTaskOutput> {
     let name = config.animation_name.trim().to_string();
@@ -398,9 +440,34 @@ fn create_animation_task(
         grayscale_processing: config.grayscale_processing,
     };
     persist_animation_definition(&manifest_path, def)?;
+
+    let runtime = load_runtime_config(
+        &manifest_path,
+        launch_overrides.input_dir,
+        None,
+        launch_overrides.threshold,
+        launch_overrides.glyph_size,
+        launch_overrides.codepoint_start,
+    )?;
+    if debug_enabled {
+        glyph_debug::begin_session(&runtime.project_dir, "tui.reload_glyphs");
+    }
+    let loaded = load_interactive_glyphs_from_config(&runtime)?;
+    let (last_build, last_sample) = cached_build_state(&runtime);
+    let installed_font_path = cached_installed_font_path(
+        &manifest_path,
+        &runtime.font_name,
+        &runtime.project_id,
+    );
+
     Ok(AnimationCreateTaskOutput {
         name,
         duplicated_for_grid_conflicts,
+        config: runtime,
+        loaded,
+        last_build,
+        last_sample,
+        installed_font_path,
     })
 }
 

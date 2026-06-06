@@ -596,6 +596,11 @@ struct AnimationImportTaskOutput {
 struct AnimationCreateTaskOutput {
     name: String,
     duplicated_for_grid_conflicts: usize,
+    config: RuntimeConfig,
+    loaded: LoadedGlyphs,
+    last_build: Option<BuildSummary>,
+    last_sample: Option<String>,
+    installed_font_path: Option<PathBuf>,
 }
 
 #[derive(Debug, Clone)]

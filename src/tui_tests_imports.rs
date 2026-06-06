@@ -587,6 +587,9 @@
 
         let icons_dir = project_dir.join("icons");
         fs::create_dir_all(&icons_dir).expect("icons dir is created");
+        for file_name in ["runner_10.png", "runner_2.png", "runner_1.png"] {
+            write_test_png(&icons_dir.join(file_name));
+        }
 
         let config = RuntimeConfig {
             project_dir: project_dir.clone(),
@@ -620,12 +623,16 @@
             focus: AnimationConfigFocus::Fps,
         };
 
-        super::create_animation_task(
+        let output = super::create_animation_task(
             manifest_path.clone(),
             config.input_dir.clone(),
+            TuiLaunchOverrides::default(),
+            false,
             animation_config,
         )
         .expect("animation should persist");
+        assert_eq!(output.config.animations.len(), 1);
+        assert_eq!(output.loaded.glyphs.len(), 6);
 
         let manifest = read_manifest(&manifest_path).expect("manifest reloads");
         assert_eq!(manifest.animations.len(), 1);
@@ -699,12 +706,16 @@
             focus: AnimationConfigFocus::Fps,
         };
 
-        super::create_animation_task(
+        let output = super::create_animation_task(
             manifest_path.clone(),
             config.input_dir.clone(),
+            TuiLaunchOverrides::default(),
+            false,
             animation_config,
         )
         .expect("animation should persist with duplicate frame");
+        assert_eq!(output.config.animations.len(), 1);
+        assert_eq!(output.loaded.glyphs.len(), 10);
 
         let manifest = read_manifest(&manifest_path).expect("manifest reloads");
         assert_eq!(manifest.animations.len(), 1);
