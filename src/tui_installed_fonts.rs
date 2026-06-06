@@ -33,18 +33,17 @@ fn scan_installed_petiglyph_fonts(cwd: &Path) -> Result<Vec<InstalledFontSample>
     }
 
     let mut ttf_paths = Vec::new();
-    for entry in fs::read_dir(&install_dir)
-        .with_context(|| format!("failed to read {}", install_dir.display()))?
-    {
-        let entry =
-            entry.with_context(|| format!("failed to read entry in {}", install_dir.display()))?;
-        let path = entry.path();
-        let is_ttf = path
-            .extension()
-            .and_then(|ext| ext.to_str())
-            .map(|ext| ext.eq_ignore_ascii_case("ttf"))
-            .unwrap_or(false);
-        if path.is_file() && is_ttf {
+    for metadata_path in crate::install::metadata_paths_in_install_dir(&install_dir)? {
+        let raw = match fs::read_to_string(&metadata_path) {
+            Ok(raw) => raw,
+            Err(_) => continue,
+        };
+        let metadata = match serde_json::from_str::<crate::install::InstalledFontMetadata>(&raw) {
+            Ok(metadata) => metadata,
+            Err(_) => continue,
+        };
+        let path = PathBuf::from(metadata.installed_ttf);
+        if path.is_file() {
             ttf_paths.push(path);
         }
     }
@@ -750,4 +749,3 @@ pub(crate) fn sample_glyphs_from_ttf_bytes(bytes: &[u8], limit: usize) -> Option
         Some((sample, truncated))
     }
 }
-

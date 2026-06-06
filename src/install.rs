@@ -75,32 +75,33 @@ pub(crate) const DEFAULT_INSTALL_NAME_MODE: FontInstallNameMode =
     FontInstallNameMode::ProjectPrefixed;
 
 #[derive(Debug, Serialize, Deserialize)]
-struct InstalledFontMetadata {
-    manifest_path: String,
-    font_name: String,
-    installed_ttf: String,
-    version: String,
+pub(crate) struct InstalledFontMetadata {
+    pub(crate) manifest_path: String,
+    pub(crate) font_name: String,
+    pub(crate) installed_ttf: String,
+    pub(crate) version: String,
     #[serde(default)]
-    project_id: Option<String>,
+    pub(crate) project_id: Option<String>,
     #[serde(default)]
-    install_key: Option<String>,
+    pub(crate) install_key: Option<String>,
     #[serde(default)]
-    animation_snapshots: Vec<InstalledAnimationSnapshot>,
+    pub(crate) animation_snapshots: Vec<InstalledAnimationSnapshot>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-struct InstalledAnimationSnapshot {
-    name: String,
+pub(crate) struct InstalledAnimationSnapshot {
+    pub(crate) name: String,
     #[serde(rename = "type")]
-    animation_type: AnimationType,
-    fps: u8,
+    pub(crate) animation_type: AnimationType,
+    pub(crate) fps: u8,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    grayscale_processing: Option<crate::animation_media::AnimationImportProcessingOptions>,
+    pub(crate) grayscale_processing:
+        Option<crate::animation_media::AnimationImportProcessingOptions>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    uniform_threshold: Option<u8>,
+    pub(crate) uniform_threshold: Option<u8>,
     #[serde(default, skip_serializing_if = "is_false")]
-    variable_threshold: bool,
-    frame_blocks: Vec<String>,
+    pub(crate) variable_threshold: bool,
+    pub(crate) frame_blocks: Vec<String>,
 }
 
 fn is_false(value: &bool) -> bool {
@@ -583,6 +584,13 @@ fn install_dir_for_project(font_root: &Path) -> PathBuf {
     font_root.join("petiglyph")
 }
 
+fn managed_ttf_dir_for_platform(font_root: &Path, platform: FontPlatform) -> PathBuf {
+    match platform {
+        FontPlatform::Macos => font_root.to_path_buf(),
+        FontPlatform::Linux | FontPlatform::Windows => install_dir_for_project(font_root),
+    }
+}
+
 fn first_install_state_path(install_dir: &Path) -> PathBuf {
     install_dir.join(FIRST_INSTALL_STATE_FILE_NAME)
 }
@@ -746,6 +754,9 @@ fn collect_external_supplementary_pua_codepoints(
     let mut occupied = BTreeSet::new();
     let cache_path = managed_install_dir.join(EXTERNAL_PUA_CACHE_FILE_NAME);
     let mut cache = load_external_pua_cache(&cache_path);
+    let managed_paths: BTreeSet<PathBuf> = managed_installed_ttf_paths(managed_install_dir)?
+        .into_iter()
+        .collect();
     let mut cache_by_path = BTreeMap::new();
     for entry in cache.entries.drain(..) {
         cache_by_path.insert(entry.path.clone(), entry);
@@ -766,6 +777,9 @@ fn collect_external_supplementary_pua_codepoints(
                 continue;
             }
             if path.starts_with(managed_install_dir) {
+                continue;
+            }
+            if managed_paths.contains(path) {
                 continue;
             }
             // LastResort advertises fallback coverage; it does not mean those PUA slots
@@ -820,20 +834,15 @@ fn collect_external_supplementary_pua_codepoints(
 
 fn collect_managed_supplementary_pua_codepoints(install_dir: &Path) -> Result<BTreeSet<u32>> {
     let mut occupied = BTreeSet::new();
-    if !install_dir.is_dir() {
-        return Ok(occupied);
-    }
-
-    for entry in fs::read_dir(install_dir)
-        .with_context(|| format!("failed to read {}", install_dir.display()))?
-    {
-        let entry =
-            entry.with_context(|| format!("failed to read entry in {}", install_dir.display()))?;
-        let path = entry.path();
-        if !path.is_file() || !is_supported_font_file(&path) {
+    let mut seen_paths = BTreeSet::new();
+    for ttf_path in managed_installed_ttf_paths(install_dir)? {
+        if !seen_paths.insert(ttf_path.clone()) {
             continue;
         }
-        let Ok(data) = fs::read(&path) else {
+        if !ttf_path.is_file() || !is_supported_font_file(&ttf_path) {
+            continue;
+        }
+        let Ok(data) = fs::read(&ttf_path) else {
             continue;
         };
         occupied.extend(collect_pua_codepoints_from_font_data(&data));
@@ -1237,8 +1246,13 @@ pub(crate) fn expected_install_ttf_path_for_mode(
     mode: FontInstallNameMode,
 ) -> Result<PathBuf> {
     let install_dir = install_dir_for_manifest(manifest_path)?;
+    let platform = current_platform()?;
+    let ttf_dir = match platform {
+        FontPlatform::Macos => user_font_root()?,
+        FontPlatform::Linux | FontPlatform::Windows => install_dir,
+    };
     let install_font_name = effective_font_name(manifest_path, font_name, mode)?;
-    Ok(install_dir.join(font_file_name(&install_font_name)))
+    Ok(ttf_dir.join(font_file_name(&install_font_name)))
 }
 
 pub(crate) fn installed_ttf_candidates_for_manifest_font(
@@ -1395,6 +1409,28 @@ fn install_dir_has_any_ttf(install_dir: &Path) -> Result<bool> {
         return Ok(false);
     }
 
+    for metadata_path in metadata_paths_in_install_dir(install_dir)? {
+        let Ok(raw) = fs::read_to_string(&metadata_path) else {
+            continue;
+        };
+        let Ok(metadata) = serde_json::from_str::<InstalledFontMetadata>(&raw) else {
+            continue;
+        };
+        let ttf_path = PathBuf::from(metadata.installed_ttf);
+        if ttf_path.is_file() {
+            return Ok(true);
+        }
+    }
+
+    Ok(false)
+}
+
+pub(crate) fn metadata_paths_in_install_dir(install_dir: &Path) -> Result<Vec<PathBuf>> {
+    if !install_dir.is_dir() {
+        return Ok(Vec::new());
+    }
+
+    let mut metadata_paths = Vec::new();
     for entry in fs::read_dir(install_dir)
         .with_context(|| format!("failed to read {}", install_dir.display()))?
     {
@@ -1404,16 +1440,32 @@ fn install_dir_has_any_ttf(install_dir: &Path) -> Result<bool> {
         if !path.is_file() {
             continue;
         }
-        let is_ttf = path
-            .extension()
-            .and_then(|ext| ext.to_str())
-            .is_some_and(|ext| ext.eq_ignore_ascii_case("ttf"));
-        if is_ttf {
-            return Ok(true);
+        let file_name = path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or("");
+        if file_name.starts_with(INSTALL_METADATA_PREFIX)
+            && file_name.ends_with(INSTALL_METADATA_SUFFIX)
+        {
+            metadata_paths.push(path);
         }
     }
 
-    Ok(false)
+    Ok(metadata_paths)
+}
+
+pub(crate) fn managed_installed_ttf_paths(install_dir: &Path) -> Result<Vec<PathBuf>> {
+    let mut paths = Vec::new();
+    for metadata_path in metadata_paths_in_install_dir(install_dir)? {
+        let Ok(raw) = fs::read_to_string(&metadata_path) else {
+            continue;
+        };
+        let Ok(metadata) = serde_json::from_str::<InstalledFontMetadata>(&raw) else {
+            continue;
+        };
+        paths.push(PathBuf::from(metadata.installed_ttf));
+    }
+    Ok(paths)
 }
 
 fn mark_first_install_state(
@@ -1850,6 +1902,9 @@ pub(crate) fn install_built_font(
     let platform = current_platform()?;
     let font_root = user_font_root()?;
     let install_dir = install_dir_for_project(&font_root);
+    let ttf_dir = managed_ttf_dir_for_platform(&font_root, platform);
+    fs::create_dir_all(&font_root)
+        .with_context(|| format!("failed to create {}", font_root.display()))?;
     fs::create_dir_all(&install_dir)
         .with_context(|| format!("failed to create {}", install_dir.display()))?;
     let _guard = acquire_file_lock(&install_lock_path(&font_root), "font install metadata")?;
@@ -1857,8 +1912,9 @@ pub(crate) fn install_built_font(
 
     let built_bytes =
         fs::read(built_ttf).with_context(|| format!("failed to read {}", built_ttf.display()))?;
-    let install_path =
-        immutable_ttf_install_path(&install_dir, project_id, font_name, &built_bytes)?;
+    fs::create_dir_all(&ttf_dir)
+        .with_context(|| format!("failed to create {}", ttf_dir.display()))?;
+    let install_path = immutable_ttf_install_path(&ttf_dir, project_id, font_name, &built_bytes)?;
     if !install_path.exists() {
         write_atomic_bytes(&install_path, &built_bytes)
             .with_context(|| format!("failed to write {}", install_path.display()))?;
@@ -1973,24 +2029,7 @@ pub(crate) fn uninstall_project_font(manifest_path: &Path) -> Result<FontUninsta
 
     let mut ttf_paths_to_remove = BTreeSet::new();
     let mut metadata_paths_to_remove = BTreeSet::new();
-    let metadata_entries: Vec<_> = fs::read_dir(&install_dir)
-        .with_context(|| format!("failed to read {}", install_dir.display()))?
-        .filter_map(|entry| entry.ok())
-        .map(|entry| entry.path())
-        .filter(|path| path.is_file())
-        .collect();
-
-    for metadata_path in metadata_entries {
-        let file_name = metadata_path
-            .file_name()
-            .and_then(|name| name.to_str())
-            .unwrap_or("");
-        let is_metadata = file_name.starts_with(INSTALL_METADATA_PREFIX)
-            && file_name.ends_with(INSTALL_METADATA_SUFFIX);
-        if !is_metadata {
-            continue;
-        }
-
+    for metadata_path in metadata_paths_in_install_dir(&install_dir)? {
         let Ok(raw) = fs::read_to_string(&metadata_path) else {
             continue;
         };
@@ -2083,6 +2122,7 @@ pub(crate) fn uninstall_installed_font_file(installed_ttf: &Path) -> Result<Font
         .with_context(|| format!("failed to create {}", font_root.display()))?;
     let _guard = acquire_file_lock(&install_lock_path(&font_root), "font install metadata")?;
     let install_dir = install_dir_for_project(&font_root);
+    let ttf_root = managed_ttf_dir_for_platform(&font_root, platform);
 
     if !install_dir.exists() {
         update_fontconfig_petiglyph_alias(&install_dir, platform)?;
@@ -2102,15 +2142,15 @@ pub(crate) fn uninstall_installed_font_file(installed_ttf: &Path) -> Result<Font
         );
     }
 
-    let install_dir_canonical = install_dir
+    let ttf_root_canonical = ttf_root
         .canonicalize()
-        .with_context(|| format!("failed to resolve {}", install_dir.display()))?;
+        .with_context(|| format!("failed to resolve {}", ttf_root.display()))?;
     if let Ok(installed_ttf_canonical) = installed_ttf.canonicalize()
-        && !installed_ttf_canonical.starts_with(&install_dir_canonical)
+        && !installed_ttf_canonical.starts_with(&ttf_root_canonical)
     {
         bail!(
             "blocked uninstall outside {}: {}",
-            install_dir.display(),
+            ttf_root.display(),
             installed_ttf.display()
         );
     }
@@ -2189,6 +2229,7 @@ fn uninstall_tool_state_for_font_root(font_root: &Path) -> Result<ToolUninstallR
     let mut removed_ttf_count = 0usize;
     let mut removed_metadata_count = 0usize;
     let mut removed_state_file_count = 0usize;
+    let mut managed_ttf_paths = BTreeSet::new();
 
     for path in entries {
         if !path.is_file() {
@@ -2226,14 +2267,41 @@ fn uninstall_tool_state_for_font_root(font_root: &Path) -> Result<ToolUninstallR
             );
         }
 
-        fs::remove_file(&path).with_context(|| format!("failed to remove {}", path.display()))?;
-        if is_ttf {
-            removed_ttf_count += 1;
-        } else if is_metadata {
+        if is_metadata {
+            let raw = fs::read_to_string(&path)
+                .with_context(|| format!("failed to read {}", path.display()))?;
+            if let Ok(metadata) = serde_json::from_str::<InstalledFontMetadata>(&raw) {
+                managed_ttf_paths.insert(PathBuf::from(metadata.installed_ttf));
+            }
+            fs::remove_file(&path)
+                .with_context(|| format!("failed to remove {}", path.display()))?;
             removed_metadata_count += 1;
+        } else if is_ttf {
+            managed_ttf_paths.insert(path.clone());
+            fs::remove_file(&path)
+                .with_context(|| format!("failed to remove {}", path.display()))?;
+            removed_ttf_count += 1;
         } else {
+            fs::remove_file(&path)
+                .with_context(|| format!("failed to remove {}", path.display()))?;
             removed_state_file_count += 1;
         }
+    }
+
+    for ttf_path in managed_ttf_paths {
+        if !ttf_path.exists() {
+            continue;
+        }
+        if !ttf_path.is_file() {
+            bail!(
+                "blocked tool uninstall for {}: expected file but found non-file at {}",
+                install_dir.display(),
+                ttf_path.display()
+            );
+        }
+        fs::remove_file(&ttf_path)
+            .with_context(|| format!("failed to remove {}", ttf_path.display()))?;
+        removed_ttf_count += 1;
     }
 
     update_fontconfig_petiglyph_alias(&install_dir, platform)?;
@@ -2550,7 +2618,24 @@ vertical_bleed = "off"
         let font_root = make_temp_dir("first-install-backfill");
         let install_dir = install_dir_for_project(&font_root);
         fs::create_dir_all(&install_dir).expect("install dir is created");
-        fs::write(install_dir.join("already_here.ttf"), b"ttf").expect("existing ttf is written");
+
+        let ttf_path = font_root.join("already_here.ttf");
+        fs::write(&ttf_path, b"ttf").expect("existing ttf is written");
+        let metadata = super::InstalledFontMetadata {
+            manifest_path: font_root.join("petiglyph.toml").display().to_string(),
+            font_name: "Already Here".to_string(),
+            installed_ttf: ttf_path.display().to_string(),
+            version: super::CLI_VERSION.to_string(),
+            project_id: Some("project-1".to_string()),
+            install_key: Some("already_here_project_1".to_string()),
+            animation_snapshots: Vec::new(),
+        };
+        let metadata_path = install_dir.join(".petiglyph-install-already_here_project_1.json");
+        fs::write(
+            &metadata_path,
+            serde_json::to_string_pretty(&metadata).expect("metadata serializes"),
+        )
+        .expect("metadata is written");
 
         let had_existing = install_dir_has_any_ttf(&install_dir).expect("ttf scan should work");
         assert!(had_existing, "existing ttf should be detected");

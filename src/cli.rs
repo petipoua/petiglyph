@@ -2087,25 +2087,29 @@ fn list_command() -> Result<ListCommandData> {
     if let Ok(install_dir) = crate::install::managed_install_dir()
         && install_dir.is_dir()
     {
-        if let Ok(entries) = std::fs::read_dir(&install_dir) {
-            for entry in entries.flatten() {
-                let path = entry.path();
-                let is_ttf = path
-                    .extension()
-                    .and_then(|ext| ext.to_str())
-                    .map(|ext| ext.eq_ignore_ascii_case("ttf"))
-                    .unwrap_or(false);
-                if path.is_file() && is_ttf {
-                    let file_name = path
-                        .file_name()
-                        .and_then(|n| n.to_str())
-                        .unwrap_or("unknown.ttf")
-                        .to_string();
-                    installed_fonts.push(ListInstalledFontData {
-                        file_name,
-                        path: path.display().to_string(),
-                    });
+        if let Ok(metadata_paths) = crate::install::metadata_paths_in_install_dir(&install_dir) {
+            for metadata_path in metadata_paths {
+                let Ok(raw) = std::fs::read_to_string(&metadata_path) else {
+                    continue;
+                };
+                let Ok(metadata) =
+                    serde_json::from_str::<crate::install::InstalledFontMetadata>(&raw)
+                else {
+                    continue;
+                };
+                let path = std::path::PathBuf::from(metadata.installed_ttf);
+                if !path.is_file() {
+                    continue;
                 }
+                let file_name = path
+                    .file_name()
+                    .and_then(|n| n.to_str())
+                    .unwrap_or("unknown.ttf")
+                    .to_string();
+                installed_fonts.push(ListInstalledFontData {
+                    file_name,
+                    path: path.display().to_string(),
+                });
             }
         }
         installed_fonts.sort_by(|a, b| a.file_name.cmp(&b.file_name));

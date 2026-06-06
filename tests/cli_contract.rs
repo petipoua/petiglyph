@@ -1891,14 +1891,14 @@ fn cli_install_and_uninstall_json_lifecycle_is_idempotent_macos() {
             .as_str()
             .expect("installed ttf"),
     );
-    let expected_dir = home.join("Library").join("Fonts").join("petiglyph");
+    let expected_dir = home.join("Library").join("Fonts");
     assert!(
         installed_ttf_1.starts_with(&expected_dir)
             && installed_ttf_1
                 .extension()
                 .and_then(|ext| ext.to_str())
                 .is_some_and(|ext| ext.eq_ignore_ascii_case("ttf")),
-        "install should write a ttf under ~/Library/Fonts/petiglyph"
+        "install should write a ttf under ~/Library/Fonts on macOS"
     );
 
     let install_2 = run_petiglyph(&project_dir, &["install-font", "--json"], Some(&home), None);
@@ -1949,21 +1949,10 @@ fn cli_install_and_uninstall_json_lifecycle_is_idempotent_macos() {
         Some("already_absent")
     );
 
-    let remaining_ttf_count = fs::read_dir(expected_dir)
-        .ok()
-        .into_iter()
-        .flat_map(|entries| entries.filter_map(|entry| entry.ok()))
-        .filter(|entry| {
-            entry
-                .path()
-                .extension()
-                .and_then(|ext| ext.to_str())
-                .is_some_and(|ext| ext.eq_ignore_ascii_case("ttf"))
-        })
-        .count();
     assert_eq!(
-        remaining_ttf_count, 0,
-        "immutable install artifacts should be fully removed on uninstall"
+        installed_ttf_1.exists(),
+        false,
+        "immutable install artifact should be fully removed on uninstall"
     );
 
     fs::remove_dir_all(workspace).expect("temp dir is removed");

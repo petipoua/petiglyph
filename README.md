@@ -355,7 +355,7 @@ Outcomes:
 Current install root by OS:
 
 - Linux: `~/.local/share/fonts/petiglyph/`
-- macOS: `~/Library/Fonts/petiglyph/`
+- macOS: `~/Library/Fonts/` for installed `.ttf` files; managed metadata stays under `~/Library/Fonts/petiglyph/`
 - Windows: `%LOCALAPPDATA%/Microsoft/Windows/Fonts/petiglyph/`
 
 Unicode ownership guardrails:

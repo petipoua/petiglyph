@@ -6,11 +6,11 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use crate::build::collect_source_files;
-use crate::install::{managed_install_dir, reserve_project_unicode_range};
+use crate::install::{
+    managed_install_dir, metadata_paths_in_install_dir, reserve_project_unicode_range,
+};
 use crate::project::{load_runtime_config, manifest_path_from_option, parse_codepoint};
 
-const INSTALL_METADATA_PREFIX: &str = ".petiglyph-install-";
-const INSTALL_METADATA_SUFFIX: &str = ".json";
 const GLOBAL_LOCK_FILES: [&str; 2] = [".unicode-registry.lock", ".petiglyph-install.lock"];
 const PROJECT_LOCK_FILE: &str = ".petiglyph-build.lock";
 const STALE_LOCK_AGE: Duration = Duration::from_secs(600);
@@ -285,6 +285,20 @@ pub(crate) fn doctor(repair: bool, manifest_arg: Option<PathBuf>) -> Result<Doct
         let mut referenced_ttfs = BTreeSet::new();
         let mut present_ttfs = BTreeSet::new();
 
+        for metadata_path in metadata_paths_in_install_dir(&install_dir)? {
+            let raw = fs::read_to_string(&metadata_path)
+                .with_context(|| format!("failed to read {}", metadata_path.display()))?;
+            let metadata: InstallMetadataRaw = serde_json::from_str(&raw)
+                .with_context(|| format!("failed to parse {}", metadata_path.display()))?;
+
+            let ttf_path = Path::new(&metadata.installed_ttf);
+            if !ttf_path.is_file() {
+                orphaned_metadata.push(metadata_path);
+            } else {
+                referenced_ttfs.insert(ttf_path.to_path_buf());
+            }
+        }
+
         for entry in fs::read_dir(&install_dir)
             .with_context(|| format!("failed to read {}", install_dir.display()))?
         {
@@ -300,24 +314,6 @@ pub(crate) fn doctor(repair: bool, manifest_arg: Option<PathBuf>) -> Result<Doct
 
             if name.ends_with(".ttf") {
                 present_ttfs.insert(path.clone());
-            }
-
-            if !(name.starts_with(INSTALL_METADATA_PREFIX)
-                && name.ends_with(INSTALL_METADATA_SUFFIX))
-            {
-                continue;
-            }
-
-            let raw = fs::read_to_string(&path)
-                .with_context(|| format!("failed to read {}", path.display()))?;
-            let metadata: InstallMetadataRaw = serde_json::from_str(&raw)
-                .with_context(|| format!("failed to parse {}", path.display()))?;
-
-            let ttf_path = Path::new(&metadata.installed_ttf);
-            if !ttf_path.is_file() {
-                orphaned_metadata.push(path);
-            } else {
-                referenced_ttfs.insert(ttf_path.to_path_buf());
             }
         }
 
