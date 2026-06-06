@@ -248,48 +248,40 @@ impl App {
         self.animation_imported_set.clear();
         self.animation_import_settings.grayscale_editor = None;
         self.selecting_for_animation_frames = false;
-        self.animation_create_pending = None;
-        self.animation_create_started_at = None;
     }
 
     fn start_animation_create(&mut self, config: AnimationConfig) {
-        if self.animation_create_pending.is_some() {
+        if self.animation_create_task.is_some() {
             return;
         }
         self.home_workflow_error = None;
-        self.animation_create_started_at = Some(Instant::now());
-        self.animation_create_pending = Some(config);
+        let manifest_path = self.manifest_path.clone();
+        let input_dir = self.config.input_dir.clone();
+        let (sender, receiver) = mpsc::channel();
+        thread::spawn(move || {
+            let result = create_animation_task(manifest_path, input_dir, config)
+                .map_err(|err| err.to_string());
+            let _ = sender.send(result);
+        });
+        self.animation_create_task = Some(AnimationCreateTask {
+            receiver,
+            spinner_index: 0,
+            spinner_last_frame_at: Instant::now(),
+        });
     }
 
     fn animation_create_in_progress(&self) -> bool {
-        self.animation_create_pending.is_some()
+        self.animation_create_task.is_some()
     }
 
     fn animation_create_spinner_frame(&self) -> &'static str {
-        let Some(started_at) = self.animation_create_started_at else {
-            return ANIMATION_IMPORT_SPINNER_FRAMES[0];
-        };
-        let elapsed_ms = Instant::now()
-            .saturating_duration_since(started_at)
-            .as_millis() as u64;
-        let idx = ((elapsed_ms / FONT_TASK_SPINNER_FRAME_MS) as usize)
-            % ANIMATION_IMPORT_SPINNER_FRAMES.len();
-        ANIMATION_IMPORT_SPINNER_FRAMES[idx]
-    }
-
-    fn poll_animation_create_pending(&mut self) -> Result<()> {
-        let Some(config) = self.animation_create_pending.take() else {
-            return Ok(());
-        };
-        self.animation_create_started_at = None;
-        if let Err(err) = self.create_animation_from_config(&config) {
-            self.home_workflow_error = Some(format!(
-                "failed to create animation: {}",
-                format_status_from_error(&self.manifest_path, &err.to_string())
-            ));
-            return Err(err);
-        }
-        Ok(())
+        self.animation_create_task
+            .as_ref()
+            .map(|task| {
+                ANIMATION_IMPORT_SPINNER_FRAMES
+                    [task.spinner_index % ANIMATION_IMPORT_SPINNER_FRAMES.len()]
+            })
+            .unwrap_or(ANIMATION_IMPORT_SPINNER_FRAMES[0])
     }
 
     fn start_animation_config(&mut self, animation_type: AnimationType) {
@@ -322,71 +314,7 @@ impl App {
         });
     }
 
-    fn create_animation_from_config(&mut self, config: &AnimationConfig) -> Result<()> {
-        let name = config.animation_name.trim().to_string();
-        if config.selected_frames.is_empty() {
-            self.status = Some("animation requires at least one frame".to_string());
-            self.home_workflow_error = Some("animation requires at least one frame".to_string());
-            return Ok(());
-        }
-        if self.config.animations.iter().any(|a| a.name == name) {
-            self.status = Some(format!("animation `{name}` already exists"));
-            self.home_workflow_error = Some(format!("animation `{name}` already exists"));
-            return Ok(());
-        }
-        let mut selected_frames = config.selected_frames.clone();
-        sort_source_keys_for_animation_frames(&mut selected_frames);
-        let mut duplicated_for_grid_conflicts = 0usize;
-
-        if config.animation_type == AnimationType::Grid {
-            let mut resolved_frames = Vec::with_capacity(selected_frames.len());
-            for frame in &selected_frames {
-                let desired = CompositionDef {
-                    rows: config.rows as usize,
-                    cols: config.cols as usize,
-                    horizontal_bleed: config.horizontal_bleed,
-                    vertical_bleed: config.vertical_bleed,
-                };
-                if let Some(existing) = self.config.compositions.get(frame) {
-                    if existing != &desired {
-                        let duplicated_frame =
-                            duplicate_source_key_for_grid_conflict(&self.config.input_dir, frame)?;
-                        persist_composition_definition(
-                            &self.manifest_path,
-                            &duplicated_frame,
-                            Some(desired),
-                        )?;
-                        resolved_frames.push(duplicated_frame);
-                        duplicated_for_grid_conflicts =
-                            duplicated_for_grid_conflicts.saturating_add(1);
-                        continue;
-                    }
-                    resolved_frames.push(frame.clone());
-                } else {
-                    persist_composition_definition(&self.manifest_path, frame, Some(desired))?;
-                    resolved_frames.push(frame.clone());
-                }
-            }
-            selected_frames = resolved_frames;
-            self.reload_config()?;
-        }
-
-        let frames = selected_frames;
-
-        let def = AnimationDef {
-            name: name.clone(),
-            animation_type: config.animation_type,
-            fps: config.fps,
-            frames,
-            rows: (config.animation_type == AnimationType::Grid).then_some(config.rows as usize),
-            cols: (config.animation_type == AnimationType::Grid).then_some(config.cols as usize),
-            horizontal_bleed: (config.animation_type == AnimationType::Grid)
-                .then_some(config.horizontal_bleed),
-            vertical_bleed: (config.animation_type == AnimationType::Grid)
-                .then_some(config.vertical_bleed),
-            grayscale_processing: config.grayscale_processing,
-        };
-        persist_animation_definition(&self.manifest_path, def)?;
+    fn finish_animation_create(&mut self, output: AnimationCreateTaskOutput) -> Result<()> {
         self.reload_glyphs()?;
         self.refresh_workspace_discovery()?;
         self.glyph_tool_mode = GlyphToolMode::None;
@@ -395,16 +323,88 @@ impl App {
         if !matches!(self.home_workflow, HomeWorkflow::Launcher) {
             self.complete_home_workflow_to_glyphs();
         }
-        self.status = Some(if duplicated_for_grid_conflicts > 0 {
+        self.status = Some(if output.duplicated_for_grid_conflicts > 0 {
             format!(
-                "created animation `{name}` (auto-duplicated {duplicated_for_grid_conflicts} frame(s) for grid config conflicts)"
+                "created animation `{}` (auto-duplicated {} frame(s) for grid config conflicts)",
+                output.name, output.duplicated_for_grid_conflicts
             )
         } else {
-            format!("created animation `{name}`")
+            format!("created animation `{}`", output.name)
         });
         Ok(())
     }
+}
 
+fn create_animation_task(
+    manifest_path: PathBuf,
+    input_dir: PathBuf,
+    config: AnimationConfig,
+) -> Result<AnimationCreateTaskOutput> {
+    let name = config.animation_name.trim().to_string();
+    if config.selected_frames.is_empty() {
+        bail!("animation requires at least one frame");
+    }
+    let runtime = read_manifest(&manifest_path)?;
+    if runtime.animations.iter().any(|a| a.name == name) {
+        bail!("animation `{name}` already exists");
+    }
+    let mut selected_frames = config.selected_frames.clone();
+    sort_source_keys_for_animation_frames(&mut selected_frames);
+    let mut duplicated_for_grid_conflicts = 0usize;
+
+    if config.animation_type == AnimationType::Grid {
+        let mut resolved_frames = Vec::with_capacity(selected_frames.len());
+        for frame in &selected_frames {
+            let desired = CompositionDef {
+                rows: config.rows as usize,
+                cols: config.cols as usize,
+                horizontal_bleed: config.horizontal_bleed,
+                vertical_bleed: config.vertical_bleed,
+            };
+            if let Some(existing) = runtime.compositions.get(frame) {
+                if existing != &desired {
+                    let duplicated_frame =
+                        duplicate_source_key_for_grid_conflict(&input_dir, frame)?;
+                    persist_composition_definition(
+                        &manifest_path,
+                        &duplicated_frame,
+                        Some(desired),
+                    )?;
+                    resolved_frames.push(duplicated_frame);
+                    duplicated_for_grid_conflicts =
+                        duplicated_for_grid_conflicts.saturating_add(1);
+                    continue;
+                }
+                resolved_frames.push(frame.clone());
+            } else {
+                persist_composition_definition(&manifest_path, frame, Some(desired))?;
+                resolved_frames.push(frame.clone());
+            }
+        }
+        selected_frames = resolved_frames;
+    }
+
+    let def = AnimationDef {
+        name: name.clone(),
+        animation_type: config.animation_type,
+        fps: config.fps,
+        frames: selected_frames,
+        rows: (config.animation_type == AnimationType::Grid).then_some(config.rows as usize),
+        cols: (config.animation_type == AnimationType::Grid).then_some(config.cols as usize),
+        horizontal_bleed: (config.animation_type == AnimationType::Grid)
+            .then_some(config.horizontal_bleed),
+        vertical_bleed: (config.animation_type == AnimationType::Grid)
+            .then_some(config.vertical_bleed),
+        grayscale_processing: config.grayscale_processing,
+    };
+    persist_animation_definition(&manifest_path, def)?;
+    Ok(AnimationCreateTaskOutput {
+        name,
+        duplicated_for_grid_conflicts,
+    })
+}
+
+impl App {
     fn update_animation_preview(&mut self) {
         if self.config.animations.is_empty() {
             self.animation_preview = None;
@@ -540,8 +540,7 @@ impl App {
             animation_import_task: None,
             home_import_task: None,
             queued_drop_payload: None,
-            animation_create_pending: None,
-            animation_create_started_at: None,
+            animation_create_task: None,
             live_glyph_source_count: None,
             live_glyph_source_probe_fingerprint: None,
             live_glyph_source_probe_at: None,
@@ -631,8 +630,7 @@ impl App {
             animation_import_task: None,
             home_import_task: None,
             queued_drop_payload: None,
-            animation_create_pending: None,
-            animation_create_started_at: None,
+            animation_create_task: None,
             live_glyph_source_count: None,
             live_glyph_source_probe_fingerprint: None,
             live_glyph_source_probe_at: None,

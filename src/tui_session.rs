@@ -172,19 +172,13 @@ pub(crate) fn tui_workspace(
         app.poll_font_task();
         app.poll_project_switch_task();
         app.poll_animation_import_task();
+        app.poll_animation_create_task();
         app.poll_home_import_task();
         app.update_animation_preview();
         app.clear_expired_switch_notice();
         app.refresh_live_glyph_source_count();
         app.refresh_pipeline_debug_log();
         session.terminal.draw(|frame| draw_ui(frame, &app))?;
-        if let Err(err) = app.poll_animation_create_pending() {
-            app.status = Some(format_status_from_error(
-                &app.manifest_path,
-                &err.to_string(),
-            ));
-            tui_debug_log("animation.create.error", app_debug_state(&app));
-        }
         if log_next_draw_after_esc {
             tui_debug_log("draw.after_esc", app_debug_state(&app));
             log_next_draw_after_esc = false;
@@ -484,8 +478,7 @@ pub(crate) struct App {
     animation_import_task: Option<AnimationImportTask>,
     home_import_task: Option<HomeImportTask>,
     queued_drop_payload: Option<String>,
-    animation_create_pending: Option<AnimationConfig>,
-    animation_create_started_at: Option<Instant>,
+    animation_create_task: Option<AnimationCreateTask>,
     live_glyph_source_count: Option<usize>,
     live_glyph_source_probe_fingerprint: Option<u64>,
     live_glyph_source_probe_at: Option<Instant>,
@@ -557,6 +550,12 @@ struct AnimationImportTask {
     spinner_last_frame_at: Instant,
 }
 
+struct AnimationCreateTask {
+    receiver: Receiver<Result<AnimationCreateTaskOutput, String>>,
+    spinner_index: usize,
+    spinner_last_frame_at: Instant,
+}
+
 struct HomeImportTask {
     receiver: Receiver<Result<DropImportResult, String>>,
     spinner_index: usize,
@@ -591,6 +590,12 @@ struct AnimationImportTaskOutput {
     import: DropImportResult,
     loaded: Option<LoadedGlyphs>,
     detail_status: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+struct AnimationCreateTaskOutput {
+    name: String,
+    duplicated_for_grid_conflicts: usize,
 }
 
 #[derive(Debug, Clone)]

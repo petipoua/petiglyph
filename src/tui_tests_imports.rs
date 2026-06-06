@@ -603,7 +603,6 @@
             codepoint_start: 0x10_0000,
         };
 
-        let mut app = App::new(manifest_path.clone(), config);
         let animation_config = AnimationConfig {
             selected_frames: vec![
                 "runner_10.png".to_string(),
@@ -621,8 +620,12 @@
             focus: AnimationConfigFocus::Fps,
         };
 
-        app.create_animation_from_config(&animation_config)
-            .expect("animation should persist");
+        super::create_animation_task(
+            manifest_path.clone(),
+            config.input_dir.clone(),
+            animation_config,
+        )
+        .expect("animation should persist");
 
         let manifest = read_manifest(&manifest_path).expect("manifest reloads");
         assert_eq!(manifest.animations.len(), 1);
@@ -683,7 +686,6 @@
             codepoint_start: 0x10_0000,
         };
 
-        let mut app = App::new(manifest_path.clone(), config);
         let animation_config = AnimationConfig {
             selected_frames: vec!["frame.png".to_string()],
             animation_name: "frame_anim".to_string(),
@@ -697,8 +699,12 @@
             focus: AnimationConfigFocus::Fps,
         };
 
-        app.create_animation_from_config(&animation_config)
-            .expect("animation should persist with duplicate frame");
+        super::create_animation_task(
+            manifest_path.clone(),
+            config.input_dir.clone(),
+            animation_config,
+        )
+        .expect("animation should persist with duplicate frame");
 
         let manifest = read_manifest(&manifest_path).expect("manifest reloads");
         assert_eq!(manifest.animations.len(), 1);
@@ -722,6 +728,41 @@
         );
 
         fs::remove_dir_all(project_dir).expect("temp dir is removed");
+    }
+
+    #[test]
+    fn animation_create_task_spinner_advances_while_worker_runs() {
+        let project_dir = make_temp_dir("animation-create-spinner-advances");
+        let manifest_path = project_dir.join("petiglyph.toml");
+        write_manifest(&manifest_path, &Manifest::default()).expect("manifest is written");
+
+        let config = RuntimeConfig {
+            project_dir: project_dir.clone(),
+            project_id: "test-animation-create-spinner-advances".to_string(),
+            input_dir: project_dir.join("icons"),
+            out_dir: project_dir.join("build"),
+            font_name: "Petiglyph".to_string(),
+            glyph_size: 8,
+            base_threshold: 64,
+            threshold_overrides: BTreeMap::new(),
+            invert_overrides: BTreeMap::new(),
+            compositions: BTreeMap::new(),
+            animations: Vec::new(),
+            codepoint_start: 0x10_0000,
+        };
+        let mut app = App::new(manifest_path, config);
+        let (_sender, receiver) =
+            std::sync::mpsc::channel::<Result<super::AnimationCreateTaskOutput, String>>();
+        app.animation_create_task = Some(super::AnimationCreateTask {
+            receiver,
+            spinner_index: 0,
+            spinner_last_frame_at: Instant::now()
+                - Duration::from_millis(super::FONT_TASK_SPINNER_FRAME_MS * 2),
+        });
+
+        assert_eq!(app.animation_create_spinner_frame(), "-");
+        app.poll_animation_create_task();
+        assert_eq!(app.animation_create_spinner_frame(), "|");
     }
 
     #[test]

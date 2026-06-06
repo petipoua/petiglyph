@@ -1003,6 +1003,55 @@ impl App {
         self.start_queued_drop_import();
     }
 
+    fn poll_animation_create_task(&mut self) {
+        let mut task_result = None;
+        let mut disconnected = false;
+
+        if let Some(task) = self.animation_create_task.as_mut() {
+            let frame_duration = Duration::from_millis(FONT_TASK_SPINNER_FRAME_MS);
+            let now = Instant::now();
+            while now.duration_since(task.spinner_last_frame_at) >= frame_duration {
+                task.spinner_index =
+                    (task.spinner_index + 1) % ANIMATION_IMPORT_SPINNER_FRAMES.len();
+                task.spinner_last_frame_at += frame_duration;
+            }
+            match task.receiver.try_recv() {
+                Ok(result) => task_result = Some(result),
+                Err(TryRecvError::Empty) => {}
+                Err(TryRecvError::Disconnected) => disconnected = true,
+            }
+        }
+
+        if disconnected {
+            self.animation_create_task = None;
+            self.home_workflow_error =
+                Some("failed to create animation: task terminated unexpectedly".to_string());
+            self.status = Some("animation create task terminated unexpectedly".to_string());
+            return;
+        }
+
+        let Some(result) = task_result else {
+            return;
+        };
+
+        self.animation_create_task = None;
+        match result {
+            Ok(output) => {
+                if let Err(err) = self.finish_animation_create(output) {
+                    let message = format_status_from_error(&self.manifest_path, &err.to_string());
+                    self.home_workflow_error =
+                        Some(format!("failed to create animation: {message}"));
+                    self.status = Some(message);
+                }
+            }
+            Err(err) => {
+                let message = format_status_from_error(&self.manifest_path, &err);
+                self.home_workflow_error = Some(format!("failed to create animation: {message}"));
+                self.status = Some(message);
+            }
+        }
+    }
+
     fn poll_home_import_task(&mut self) {
         let mut task_result = None;
         let mut disconnected = false;
@@ -1174,6 +1223,7 @@ impl App {
         self.install_in_progress()
             || self.project_switch_task.is_some()
             || self.animation_import_task.is_some()
+            || self.animation_create_task.is_some()
             || self.home_import_task.is_some()
     }
 
@@ -1182,6 +1232,7 @@ impl App {
         self.poll_font_task();
         self.poll_project_switch_task();
         self.poll_animation_import_task();
+        self.poll_animation_create_task();
         self.poll_home_import_task();
     }
 
