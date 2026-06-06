@@ -160,12 +160,34 @@ pub(crate) fn tui_workspace(
         codepoint_start: codepoint_start_override,
     };
 
-    let mut app = App::new_workspace(workspace_root, initial_manifest, launch_overrides)?;
-
     reset_tui_debug_log();
+    let mut session = TerminalSession::start()?;
+    let (startup_tx, startup_rx) = mpsc::channel();
+    thread::spawn(move || {
+        let result = App::new_workspace(workspace_root, initial_manifest, launch_overrides);
+        let _ = startup_tx.send(result);
+    });
+
+    let started_at = Instant::now();
+    let mut spinner_frame = 0usize;
+    let mut app = loop {
+        match startup_rx.try_recv() {
+            Ok(result) => break result?,
+            Err(TryRecvError::Empty) => {
+                session
+                    .terminal
+                    .draw(|frame| draw_startup_loading(frame, spinner_frame, started_at.elapsed()))?;
+                spinner_frame = spinner_frame.wrapping_add(1);
+                thread::sleep(Duration::from_millis(80));
+            }
+            Err(TryRecvError::Disconnected) => {
+                bail!("application startup worker stopped unexpectedly");
+            }
+        }
+    };
+
     tui_debug_log("tui.start", app_debug_state(&app));
 
-    let mut session = TerminalSession::start()?;
     let mut log_next_draw_after_esc = false;
     while !app.quit {
         app.poll_font_task();
@@ -230,6 +252,46 @@ pub(crate) fn tui_workspace(
 
     println!("tui session closed for {close_label}");
     Ok(())
+}
+
+fn draw_startup_loading(frame: &mut Frame<'_>, spinner_frame: usize, elapsed: Duration) {
+    const SPINNER: &[char] = &['|', '/', '-', '\\'];
+    let spinner = SPINNER[spinner_frame % SPINNER.len()];
+    let detail = if elapsed >= Duration::from_secs(1) {
+        "Loading projects, installed fonts, and glyphs..."
+    } else {
+        "Loading..."
+    };
+    let paragraph = Paragraph::new(vec![
+        Line::from(Span::styled(
+            "petiglyph",
+            Style::default()
+                .fg(Color::Yellow)
+                .add_modifier(Modifier::BOLD),
+        )),
+        Line::from(""),
+        Line::from(format!("{spinner} {detail}")),
+    ])
+    .alignment(Alignment::Center);
+
+    let frame_area = frame.area();
+    let width = frame_area.width.min(54);
+    let height = frame_area.height.min(7);
+    let area = Rect::new(
+        frame_area.x + frame_area.width.saturating_sub(width) / 2,
+        frame_area.y + frame_area.height.saturating_sub(height) / 2,
+        width,
+        height,
+    );
+    frame.render_widget(Clear, area);
+    frame.render_widget(
+        paragraph.block(
+            Block::default()
+                .borders(Borders::ALL)
+                .border_type(BorderType::Rounded),
+        ),
+        area,
+    );
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
