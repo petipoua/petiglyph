@@ -1,6 +1,6 @@
 # petiglyph
 
-`petiglyph` is a TUI and CLI tool for turning images and videos into custom font glyphs.
+`petiglyph` is a TUI and CLI tool for turning images and videos into custom font glyphs. Glyphs can be static or animated, standard size or multiline grids.
 
 
 ## Quickstart
