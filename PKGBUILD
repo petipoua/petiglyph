@@ -1,7 +1,7 @@
 pkgname=petiglyph
 pkgver=0.1.0
 pkgrel=1
-pkgdesc='Build custom font glyphs from images and videos'
+pkgdesc='petiglyph is a TUI and CLI tool for turning images and videos into custom font glyphs'
 arch=('x86_64')
 url='https://github.com/petipoua/petiglyph'
 license=('MIT')
