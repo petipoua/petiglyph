@@ -1,6 +1,9 @@
 # petiglyph
 
-`petiglyph` is a TUI and CLI tool for turning images and videos into custom font glyphs. Glyphs can be static or animated, standard size or multiline grids.
+`petiglyph` is a TUI and CLI tool for turning images and videos into custom font glyphs.  
+
+
+
 
 
 ## Quickstart
@@ -32,6 +35,20 @@ petiglyph
 
 This opens the TUI Home panel, where you can create a project and start importing media to create glyphs, grids, and animations.  
 
+Generated glyphs can be of 4 types:
+- standard monospace, static
+- standard monospace, animated
+- grid of glyphs, static
+- grid of glyphs, animated
+
+> [!WARNING]  
+> After installing petiglyph fonts, you need to reboot all instances of the terminal you're using, or, if it doesn't work, reboot your computer, to make sure the new fonts are correctly loaded by your apps or system.
+ 
+For all 4 types, petiglyph will generate the static and animated glyphs in the `Installed petiglyph fonts` area of the Home panel after installing the fonts.  
+
+To copy those glyphs for reusing them elsewhere, you have to navigate with your arrows to the `Installed petiglyph fonts` area, select the glyphs that you want, press ENTER to copy them to your clipboard, and paste them in your own tools or apps (those apps need to also have the new fonts loaded, see warning above).  
+
+Pressing ENTER on the animated glyphs copies all frames inside the clipboard. To see them animated, you need to make your own script to render all the glyphs into an animation.
 <br> 
 
 --- 
