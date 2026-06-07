@@ -15,7 +15,53 @@ my-font/
 
 ## Quickstart
 
-Install `petiglyph`, make sure `ffmpeg` is available on `PATH`, then start here.
+### 1. Install `petiglyph`
+
+Choose one:
+
+```bash
+npm install -g petiglyph
+pip install petiglyph
+yay -S petiglyph
+```
+
+You can also download a prebuilt binary from GitHub Releases.
+
+Make sure `ffmpeg` is available on `PATH`.
+
+### 2. Open the TUI in the folder where you want the project
+
+```bash
+petiglyph
+```
+
+This opens the TUI Home panel, where you can create a project and start importing glyphs, grids, and animations.
+
+## Reference
+
+### Installation and runtime prerequisites
+
+Distribution surfaces in this repo:
+
+- GitHub Releases: prebuilt archives
+- AUR: `petiglyph`
+- npm: `petiglyph`
+- PyPI: `petiglyph`
+
+Install examples:
+
+```bash
+npm install -g petiglyph
+pip install petiglyph
+yay -S petiglyph
+```
+
+Runtime requirement:
+
+- `ffmpeg` must be available on `PATH` before `petiglyph` starts.
+- Interactive runs show an OS-aware install hint when `ffmpeg` is missing.
+- To let petiglyph run the suggested install command for that run, pass `--ffmpeg-auto-install`.
+- To suppress the one-time hint globally, set `PETIGLYPH_NO_FFMPEG_PROMPT=1`.
 
 ### Create a project and open the TUI
 
@@ -78,8 +124,6 @@ The TUI is the primary interface for:
 
 On Windows, the Home creation workflows use a native file picker.
 
-## Reference
-
 ### Command reference
 
 Core commands:
@@ -133,22 +177,6 @@ petiglyph install-font --force-remap
 ```
 
 `petiglyph uninstall` is intentionally a hidden stub that exits with guidance to use `uninstall-font` or `uninstall-all-fonts`.
-
-### Installation and runtime prerequisites
-
-Distribution surfaces in this repo:
-
-- GitHub Releases: prebuilt archives
-- AUR: `petiglyph`
-- npm: `petiglyph`
-- PyPI: `petiglyph`
-
-Runtime requirement:
-
-- `ffmpeg` must be available on `PATH` before `petiglyph` starts.
-- Interactive runs show an OS-aware install hint when `ffmpeg` is missing.
-- To let petiglyph run the suggested install command for that run, pass `--ffmpeg-auto-install`.
-- To suppress the one-time hint globally, set `PETIGLYPH_NO_FFMPEG_PROMPT=1`.
 
 ### Project resolution and TUI launch behavior
 
