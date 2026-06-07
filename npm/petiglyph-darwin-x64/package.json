@@ -1,5 +1,5 @@
 {
-  "name": "@petiglyph/petiglyph-darwin-x64",
+  "name": "petiglyph-darwin-x64",
   "version": "0.1.0",
   "description": "petiglyph native binary package for darwin/x64",
   "license": "MIT",

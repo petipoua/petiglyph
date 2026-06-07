@@ -11,7 +11,6 @@ the leading `v`; Git tags use `vX.Y.Z`.
 - Keep release tag creation restricted; `main` itself does not need push protection for this small single-maintainer repo.
 - Require approval for the GitHub environments `npm`, `testpypi`, and `pypi`.
 - Configure npm trusted publishing for `.github/workflows/npm-publish.yml`.
-- Make sure the npm organization/scope used by the platform packages exists and that your publisher account can write to it.
 - Configure TestPyPI and PyPI trusted publishing for
   `.github/workflows/pypi-publish.yml`, using their matching environments.
 - Configure AUR SSH access and own the `petiglyph` package base.
@@ -116,7 +115,8 @@ Publishing the draft GitHub Release triggers both registry workflows.
 `.github/workflows/npm-publish.yml` downloads the published release archives,
 verifies the GitHub artifact attestations and checksums, stages binaries from
 the release archives, validates every package with `npm pack --dry-run`,
-publishes platform packages, then publishes the `petiglyph` meta package.
+publishes the `petiglyph-*` platform packages, then publishes the `petiglyph`
+meta package.
 
 Approve the `npm` environment when ready. Optional local archive validation:
 

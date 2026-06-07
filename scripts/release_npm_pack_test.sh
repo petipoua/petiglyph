@@ -44,7 +44,7 @@ if [[ -z "$first_platform_dir" ]]; then
   exit 1
 fi
 first_platform_slug="$(basename "$first_platform_dir")"
-platform_tgz="$(ls "$tarball_dir"/petiglyph-"$first_platform_slug"-*.tgz 2>/dev/null | head -n1 || true)"
+platform_tgz="$(ls "$tarball_dir"/"$first_platform_slug"-*.tgz 2>/dev/null | head -n1 || true)"
 
 if [[ -z "$meta_tgz" || -z "$platform_tgz" ]]; then
   echo "Expected meta and at least one platform tarball in $tarball_dir" >&2

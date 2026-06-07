@@ -7,7 +7,7 @@
       "archive": "tar.gz",
       "bin_ext": "",
       "bin_name": "petiglyph",
-      "npm_package": "@petiglyph/petiglyph-linux-x64-gnu",
+      "npm_package": "petiglyph-linux-x64-gnu",
       "npm_dir": "npm/petiglyph-linux-x64-gnu",
       "pypi": true,
       "manylinux": "2014"
@@ -18,7 +18,7 @@
       "archive": "tar.gz",
       "bin_ext": "",
       "bin_name": "petiglyph",
-      "npm_package": "@petiglyph/petiglyph-linux-arm64-gnu",
+      "npm_package": "petiglyph-linux-arm64-gnu",
       "npm_dir": "npm/petiglyph-linux-arm64-gnu",
       "pypi": true,
       "manylinux": "2014"
@@ -29,7 +29,7 @@
       "archive": "tar.gz",
       "bin_ext": "",
       "bin_name": "petiglyph",
-      "npm_package": "@petiglyph/petiglyph-linux-x64-musl",
+      "npm_package": "petiglyph-linux-x64-musl",
       "npm_dir": "npm/petiglyph-linux-x64-musl",
       "pypi": false
     },
@@ -39,7 +39,7 @@
       "archive": "tar.gz",
       "bin_ext": "",
       "bin_name": "petiglyph",
-      "npm_package": "@petiglyph/petiglyph-linux-arm64-musl",
+      "npm_package": "petiglyph-linux-arm64-musl",
       "npm_dir": "npm/petiglyph-linux-arm64-musl",
       "pypi": false
     },
@@ -49,7 +49,7 @@
       "archive": "tar.gz",
       "bin_ext": "",
       "bin_name": "petiglyph",
-      "npm_package": "@petiglyph/petiglyph-darwin-x64",
+      "npm_package": "petiglyph-darwin-x64",
       "npm_dir": "npm/petiglyph-darwin-x64",
       "pypi": true
     },
@@ -59,7 +59,7 @@
       "archive": "tar.gz",
       "bin_ext": "",
       "bin_name": "petiglyph",
-      "npm_package": "@petiglyph/petiglyph-darwin-arm64",
+      "npm_package": "petiglyph-darwin-arm64",
       "npm_dir": "npm/petiglyph-darwin-arm64",
       "pypi": true
     },
@@ -69,7 +69,7 @@
       "archive": "zip",
       "bin_ext": ".exe",
       "bin_name": "petiglyph.exe",
-      "npm_package": "@petiglyph/petiglyph-win32-x64-msvc",
+      "npm_package": "petiglyph-win32-x64-msvc",
       "npm_dir": "npm/petiglyph-win32-x64-msvc",
       "pypi": true
     },
@@ -79,7 +79,7 @@
       "archive": "zip",
       "bin_ext": ".exe",
       "bin_name": "petiglyph.exe",
-      "npm_package": "@petiglyph/petiglyph-win32-arm64-msvc",
+      "npm_package": "petiglyph-win32-arm64-msvc",
       "npm_dir": "npm/petiglyph-win32-arm64-msvc",
       "pypi": true
     }

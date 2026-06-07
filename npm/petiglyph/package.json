@@ -23,14 +23,14 @@
     "node": ">=18"
   },
   "optionalDependencies": {
-    "@petiglyph/petiglyph-linux-x64-gnu": "0.1.0",
-    "@petiglyph/petiglyph-linux-arm64-gnu": "0.1.0",
-    "@petiglyph/petiglyph-linux-x64-musl": "0.1.0",
-    "@petiglyph/petiglyph-linux-arm64-musl": "0.1.0",
-    "@petiglyph/petiglyph-darwin-x64": "0.1.0",
-    "@petiglyph/petiglyph-darwin-arm64": "0.1.0",
-    "@petiglyph/petiglyph-win32-x64-msvc": "0.1.0",
-    "@petiglyph/petiglyph-win32-arm64-msvc": "0.1.0"
+    "petiglyph-linux-x64-gnu": "0.1.0",
+    "petiglyph-linux-arm64-gnu": "0.1.0",
+    "petiglyph-linux-x64-musl": "0.1.0",
+    "petiglyph-linux-arm64-musl": "0.1.0",
+    "petiglyph-darwin-x64": "0.1.0",
+    "petiglyph-darwin-arm64": "0.1.0",
+    "petiglyph-win32-x64-msvc": "0.1.0",
+    "petiglyph-win32-arm64-msvc": "0.1.0"
   },
   "publishConfig": {
     "access": "public"

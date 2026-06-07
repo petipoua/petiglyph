@@ -62,7 +62,7 @@ Attach prebuilt binaries for:
 Distribution callouts:
 
 - AUR package requires `ffmpeg` and `fontconfig`.
-- npm publishes `petiglyph` plus all `@petiglyph/*` platform packages.
+- npm publishes `petiglyph` plus all `petiglyph-*` platform packages.
 - PyPI publishes Linux GNU manylinux, macOS, and Windows wheels plus sdist.
 - macOS and Windows artifacts are unsigned unless this release explicitly states otherwise.
 

@@ -59,7 +59,7 @@ for pkg in npm/*/package.json; do
   VERSION="$version" perl -i -pe 's/("version"\s*:\s*")[^"]+(",)/$1$ENV{VERSION}$2/' "$pkg"
 done
 
-VERSION="$version" perl -0i -pe 's/("@petiglyph\/petiglyph-[^"]+"\s*:\s*")[^"]+(")/$1$ENV{VERSION}$2/g' npm/petiglyph/package.json
+VERSION="$version" perl -0i -pe 's/("petiglyph-[^"]+"\s*:\s*")[^"]+(")/$1$ENV{VERSION}$2/g' npm/petiglyph/package.json
 
 VERSION="$version" perl -0i -pe 's/("version":\s*")[^"]+(",\s*\n\s*"data")/$1$ENV{VERSION}$2/' README.md
 

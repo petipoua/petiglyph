@@ -1,4 +1,4 @@
-# @petiglyph/petiglyph-linux-x64-musl
+# petiglyph-linux-x64-musl
 
 petiglyph native binary package for linux/x64 (musl).
 

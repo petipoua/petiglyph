@@ -1,4 +1,4 @@
-# @petiglyph/petiglyph-linux-arm64-gnu
+# petiglyph-linux-arm64-gnu
 
 petiglyph native binary package for linux/arm64 (glibc).
 

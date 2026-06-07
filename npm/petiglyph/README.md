@@ -4,14 +4,14 @@ This meta package exposes the `petiglyph` CLI by selecting the native optional p
 
 Supported npm native packages:
 
-- `@petiglyph/petiglyph-linux-x64-gnu`
-- `@petiglyph/petiglyph-linux-arm64-gnu`
-- `@petiglyph/petiglyph-linux-x64-musl`
-- `@petiglyph/petiglyph-linux-arm64-musl`
-- `@petiglyph/petiglyph-darwin-x64`
-- `@petiglyph/petiglyph-darwin-arm64`
-- `@petiglyph/petiglyph-win32-x64-msvc`
-- `@petiglyph/petiglyph-win32-arm64-msvc`
+- `petiglyph-linux-x64-gnu`
+- `petiglyph-linux-arm64-gnu`
+- `petiglyph-linux-x64-musl`
+- `petiglyph-linux-arm64-musl`
+- `petiglyph-darwin-x64`
+- `petiglyph-darwin-arm64`
+- `petiglyph-win32-x64-msvc`
+- `petiglyph-win32-arm64-msvc`
 
 If optional dependencies are disabled or your platform is unsupported, install from GitHub Releases instead:
 

@@ -1,5 +1,5 @@
 {
-  "name": "@petiglyph/petiglyph-linux-x64-gnu",
+  "name": "petiglyph-linux-x64-gnu",
   "version": "0.1.0",
   "description": "petiglyph native binary package for linux/x64 (glibc)",
   "license": "MIT",

@@ -1,4 +1,4 @@
-# @petiglyph/petiglyph-darwin-x64
+# petiglyph-darwin-x64
 
 petiglyph native binary package for darwin/x64.
 

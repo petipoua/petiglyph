@@ -1,4 +1,4 @@
-# @petiglyph/petiglyph-win32-arm64-msvc
+# petiglyph-win32-arm64-msvc
 
 petiglyph native binary package for win32/arm64.
 

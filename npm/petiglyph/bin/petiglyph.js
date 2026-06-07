@@ -46,35 +46,35 @@ function resolvePlatformPackage() {
   const key = [platform, arch, libc || "none"].join("|");
   const mapping = {
     "linux|x64|gnu": {
-      packageName: "@petiglyph/petiglyph-linux-x64-gnu",
+      packageName: "petiglyph-linux-x64-gnu",
       binaryRelativePath: "bin/petiglyph",
     },
     "linux|arm64|gnu": {
-      packageName: "@petiglyph/petiglyph-linux-arm64-gnu",
+      packageName: "petiglyph-linux-arm64-gnu",
       binaryRelativePath: "bin/petiglyph",
     },
     "linux|x64|musl": {
-      packageName: "@petiglyph/petiglyph-linux-x64-musl",
+      packageName: "petiglyph-linux-x64-musl",
       binaryRelativePath: "bin/petiglyph",
     },
     "linux|arm64|musl": {
-      packageName: "@petiglyph/petiglyph-linux-arm64-musl",
+      packageName: "petiglyph-linux-arm64-musl",
       binaryRelativePath: "bin/petiglyph",
     },
     "darwin|x64|none": {
-      packageName: "@petiglyph/petiglyph-darwin-x64",
+      packageName: "petiglyph-darwin-x64",
       binaryRelativePath: "bin/petiglyph",
     },
     "darwin|arm64|none": {
-      packageName: "@petiglyph/petiglyph-darwin-arm64",
+      packageName: "petiglyph-darwin-arm64",
       binaryRelativePath: "bin/petiglyph",
     },
     "win32|x64|none": {
-      packageName: "@petiglyph/petiglyph-win32-x64-msvc",
+      packageName: "petiglyph-win32-x64-msvc",
       binaryRelativePath: "bin/petiglyph.exe",
     },
     "win32|arm64|none": {
-      packageName: "@petiglyph/petiglyph-win32-arm64-msvc",
+      packageName: "petiglyph-win32-arm64-msvc",
       binaryRelativePath: "bin/petiglyph.exe",
     },
   };

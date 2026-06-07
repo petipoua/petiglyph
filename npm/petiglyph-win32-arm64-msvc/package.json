@@ -1,5 +1,5 @@
 {
-  "name": "@petiglyph/petiglyph-win32-arm64-msvc",
+  "name": "petiglyph-win32-arm64-msvc",
   "version": "0.1.0",
   "description": "petiglyph native binary package for win32/arm64",
   "license": "MIT",
