@@ -151,3 +151,4 @@
 - For release-prep work, use `scripts/release_sync_versions.sh`, `scripts/release_prepare_aur.sh`, `scripts/release_stage_npm_artifacts.sh`, and `scripts/release_npm_pack_test.sh` instead of editing generated release state by hand.
 - When checking the codebase, avoid accidentally editing generated files under `.makepkg/`.
 - If touching UX or command semantics, update README examples in the same change.
+- Use a conventional commit prefix for git commits, such as `docs:`, `fix:`, `feat:`, or `chore:`; keep the subject short and imperative.
