@@ -36,10 +36,9 @@ Run render diagnostics only:
 
 2. Home project management:
 - Create a project from the Home panel input flow.
-- In workspace mode, select a project from the project list and open/build only that project.
 
 3. Build pipeline validation:
-- Trigger build from TUI shortcuts and assert `build/` artifacts are created.
+- Install from TUI shortcuts and assert `build/` artifacts are created.
 - Rescan after adding a new source and assert rebuild includes the new file.
 
 4. Glyph editing persistence:
@@ -47,17 +46,23 @@ Run render diagnostics only:
 - Verify `threshold_overrides` is written to `petiglyph.toml`.
 - Clear the override and verify it is removed.
 
-5. Creation workflow popup (Home):
-- `Create glyph`: import path payload, tweak step, continue to Glyphs.
-- `Create grid`: import, tweak step, grid config, persist rows/cols/bleed in manifest.
-- `Create animated glyph`: GIF import to extracted frame PNGs, animation config, persist animation definition.
+5. Workspace project selection:
+- In workspace mode, select a project from the project list and open/build only that project.
 
-6. Font lifecycle from TUI:
-- Install via Home/shortcut into isolated session `HOME`.
+6. Creation workflow popup: create glyph
+- Import a still image, tweak it, and continue into Glyphs.
 
-7. Full end-to-end user story:
-- Create project, run all creation workflows (standard, grid, animated, animated-grid), and tweak knobs in popup + Glyphs panel.
-- Install, validate sample-area Enter copy behavior, create a second empty project, remove installed fonts, delete both projects, quit.
+7. Creation workflow popup: create grid
+- Import one image, configure rows/cols/bleed, and persist the composition in the manifest.
+
+8. Creation workflow popup: create animated glyph
+- Import a GIF, expand frames, configure the animation, and persist the animation definition.
+
+9. Font lifecycle from TUI:
+- Install via Home/shortcut into an isolated session `HOME`.
+
+10. Full end-to-end user story:
+- Create a project, run all creation workflows, tweak knobs in the popup and Glyphs panel, install, validate sample-area Enter copy behavior, create a second empty project, remove installed fonts, delete both projects, and quit.
 
 ## Notes
 

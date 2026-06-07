@@ -17,4 +17,4 @@ If optional dependencies are disabled or your platform is unsupported, install f
 
 - https://github.com/petipoua/petiglyph/releases
 
-`ffmpeg` is still required on `PATH` for video and animated media import workflows.
+`ffmpeg` must be available on `PATH` before `petiglyph` starts. It is used for AVIF import conversion and video/animated media workflows.

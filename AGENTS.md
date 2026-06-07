@@ -23,6 +23,10 @@
   - `petiglyph delete`
   - `petiglyph set-threshold <image> <threshold>`
   - `petiglyph clear-threshold <image>`
+  - `petiglyph glyph ...`
+  - `petiglyph grid ...`
+  - `petiglyph composition ...`
+  - `petiglyph animation ...`
   - `petiglyph` (or `petiglyph tui`) for interactive TUI
   - `petiglyph build`
   - `petiglyph sample`
@@ -31,6 +35,7 @@
   - `petiglyph uninstall-all-fonts`
   - `petiglyph doctor`
 - If no subcommand is provided, `petiglyph` launches the interactive workspace TUI.
+- `ffmpeg` is enforced before command dispatch, so a missing `ffmpeg` blocks both interactive and automation entrypoints until it is installed or auto-installed.
 - `petiglyph uninstall` is a hidden, intentionally ambiguous stub that exits with guidance to use `uninstall-font` or `uninstall-all-fonts`.
 - In non-interactive contexts (no TTY), TUI launch fails with an explicit terminal-required error.
 - Manifest auto-detection when `--manifest` is omitted checks:
@@ -43,6 +48,7 @@
   - `out_dir = "build"`
   - `codepoint_start = "U+100000"`
 - Manifests may be mutated by normal reads/builds to add a missing `project_id` or normalized animation bleed defaults.
+- Direct build inputs are `png`, `jpg`, `jpeg`, `webp`, `bmp`, `gif`, and `svg`; `avif` is import-only and is converted to project-local PNG before normal build scanning.
 - `list` and `uninstall-all-fonts` are not manifest-scoped. Do not document or test `--manifest` for those commands.
 
 ### Code Layout (Important)

@@ -1,6 +1,6 @@
 # CROSS-COMPATIBILITY-GUIDE
 
-Last verified: 2026-05-31
+Last verified: 2026-06-07
 
 ## 1. Purpose
 
@@ -24,7 +24,8 @@ Supported distribution surfaces in this repository are:
 - Rust edition: `2024`.
 - CLI parser: `clap`.
 - TUI stack: `ratatui` + `crossterm`.
-- Image decode/rendering: `image` with `avif`, `bmp`, `gif`, `jpeg`, `png`, `webp`; SVG through `resvg`.
+- Image decode/rendering: `image` with `bmp`, `gif`, `jpeg`, `png`, `webp`; SVG through `resvg`.
+- AVIF support is import-only and is converted to project-local PNG through `ffmpeg` before normal build scanning.
 - Video/GIF frame expansion: `src/animation_media.rs`; video expansion shells out to `ffmpeg`.
 - Install/uninstall lifecycle: `src/install.rs` with Linux, macOS, and Windows branches.
 - Health/repair checks: `src/doctor.rs`.
@@ -68,7 +69,8 @@ Managed state:
 
 `ffmpeg`:
 
-- Required for video import and animated media expansion from video files.
+- Required before `petiglyph` starts; command dispatch is blocked when `ffmpeg` is missing.
+- Used for AVIF-to-PNG conversion and video frame expansion.
 - GIF expansion uses Rust image decoding; video expansion uses `ffmpeg`.
 - First interactive non-JSON runs offer a one-time OS-aware install prompt when `ffmpeg` is missing.
 - Prompt state is stored as `.ffmpeg-setup-prompt-v1.json` under the managed install directory.
@@ -91,9 +93,13 @@ TUI debug logging:
 
 ## 5. Supported Inputs
 
-Build/source image extensions:
+Direct build/source image extensions:
 
-- `png`, `jpg`, `jpeg`, `webp`, `avif`, `bmp`, `gif`, `svg`
+- `png`, `jpg`, `jpeg`, `webp`, `bmp`, `gif`, `svg`
+
+Import-only image extension:
+
+- `avif` is accepted by CLI/TUI import flows, then converted to project-local `.png`
 
 Animated creation workflow media extensions:
 
@@ -222,7 +228,7 @@ Before modifying `hty` flows, validate local `hty --help` and check upstream doc
 - macOS direct artifacts are unsigned and not notarized unless a release explicitly states otherwise.
 - Windows direct artifacts are unsigned unless a release explicitly states otherwise.
 - macOS and Windows ARM64 artifacts should remain called out as limited-runtime-validation/unstable until direct runtime testing exists.
-- `image` AVIF support still pulls native codec dependencies transitively (`dav1d-sys`, `ravif`, `rav1e`); keep CI/package builds watched for AVIF codec regressions.
+- AVIF import depends on external `ffmpeg`; packaging and runtime docs should keep treating it as an external prerequisite instead of a bundled codec path.
 - PyPI does not currently ship musllinux wheels.
 - Windows font refresh depends on PowerShell availability.
 - Clipboard support depends on external platform tools; failures should remain user-visible and non-fatal.
