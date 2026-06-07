@@ -84,6 +84,29 @@ jobs:
         with:
           ref: ${{ env.RELEASE_TAG }}
 
+      - name: Install FFmpeg for runtime smoke checks
+        if: matrix.smoke
+        shell: bash
+        run: |
+          set -euo pipefail
+          case "$RUNNER_OS" in
+            Linux)
+              sudo apt-get update
+              sudo apt-get install -y ffmpeg
+              ;;
+            macOS)
+              brew install ffmpeg
+              ;;
+            Windows)
+              choco install ffmpeg --yes --no-progress
+              ;;
+            *)
+              echo "unsupported runner OS: $RUNNER_OS" >&2
+              exit 1
+              ;;
+          esac
+          ffmpeg -version
+
       - name: Build
         uses: houseabsolute/actions-rust-cross@f481cb5e0110765615313e2177ce12a99bf26bbd
         with:
