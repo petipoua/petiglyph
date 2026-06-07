@@ -161,7 +161,7 @@ jobs:
 
       - name: Validate distributions with twine check
         run: |
-          python -m pip install --upgrade pip twine
+          python -m pip install --upgrade pip twine packaging
           python -m twine check dist/*
 
       - name: Publish distributions to PyPI
