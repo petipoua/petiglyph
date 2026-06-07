@@ -190,6 +190,7 @@ jobs:
           if (($tuiOutput | Out-String) -notmatch '(?i)terminal|tty') {
             throw "Expected terminal-required/TTY error text for tui </dev/null equivalent"
           }
+          exit 0
 
       - name: Upload archive
         uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f
