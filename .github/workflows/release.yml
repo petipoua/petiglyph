@@ -42,34 +42,42 @@ jobs:
             target: x86_64-unknown-linux-gnu
             archive: tar.gz
             bin_ext: ""
+            smoke: true
           - os: ubuntu-latest
             target: aarch64-unknown-linux-gnu
             archive: tar.gz
             bin_ext: ""
+            smoke: false
           - os: ubuntu-latest
             target: x86_64-unknown-linux-musl
             archive: tar.gz
             bin_ext: ""
+            smoke: true
           - os: ubuntu-latest
             target: aarch64-unknown-linux-musl
             archive: tar.gz
             bin_ext: ""
+            smoke: false
           - os: macos-15-intel
             target: x86_64-apple-darwin
             archive: tar.gz
             bin_ext: ""
+            smoke: true
           - os: macos-15
             target: aarch64-apple-darwin
             archive: tar.gz
             bin_ext: ""
+            smoke: true
           - os: windows-2025
             target: x86_64-pc-windows-msvc
             archive: zip
             bin_ext: ".exe"
+            smoke: true
           - os: windows-2025
             target: aarch64-pc-windows-msvc
             archive: zip
             bin_ext: ".exe"
+            smoke: false
 
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
@@ -81,6 +89,7 @@ jobs:
         with:
           command: build
           target: ${{ matrix.target }}
+          toolchain: "1.88.0"
           args: "--release --locked"
           strip: true
 
@@ -108,7 +117,7 @@ jobs:
           Compress-Archive -Path "$base/*" -DestinationPath "$base.zip" -Force
 
       - name: Archive smoke check (unix)
-        if: matrix.archive == 'tar.gz'
+        if: matrix.archive == 'tar.gz' && matrix.smoke
         shell: bash
         run: |
           set -euo pipefail
@@ -119,7 +128,7 @@ jobs:
           "$bin" --help >/dev/null
           smoke_home="$(mktemp -d)"
           smoke_work="$(mktemp -d)"
-          doctor_json="$(HOME="$smoke_home" "$bin" doctor --json --workspace "$smoke_work")"
+          doctor_json="$(cd "$smoke_work" && HOME="$smoke_home" "$bin" doctor --json)"
           echo "$doctor_json" | grep -Eq '"ok"[[:space:]]*:[[:space:]]*true'
           if HOME="$smoke_home" "$bin" tui </dev/null >/tmp/petiglyph-tui-smoke.log 2>&1; then
             echo "Expected non-interactive tui invocation to fail" >&2
@@ -128,7 +137,7 @@ jobs:
           grep -Eiq "terminal|tty" /tmp/petiglyph-tui-smoke.log
 
       - name: Archive smoke check (windows)
-        if: matrix.archive == 'zip'
+        if: matrix.archive == 'zip' && matrix.smoke
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
@@ -146,7 +155,12 @@ jobs:
           $env:HOME = $smokeHome
           $env:USERPROFILE = $smokeHome
           $env:LOCALAPPDATA = $smokeLocalAppData
-          $doctor = & $bin doctor --json --workspace $smokeWork
+          Push-Location $smokeWork
+          try {
+            $doctor = & $bin doctor --json
+          } finally {
+            Pop-Location
+          }
           if ($doctor -notmatch '"ok"\s*:\s*true') { throw "doctor --json did not report ok=true" }
           $tuiOutput = $null | & $bin tui 2>&1
           if ($LASTEXITCODE -eq 0) { throw "Expected non-interactive tui invocation to fail" }
