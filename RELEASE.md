@@ -10,14 +10,18 @@ the leading `v`; Git tags use `vX.Y.Z`.
 
 - Keep release tag creation restricted; `main` itself does not need push protection for this small single-maintainer repo.
 - Require approval for the GitHub environments `npm`, `testpypi`, and `pypi`.
-- Configure npm trusted publishing for `.github/workflows/npm-publish.yml`.
+- For the first npm publish, add a temporary npm automation token as the
+  `NPM_PUBLISH_TOKEN` secret in the GitHub `npm` environment.
+- After the `petiglyph` packages exist on npm, configure trusted publishing for
+  `.github/workflows/npm-publish.yml` on npmjs.com, then remove the token.
 - Configure TestPyPI and PyPI trusted publishing for
   `.github/workflows/pypi-publish.yml`, using their matching environments.
 - Configure AUR SSH access and own the `petiglyph` package base.
 - Keep 2FA or passkeys enabled for all publishing accounts.
 
-Release workflows use OIDC. Do not add long-lived registry tokens unless an
-explicit emergency procedure requires them.
+Release workflows prefer OIDC when trusted publishing is configured. Use a
+short-lived npm automation token only as the bootstrap path for the first
+publish, then remove it once trusted publishing is active.
 
 ## Release Flow
 
@@ -116,7 +120,9 @@ Publishing the draft GitHub Release triggers both registry workflows.
 verifies the GitHub artifact attestations and checksums, stages binaries from
 the release archives, validates every package with `npm pack --dry-run`,
 publishes the `petiglyph-*` platform packages, then publishes the `petiglyph`
-meta package.
+meta package. If the `NPM_PUBLISH_TOKEN` secret exists in the GitHub `npm`
+environment, the workflow uses that token for bootstrap publishing; otherwise
+it uses npm trusted publishing via OIDC.
 
 Approve the `npm` environment when ready. Optional local archive validation:
 
