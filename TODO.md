@@ -237,7 +237,7 @@ Tasks:
 
 - [x] Add `cargo audit` or equivalent advisory scanning.
 - [x] Add `cargo deny` with explicit license and duplicate-version policy.
-- [x] Verify all bundled sample assets under `icons/` are redistributable.
+- [x] Verify all bundled sample assets under `images/` are redistributable.
 - [x] Run `cargo tree -e normal` and document native/cross-build-sensitive dependencies.
 - [x] If AVIF causes cross-build instability, decide whether AVIF should be optional behind a feature or remain in the default release build.
 

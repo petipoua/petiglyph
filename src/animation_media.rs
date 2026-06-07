@@ -933,8 +933,8 @@ mod tests {
     #[test]
     fn still_image_imports_and_reuses_identical_existing_file() {
         let dir = make_temp_dir("anim-media-import-reuse");
-        let input_dir = dir.join("icons");
-        fs::create_dir_all(&input_dir).expect("icons created");
+        let input_dir = dir.join("images");
+        fs::create_dir_all(&input_dir).expect("images created");
 
         let source = dir.join("frame.png");
         write_test_png(&source);
@@ -980,8 +980,8 @@ mod tests {
     #[test]
     fn unescape_backslashes_preserves_windows_path_separators() {
         assert_eq!(
-            super::unescape_backslashes(r"C:\Users\alice\icons\frame.png"),
-            r"C:\Users\alice\icons\frame.png"
+            super::unescape_backslashes(r"C:\Users\alice\images\frame.png"),
+            r"C:\Users\alice\images\frame.png"
         );
     }
 

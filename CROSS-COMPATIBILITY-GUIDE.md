@@ -111,7 +111,7 @@ Animated media limits:
 
 - Maximum 1200 extracted frames per media input.
 - Maximum 3000 extracted frames per import operation.
-- Extracted frames use deterministic names in `icons/` based on source stem, source hash, and frame index.
+- Extracted frames use deterministic names in `images/` based on source stem, source hash, and frame index.
 
 ## 6. Distribution Matrix
 

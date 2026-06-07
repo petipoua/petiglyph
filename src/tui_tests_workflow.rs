@@ -3,8 +3,8 @@
         let project_dir = make_temp_dir("glyph-creation-next-per-image");
         let manifest_path = project_dir.join("petiglyph.toml");
         write_manifest(&manifest_path, &Manifest::default()).expect("manifest is written");
-        let icons_dir = project_dir.join("icons");
-        fs::create_dir_all(&icons_dir).expect("icons dir is created");
+        let icons_dir = project_dir.join("images");
+        fs::create_dir_all(&icons_dir).expect("images dir is created");
         write_test_png(&icons_dir.join("source_a.png"));
         write_test_png(&icons_dir.join("source_b.png"));
 
@@ -77,8 +77,8 @@
         let project_dir = make_temp_dir("glyph-creation-progress-clamps");
         let manifest_path = project_dir.join("petiglyph.toml");
         write_manifest(&manifest_path, &Manifest::default()).expect("manifest is written");
-        let icons_dir = project_dir.join("icons");
-        fs::create_dir_all(&icons_dir).expect("icons dir is created");
+        let icons_dir = project_dir.join("images");
+        fs::create_dir_all(&icons_dir).expect("images dir is created");
 
         let config = RuntimeConfig {
             project_dir: project_dir.clone(),
@@ -108,8 +108,8 @@
         let project_dir = make_temp_dir("glyph-creation-single-preview-finish-label");
         let manifest_path = project_dir.join("petiglyph.toml");
         write_manifest(&manifest_path, &Manifest::default()).expect("manifest is written");
-        let icons_dir = project_dir.join("icons");
-        fs::create_dir_all(&icons_dir).expect("icons dir is created");
+        let icons_dir = project_dir.join("images");
+        fs::create_dir_all(&icons_dir).expect("images dir is created");
         write_test_png(&icons_dir.join("source.png"));
 
         let config = RuntimeConfig {
@@ -141,9 +141,9 @@
         let project_dir = make_temp_dir("glyph-creation-multi-image-keyboard-finish");
         let manifest_path = project_dir.join("petiglyph.toml");
         write_manifest(&manifest_path, &Manifest::default()).expect("manifest is written");
-        let icons_dir = project_dir.join("icons");
+        let icons_dir = project_dir.join("images");
         let external_dir = project_dir.join("external");
-        fs::create_dir_all(&icons_dir).expect("icons dir is created");
+        fs::create_dir_all(&icons_dir).expect("images dir is created");
         fs::create_dir_all(&external_dir).expect("external dir is created");
 
         let source_a = external_dir.join("source_a.png");
@@ -217,8 +217,8 @@
         let project_dir = make_temp_dir("glyph-creation-finish-reload-error");
         let manifest_path = project_dir.join("petiglyph.toml");
         write_manifest(&manifest_path, &Manifest::default()).expect("manifest is written");
-        let icons_dir = project_dir.join("icons");
-        fs::create_dir_all(&icons_dir).expect("icons dir is created");
+        let icons_dir = project_dir.join("images");
+        fs::create_dir_all(&icons_dir).expect("images dir is created");
         fs::write(icons_dir.join("source.png"), b"not an image").expect("invalid png is written");
 
         let config = RuntimeConfig {
@@ -262,9 +262,9 @@
         let project_dir = make_temp_dir("glyph-creation-finish-partial-reload");
         let manifest_path = project_dir.join("petiglyph.toml");
         write_manifest(&manifest_path, &Manifest::default()).expect("manifest is written");
-        let icons_dir = project_dir.join("icons");
+        let icons_dir = project_dir.join("images");
         let external_dir = project_dir.join("external");
-        fs::create_dir_all(&icons_dir).expect("icons dir is created");
+        fs::create_dir_all(&icons_dir).expect("images dir is created");
         fs::create_dir_all(&external_dir).expect("external dir is created");
         fs::write(icons_dir.join("broken.png"), b"not an image").expect("bad source is written");
         let source = external_dir.join("source.png");
@@ -318,8 +318,8 @@
         let project_dir = make_temp_dir("glyph-creation-next-at-end");
         let manifest_path = project_dir.join("petiglyph.toml");
         write_manifest(&manifest_path, &Manifest::default()).expect("manifest is written");
-        let icons_dir = project_dir.join("icons");
-        fs::create_dir_all(&icons_dir).expect("icons dir is created");
+        let icons_dir = project_dir.join("images");
+        fs::create_dir_all(&icons_dir).expect("images dir is created");
         write_test_png(&icons_dir.join("source.png"));
 
         let config = RuntimeConfig {
@@ -362,8 +362,8 @@
         let project_dir = make_temp_dir("glyph-creation-continue-enter-finishes");
         let manifest_path = project_dir.join("petiglyph.toml");
         write_manifest(&manifest_path, &Manifest::default()).expect("manifest is written");
-        let icons_dir = project_dir.join("icons");
-        fs::create_dir_all(&icons_dir).expect("icons dir is created");
+        let icons_dir = project_dir.join("images");
+        fs::create_dir_all(&icons_dir).expect("images dir is created");
         write_test_png(&icons_dir.join("source_a.png"));
         write_test_png(&icons_dir.join("source_b.png"));
 
@@ -417,8 +417,8 @@
         let project_dir = make_temp_dir("glyph-creation-continue-press-event-finishes");
         let manifest_path = project_dir.join("petiglyph.toml");
         write_manifest(&manifest_path, &Manifest::default()).expect("manifest is written");
-        let icons_dir = project_dir.join("icons");
-        fs::create_dir_all(&icons_dir).expect("icons dir is created");
+        let icons_dir = project_dir.join("images");
+        fs::create_dir_all(&icons_dir).expect("images dir is created");
         write_test_png(&icons_dir.join("source_a.png"));
         write_test_png(&icons_dir.join("source_b.png"));
 
@@ -467,8 +467,8 @@
         let project_dir = make_temp_dir("glyph-creation-twentieth-next-finishes");
         let manifest_path = project_dir.join("petiglyph.toml");
         write_manifest(&manifest_path, &Manifest::default()).expect("manifest is written");
-        let icons_dir = project_dir.join("icons");
-        fs::create_dir_all(&icons_dir).expect("icons dir is created");
+        let icons_dir = project_dir.join("images");
+        fs::create_dir_all(&icons_dir).expect("images dir is created");
         let source_keys = (1..=20)
             .map(|index| format!("triangle-{index:03}.png"))
             .collect::<Vec<_>>();
@@ -525,8 +525,8 @@
         let project_dir = make_temp_dir("glyph-creation-threshold-enter-finishes");
         let manifest_path = project_dir.join("petiglyph.toml");
         write_manifest(&manifest_path, &Manifest::default()).expect("manifest is written");
-        let icons_dir = project_dir.join("icons");
-        fs::create_dir_all(&icons_dir).expect("icons dir is created");
+        let icons_dir = project_dir.join("images");
+        fs::create_dir_all(&icons_dir).expect("images dir is created");
         write_test_png(&icons_dir.join("source_a.png"));
         write_test_png(&icons_dir.join("source_b.png"));
 
@@ -580,8 +580,8 @@
         let project_dir = make_temp_dir("grid-creation-threshold-enter-advances");
         let manifest_path = project_dir.join("petiglyph.toml");
         write_manifest(&manifest_path, &Manifest::default()).expect("manifest is written");
-        let icons_dir = project_dir.join("icons");
-        fs::create_dir_all(&icons_dir).expect("icons dir is created");
+        let icons_dir = project_dir.join("images");
+        fs::create_dir_all(&icons_dir).expect("images dir is created");
         write_test_png(&icons_dir.join("grid_source.png"));
 
         let config = RuntimeConfig {
@@ -620,8 +620,8 @@
         let project_dir = make_temp_dir("animated-creation-frames-enter-advances");
         let manifest_path = project_dir.join("petiglyph.toml");
         write_manifest(&manifest_path, &Manifest::default()).expect("manifest is written");
-        let icons_dir = project_dir.join("icons");
-        fs::create_dir_all(&icons_dir).expect("icons dir is created");
+        let icons_dir = project_dir.join("images");
+        fs::create_dir_all(&icons_dir).expect("images dir is created");
         write_test_png(&icons_dir.join("frame_a.png"));
         write_test_png(&icons_dir.join("frame_b.png"));
 
@@ -668,8 +668,8 @@
             .threshold_overrides
             .insert("source_b.png".to_string(), 118);
         write_manifest(&manifest_path, &manifest).expect("manifest is written");
-        let icons_dir = project_dir.join("icons");
-        fs::create_dir_all(&icons_dir).expect("icons dir is created");
+        let icons_dir = project_dir.join("images");
+        fs::create_dir_all(&icons_dir).expect("images dir is created");
         write_test_png(&icons_dir.join("source_a.png"));
         write_test_png(&icons_dir.join("source_b.png"));
 
@@ -798,7 +798,7 @@
         let config = RuntimeConfig {
             project_dir: project_dir.clone(),
             project_id: "test-glyph-workflow-thin-buttons".to_string(),
-            input_dir: project_dir.join("icons"),
+            input_dir: project_dir.join("images"),
             out_dir: project_dir.join("build"),
             font_name: "Petiglyph".to_string(),
             glyph_size: 8,
@@ -846,7 +846,7 @@
         let config = RuntimeConfig {
             project_dir: project_dir.clone(),
             project_id: "test-grid-workflow-thin-buttons".to_string(),
-            input_dir: project_dir.join("icons"),
+            input_dir: project_dir.join("images"),
             out_dir: project_dir.join("build"),
             font_name: "Petiglyph".to_string(),
             glyph_size: 8,
@@ -900,7 +900,7 @@
         let config = RuntimeConfig {
             project_dir: project_dir.clone(),
             project_id: "test-animated-grid-workflow-thin-buttons".to_string(),
-            input_dir: project_dir.join("icons"),
+            input_dir: project_dir.join("images"),
             out_dir: project_dir.join("build"),
             font_name: "Petiglyph".to_string(),
             glyph_size: 8,
@@ -957,8 +957,8 @@
         let project_dir = make_temp_dir("glyph-creation-cancel-removes-imports");
         let manifest_path = project_dir.join("petiglyph.toml");
         write_manifest(&manifest_path, &Manifest::default()).expect("manifest is written");
-        let icons_dir = project_dir.join("icons");
-        fs::create_dir_all(&icons_dir).expect("icons dir is created");
+        let icons_dir = project_dir.join("images");
+        fs::create_dir_all(&icons_dir).expect("images dir is created");
         write_test_png(&icons_dir.join("kept.png"));
 
         let external_dir = project_dir.join("external");
@@ -1006,7 +1006,7 @@
         let imported_path = icons_dir.join(&imported_key);
         assert!(
             imported_path.exists(),
-            "workflow import should stage file in icons while editing"
+            "workflow import should stage file in images while editing"
         );
 
         handle_key(&mut app, KeyCode::Char('q')).expect("q cancels workflow");
@@ -1028,8 +1028,8 @@
         let project_dir = make_temp_dir("glyph-creation-drop-avif");
         let manifest_path = project_dir.join("petiglyph.toml");
         write_manifest(&manifest_path, &Manifest::default()).expect("manifest is written");
-        let icons_dir = project_dir.join("icons");
-        fs::create_dir_all(&icons_dir).expect("icons dir is created");
+        let icons_dir = project_dir.join("images");
+        fs::create_dir_all(&icons_dir).expect("images dir is created");
 
         let external_dir = project_dir.join("external");
         fs::create_dir_all(&external_dir).expect("external dir is created");
@@ -1066,7 +1066,7 @@
         );
         assert!(
             !icons_dir.join("dropped.avif").exists(),
-            "raw AVIF should not be copied into icons"
+            "raw AVIF should not be copied into images"
         );
         assert_eq!(
             app.home_workflow_recent_imported_source_keys,
@@ -1099,8 +1099,8 @@
         let project_dir = make_temp_dir("animated-creation-cancel-removes-imports");
         let manifest_path = project_dir.join("petiglyph.toml");
         write_manifest(&manifest_path, &Manifest::default()).expect("manifest is written");
-        let icons_dir = project_dir.join("icons");
-        fs::create_dir_all(&icons_dir).expect("icons dir is created");
+        let icons_dir = project_dir.join("images");
+        fs::create_dir_all(&icons_dir).expect("images dir is created");
         write_test_png(&icons_dir.join("kept.png"));
 
         let external_dir = project_dir.join("external");
@@ -1148,7 +1148,7 @@
         let imported_path = icons_dir.join(&imported_key);
         assert!(
             imported_path.exists(),
-            "workflow import should stage frame in icons while editing"
+            "workflow import should stage frame in images while editing"
         );
 
         handle_key(&mut app, KeyCode::Char('q')).expect("q cancels workflow");
@@ -1170,8 +1170,8 @@
         let project_dir = make_temp_dir("animated-import-discard-result");
         let manifest_path = project_dir.join("petiglyph.toml");
         write_manifest(&manifest_path, &Manifest::default()).expect("manifest is written");
-        let icons_dir = project_dir.join("icons");
-        fs::create_dir_all(&icons_dir).expect("icons dir is created");
+        let icons_dir = project_dir.join("images");
+        fs::create_dir_all(&icons_dir).expect("images dir is created");
         let staged = icons_dir.join("frame_01.png");
         write_test_png(&staged);
 
@@ -1225,8 +1225,8 @@
         let project_dir = make_temp_dir("animated-creation-threshold-persists");
         let manifest_path = project_dir.join("petiglyph.toml");
         write_manifest(&manifest_path, &Manifest::default()).expect("manifest is written");
-        let icons_dir = project_dir.join("icons");
-        fs::create_dir_all(&icons_dir).expect("icons dir is created");
+        let icons_dir = project_dir.join("images");
+        fs::create_dir_all(&icons_dir).expect("images dir is created");
         write_test_png(&icons_dir.join("frame_1.png"));
         write_test_png(&icons_dir.join("frame_2.png"));
 
@@ -1269,8 +1269,8 @@
         let project_dir = make_temp_dir("tweaking-live-grayscale-output");
         let manifest_path = project_dir.join("petiglyph.toml");
         write_manifest(&manifest_path, &Manifest::default()).expect("manifest is written");
-        let icons_dir = project_dir.join("icons");
-        fs::create_dir_all(&icons_dir).expect("icons dir is created");
+        let icons_dir = project_dir.join("images");
+        fs::create_dir_all(&icons_dir).expect("images dir is created");
 
         let source_path = icons_dir.join("source.png");
         let mut image = RgbaImage::from_pixel(8, 8, Rgba([0, 0, 0, 0]));
@@ -1329,8 +1329,8 @@
         let project_dir = make_temp_dir("create-workflow-jpg-preview");
         let manifest_path = project_dir.join("petiglyph.toml");
         write_manifest(&manifest_path, &Manifest::default()).expect("manifest is written");
-        let icons_dir = project_dir.join("icons");
-        fs::create_dir_all(&icons_dir).expect("icons dir is created");
+        let icons_dir = project_dir.join("images");
+        fs::create_dir_all(&icons_dir).expect("images dir is created");
         let external_dir = project_dir.join("external");
         fs::create_dir_all(&external_dir).expect("external dir is created");
         let dropped = external_dir.join("source.jpg");
@@ -1384,8 +1384,8 @@
         let project_dir = make_temp_dir("create-workflow-renamed-png-preview");
         let manifest_path = project_dir.join("petiglyph.toml");
         write_manifest(&manifest_path, &Manifest::default()).expect("manifest is written");
-        let icons_dir = project_dir.join("icons");
-        fs::create_dir_all(&icons_dir).expect("icons dir is created");
+        let icons_dir = project_dir.join("images");
+        fs::create_dir_all(&icons_dir).expect("images dir is created");
         let external_dir = project_dir.join("external");
         fs::create_dir_all(&external_dir).expect("external dir is created");
         let source_png = external_dir.join("source.png");
@@ -1441,8 +1441,8 @@
         let project_dir = make_temp_dir("create-workflow-svg-preview");
         let manifest_path = project_dir.join("petiglyph.toml");
         write_manifest(&manifest_path, &Manifest::default()).expect("manifest is written");
-        let icons_dir = project_dir.join("icons");
-        fs::create_dir_all(&icons_dir).expect("icons dir is created");
+        let icons_dir = project_dir.join("images");
+        fs::create_dir_all(&icons_dir).expect("images dir is created");
         let external_dir = project_dir.join("external");
         fs::create_dir_all(&external_dir).expect("external dir is created");
         let dropped = external_dir.join("source.svg");
@@ -1500,8 +1500,8 @@
         let project_dir = make_temp_dir("create-workflow-copilot-svg-preview");
         let manifest_path = project_dir.join("petiglyph.toml");
         write_manifest(&manifest_path, &Manifest::default()).expect("manifest is written");
-        let icons_dir = project_dir.join("icons");
-        fs::create_dir_all(&icons_dir).expect("icons dir is created");
+        let icons_dir = project_dir.join("images");
+        fs::create_dir_all(&icons_dir).expect("images dir is created");
 
         let config = RuntimeConfig {
             project_dir: project_dir.clone(),

@@ -115,7 +115,7 @@
         let config = RuntimeConfig {
             project_dir: project_dir.clone(),
             project_id: "test-first-install-popup".to_string(),
-            input_dir: project_dir.join("icons"),
+            input_dir: project_dir.join("images"),
             out_dir: project_dir.join("build"),
             font_name: "Petiglyph".to_string(),
             glyph_size: 8,
@@ -157,7 +157,7 @@
         let config = RuntimeConfig {
             project_dir: project_dir.clone(),
             project_id: "test-main-tui-quit-shortcuts".to_string(),
-            input_dir: project_dir.join("icons"),
+            input_dir: project_dir.join("images"),
             out_dir: project_dir.join("build"),
             font_name: "Petiglyph".to_string(),
             glyph_size: 8,
@@ -191,7 +191,7 @@
         let config = RuntimeConfig {
             project_dir: project_dir.clone(),
             project_id: "test-glyphs-preview-quit-shortcut".to_string(),
-            input_dir: project_dir.join("icons"),
+            input_dir: project_dir.join("images"),
             out_dir: project_dir.join("build"),
             font_name: "Petiglyph".to_string(),
             glyph_size: 8,
@@ -206,7 +206,7 @@
         let mut app = App::new(manifest_path, config);
         app.glyphs = vec![InteractiveGlyph {
             glyph: PreprocessedGlyph {
-                source_path: project_dir.join("icons/alpha.png"),
+                source_path: project_dir.join("images/alpha.png"),
                 source_key: "alpha.png".to_string(),
                 source_parent_key: "alpha.png".to_string(),
                 glyph_name: "alpha".to_string(),
@@ -237,7 +237,7 @@
         let config = RuntimeConfig {
             project_dir: project_dir.clone(),
             project_id: "test-verbose-toggle".to_string(),
-            input_dir: project_dir.join("icons"),
+            input_dir: project_dir.join("images"),
             out_dir: project_dir.join("build"),
             font_name: "Petiglyph".to_string(),
             glyph_size: 8,
@@ -445,7 +445,7 @@
     fn glyph_matches_animation_frame_source_requires_matching_grid_dims() {
         let glyph = InteractiveGlyph {
             glyph: PreprocessedGlyph {
-                source_path: PathBuf::from("icons/strip.png"),
+                source_path: PathBuf::from("images/strip.png"),
                 source_key: "strip.png#compose:1x4:0:1".to_string(),
                 source_parent_key: "strip.png".to_string(),
                 glyph_name: "strip_r1_c2".to_string(),
@@ -521,7 +521,7 @@
         let config = RuntimeConfig {
             project_dir: project_dir.clone(),
             project_id: "test-verbose-toggle-input".to_string(),
-            input_dir: project_dir.join("icons"),
+            input_dir: project_dir.join("images"),
             out_dir: project_dir.join("build"),
             font_name: "Petiglyph".to_string(),
             glyph_size: 8,
@@ -559,7 +559,7 @@
         let config = RuntimeConfig {
             project_dir: project_dir.clone(),
             project_id: "test-verbose-delete-confirm".to_string(),
-            input_dir: project_dir.join("icons"),
+            input_dir: project_dir.join("images"),
             out_dir: project_dir.join("build"),
             font_name: "Petiglyph".to_string(),
             glyph_size: 8,
@@ -598,7 +598,7 @@
         let config = RuntimeConfig {
             project_dir: project_dir.clone(),
             project_id: "test-verbose-toggle-focus".to_string(),
-            input_dir: project_dir.join("icons"),
+            input_dir: project_dir.join("images"),
             out_dir: project_dir.join("build"),
             font_name: "Petiglyph".to_string(),
             glyph_size: 8,
@@ -652,7 +652,7 @@
         let config = RuntimeConfig {
             project_dir: project_dir.clone(),
             project_id: "test-home-nav-create-glyph-up".to_string(),
-            input_dir: project_dir.join("icons"),
+            input_dir: project_dir.join("images"),
             out_dir: project_dir.join("build"),
             font_name: "Petiglyph".to_string(),
             glyph_size: 8,
@@ -700,8 +700,8 @@
     fn glyphs_view_rescan_shortcut_reloads_project_sources() {
         let project_dir = make_temp_dir("glyphs-shortcut-rescan");
         let manifest_path = project_dir.join("petiglyph.toml");
-        let icons_dir = project_dir.join("icons");
-        fs::create_dir_all(&icons_dir).expect("icons dir is created");
+        let icons_dir = project_dir.join("images");
+        fs::create_dir_all(&icons_dir).expect("images dir is created");
         write_manifest(&manifest_path, &Manifest::default()).expect("manifest is written");
         write_test_png(&icons_dir.join("one.png"));
 
@@ -805,7 +805,7 @@
             .flat_map(|row| {
                 (0..4).map(move |col| InteractiveGlyph {
                     glyph: PreprocessedGlyph {
-                        source_path: PathBuf::from("icons/strip.png"),
+                        source_path: PathBuf::from("images/strip.png"),
                         source_key: format!("strip.png#compose:2x4:{row}:{col}"),
                         source_parent_key: "strip.png".to_string(),
                         glyph_name: format!("strip_r{}_c{}", row + 1, col + 1),
@@ -869,7 +869,7 @@
         let config = RuntimeConfig {
             project_dir: project_dir.clone(),
             project_id: "test-visible-grid-logical-columns".to_string(),
-            input_dir: project_dir.join("icons"),
+            input_dir: project_dir.join("images"),
             out_dir: project_dir.join("build"),
             font_name: "Petiglyph".to_string(),
             glyph_size: 8,
@@ -883,7 +883,7 @@
         let mut app = App::new(project_dir.join("petiglyph.toml"), config);
         app.glyphs = vec![InteractiveGlyph {
             glyph: PreprocessedGlyph {
-                source_path: project_dir.join("icons/grid.png"),
+                source_path: project_dir.join("images/grid.png"),
                 source_key: "grid.png#compose:8x16:0:0".to_string(),
                 source_parent_key: "grid.png".to_string(),
                 glyph_name: "grid_r1_c1".to_string(),
@@ -924,7 +924,7 @@
         let config = RuntimeConfig {
             project_dir: project_dir.clone(),
             project_id: "test-animation-row-grouping".to_string(),
-            input_dir: project_dir.join("icons"),
+            input_dir: project_dir.join("images"),
             out_dir: project_dir.join("build"),
             font_name: "Petiglyph".to_string(),
             glyph_size: 8,
@@ -950,7 +950,7 @@
             .into_iter()
             .map(|source| InteractiveGlyph {
                 glyph: PreprocessedGlyph {
-                    source_path: project_dir.join("icons").join(source),
+                    source_path: project_dir.join("images").join(source),
                     source_key: source.to_string(),
                     source_parent_key: source.to_string(),
                     glyph_name: source.replace(".png", ""),
@@ -1012,7 +1012,7 @@
         let config = RuntimeConfig {
             project_dir: project_dir.clone(),
             project_id: "test-standard-animation-reused-grid-source".to_string(),
-            input_dir: project_dir.join("icons"),
+            input_dir: project_dir.join("images"),
             out_dir: project_dir.join("build"),
             font_name: "Petiglyph".to_string(),
             glyph_size: 8,
@@ -1050,7 +1050,7 @@
         app.glyphs = vec![
             InteractiveGlyph {
                 glyph: PreprocessedGlyph {
-                    source_path: project_dir.join("icons/runner_01.png"),
+                    source_path: project_dir.join("images/runner_01.png"),
                     source_key: "runner_01.png#compose:1x2:0:0".to_string(),
                     source_parent_key: "runner_01.png".to_string(),
                     glyph_name: "runner_01_r1_c1".to_string(),
@@ -1074,7 +1074,7 @@
             },
             InteractiveGlyph {
                 glyph: PreprocessedGlyph {
-                    source_path: project_dir.join("icons/runner_01.png"),
+                    source_path: project_dir.join("images/runner_01.png"),
                     source_key: "runner_01.png".to_string(),
                     source_parent_key: "runner_01.png".to_string(),
                     glyph_name: "runner_01_standard".to_string(),
@@ -1158,7 +1158,7 @@
     #[test]
     fn animation_import_reuses_identical_existing_input_file() {
         let project_dir = make_temp_dir("animation-import-reuse-existing");
-        let input_dir = project_dir.join("icons");
+        let input_dir = project_dir.join("images");
         let external_dir = project_dir.join("external");
         fs::create_dir_all(&input_dir).expect("input dir is created");
         fs::create_dir_all(&external_dir).expect("external dir is created");
@@ -1192,8 +1192,8 @@
         let manifest_path = project_dir.join("petiglyph.toml");
         write_manifest(&manifest_path, &Manifest::default()).expect("manifest is written");
 
-        let icons_dir = project_dir.join("icons");
-        fs::create_dir_all(&icons_dir).expect("icons dir is created");
+        let icons_dir = project_dir.join("images");
+        fs::create_dir_all(&icons_dir).expect("images dir is created");
 
         let external_dir = project_dir.join("external");
         fs::create_dir_all(&external_dir).expect("external dir is created");
@@ -1235,8 +1235,8 @@
         let project_dir = make_temp_dir("glyph-home-drop-import-task");
         let manifest_path = project_dir.join("petiglyph.toml");
         write_manifest(&manifest_path, &Manifest::default()).expect("manifest is written");
-        let icons_dir = project_dir.join("icons");
-        fs::create_dir_all(&icons_dir).expect("icons dir is created");
+        let icons_dir = project_dir.join("images");
+        fs::create_dir_all(&icons_dir).expect("images dir is created");
         let external_dir = project_dir.join("external");
         fs::create_dir_all(&external_dir).expect("external dir is created");
         let image_path = external_dir.join("source.png");
@@ -1272,8 +1272,8 @@
         let project_dir = make_temp_dir("glyph-home-drop-queue-payload");
         let manifest_path = project_dir.join("petiglyph.toml");
         write_manifest(&manifest_path, &Manifest::default()).expect("manifest is written");
-        let icons_dir = project_dir.join("icons");
-        fs::create_dir_all(&icons_dir).expect("icons dir is created");
+        let icons_dir = project_dir.join("images");
+        fs::create_dir_all(&icons_dir).expect("images dir is created");
         let external_dir = project_dir.join("external");
         fs::create_dir_all(&external_dir).expect("external dir is created");
         let first_path = external_dir.join("first.png");
@@ -1324,8 +1324,8 @@
         let project_dir = make_temp_dir("glyph-home-drop-queue-drain");
         let manifest_path = project_dir.join("petiglyph.toml");
         write_manifest(&manifest_path, &Manifest::default()).expect("manifest is written");
-        let icons_dir = project_dir.join("icons");
-        fs::create_dir_all(&icons_dir).expect("icons dir is created");
+        let icons_dir = project_dir.join("images");
+        fs::create_dir_all(&icons_dir).expect("images dir is created");
         let external_dir = project_dir.join("external");
         fs::create_dir_all(&external_dir).expect("external dir is created");
         let first_path = external_dir.join("first.png");
@@ -1381,8 +1381,8 @@
         let manifest_path = project_dir.join("petiglyph.toml");
         write_manifest(&manifest_path, &Manifest::default()).expect("manifest is written");
 
-        let icons_dir = project_dir.join("icons");
-        fs::create_dir_all(&icons_dir).expect("icons dir is created");
+        let icons_dir = project_dir.join("images");
+        fs::create_dir_all(&icons_dir).expect("images dir is created");
 
         let external_dir = project_dir.join("external");
         fs::create_dir_all(&external_dir).expect("external dir is created");
@@ -1462,8 +1462,8 @@
         let manifest_path = project_dir.join("petiglyph.toml");
         write_manifest(&manifest_path, &Manifest::default()).expect("manifest is written");
 
-        let icons_dir = project_dir.join("icons");
-        fs::create_dir_all(&icons_dir).expect("icons dir is created");
+        let icons_dir = project_dir.join("images");
+        fs::create_dir_all(&icons_dir).expect("images dir is created");
 
         let external_dir = project_dir.join("external");
         fs::create_dir_all(&external_dir).expect("external dir is created");
@@ -1508,11 +1508,11 @@
             "refused grid multi-drop should not advance workflow import count"
         );
         let icon_entries = fs::read_dir(&icons_dir)
-            .expect("icons dir should remain readable")
+            .expect("images dir should remain readable")
             .count();
         assert_eq!(
             icon_entries, 0,
-            "refused grid multi-drop should not import files into icons"
+            "refused grid multi-drop should not import files into images"
         );
         assert!(
             app.status
@@ -1528,7 +1528,7 @@
         let manifest_path = project_dir.join("petiglyph.toml");
         write_manifest(&manifest_path, &Manifest::default()).expect("manifest is written");
 
-        let input_dir = project_dir.join("icons");
+        let input_dir = project_dir.join("images");
         let external_dir = project_dir.join("external");
         fs::create_dir_all(&input_dir).expect("input dir is created");
         fs::create_dir_all(&external_dir).expect("external dir is created");
@@ -1592,7 +1592,7 @@
         let config = RuntimeConfig {
             project_dir: project_dir.clone(),
             project_id: "test-home-workflow-enter-to-tweaking".to_string(),
-            input_dir: project_dir.join("icons"),
+            input_dir: project_dir.join("images"),
             out_dir: project_dir.join("build"),
             font_name: "Petiglyph".to_string(),
             glyph_size: 8,
@@ -1622,7 +1622,7 @@
         let config = RuntimeConfig {
             project_dir: project_dir.clone(),
             project_id: "test-animated-home-threshold-knob".to_string(),
-            input_dir: project_dir.join("icons"),
+            input_dir: project_dir.join("images"),
             out_dir: project_dir.join("build"),
             font_name: "Petiglyph".to_string(),
             glyph_size: 8,
@@ -1657,8 +1657,8 @@
         let project_dir = make_temp_dir("glyph-creation-threshold-persists");
         let manifest_path = project_dir.join("petiglyph.toml");
         write_manifest(&manifest_path, &Manifest::default()).expect("manifest is written");
-        let icons_dir = project_dir.join("icons");
-        fs::create_dir_all(&icons_dir).expect("icons dir is created");
+        let icons_dir = project_dir.join("images");
+        fs::create_dir_all(&icons_dir).expect("images dir is created");
         write_test_png(&icons_dir.join("source.png"));
 
         let config = RuntimeConfig {

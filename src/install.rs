@@ -2557,7 +2557,7 @@ mod tests {
         fs::create_dir_all(project_dir.join("build")).expect("build dir is created");
         fs::write(
             &manifest_path,
-            r#"input_dir = "icons"
+            r#"input_dir = "images"
 out_dir = "build"
 font_name = "Demo"
 glyph_size = 32
@@ -2605,7 +2605,7 @@ frames = [
         fs::create_dir_all(project_dir.join("build")).expect("build dir is created");
         fs::write(
             &manifest_path,
-            r#"input_dir = "icons"
+            r#"input_dir = "images"
 out_dir = "build"
 font_name = "Demo"
 glyph_size = 32
@@ -2654,7 +2654,7 @@ frames = [
         fs::create_dir_all(project_dir.join("build")).expect("build dir is created");
         fs::write(
             &manifest_path,
-            r#"input_dir = "icons"
+            r#"input_dir = "images"
 out_dir = "build"
 font_name = "Demo"
 glyph_size = 32

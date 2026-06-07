@@ -7,11 +7,11 @@ Each project is self-contained:
 ```text
 my-font/
   petiglyph.toml
-  icons/
+  images/
   build/
 ```
 
-`icons/` holds source images and imported animation frames, `build/` holds generated artifacts, and `petiglyph.toml` holds project config.
+`images/` holds source images and imported animation frames, `build/` holds generated artifacts, and `petiglyph.toml` holds project config.
 
 ## Quickstart
 
@@ -248,7 +248,7 @@ Failure rules:
 Default manifest values:
 
 ```toml
-input_dir = "icons"
+input_dir = "images"
 out_dir = "build"
 font_name = "Petiglyph"
 glyph_size = 64
@@ -281,7 +281,7 @@ Notes:
 
 ### Supported inputs
 
-Direct build inputs in `icons/`:
+Direct build inputs in `images/`:
 
 - `png`
 - `jpg`

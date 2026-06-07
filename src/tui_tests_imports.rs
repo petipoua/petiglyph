@@ -7,7 +7,7 @@
         let config = RuntimeConfig {
             project_dir: project_dir.clone(),
             project_id: "test-animated-home-grayscale-toggle".to_string(),
-            input_dir: project_dir.join("icons"),
+            input_dir: project_dir.join("images"),
             out_dir: project_dir.join("build"),
             font_name: "Petiglyph".to_string(),
             glyph_size: 8,
@@ -61,7 +61,7 @@
         let config = RuntimeConfig {
             project_dir: project_dir.clone(),
             project_id: "test-animated-home-grayscale-options".to_string(),
-            input_dir: project_dir.join("icons"),
+            input_dir: project_dir.join("images"),
             out_dir: project_dir.join("build"),
             font_name: "Petiglyph".to_string(),
             glyph_size: 8,
@@ -134,7 +134,7 @@
         let config = RuntimeConfig {
             project_dir: project_dir.clone(),
             project_id: "test-animated-home-export-test-image".to_string(),
-            input_dir: project_dir.join("icons"),
+            input_dir: project_dir.join("images"),
             out_dir: project_dir.join("build"),
             font_name: "Petiglyph".to_string(),
             glyph_size: 8,
@@ -151,7 +151,7 @@
         app.animation_selection_order = vec!["runner_01.png".to_string()];
         app.glyphs = vec![InteractiveGlyph {
             glyph: PreprocessedGlyph {
-                source_path: PathBuf::from("icons/runner_01.png"),
+                source_path: PathBuf::from("images/runner_01.png"),
                 source_key: "runner_01.png".to_string(),
                 source_parent_key: "runner_01.png".to_string(),
                 glyph_name: "runner_01".to_string(),
@@ -206,7 +206,7 @@
         let config = RuntimeConfig {
             project_dir: project_dir.clone(),
             project_id: "test-animated-home-export-frame-count".to_string(),
-            input_dir: project_dir.join("icons"),
+            input_dir: project_dir.join("images"),
             out_dir: project_dir.join("build"),
             font_name: "Petiglyph".to_string(),
             glyph_size: 8,
@@ -241,7 +241,7 @@
         let config = RuntimeConfig {
             project_dir: project_dir.clone(),
             project_id: "test-animated-home-frames-focus".to_string(),
-            input_dir: project_dir.join("icons"),
+            input_dir: project_dir.join("images"),
             out_dir: project_dir.join("build"),
             font_name: "Petiglyph".to_string(),
             glyph_size: 8,
@@ -279,8 +279,8 @@
         let project_dir = make_temp_dir("animated-home-full-frame-preview");
         let manifest_path = project_dir.join("petiglyph.toml");
         write_manifest(&manifest_path, &Manifest::default()).expect("manifest is written");
-        let icons_dir = project_dir.join("icons");
-        fs::create_dir_all(&icons_dir).expect("icons dir is created");
+        let icons_dir = project_dir.join("images");
+        fs::create_dir_all(&icons_dir).expect("images dir is created");
 
         let source_path = icons_dir.join("frame.png");
         let mut image = RgbaImage::from_pixel(32, 16, Rgba([255, 255, 255, 0]));
@@ -359,8 +359,8 @@
         let project_dir = make_temp_dir(temp_name);
         let manifest_path = project_dir.join("petiglyph.toml");
         write_manifest(&manifest_path, &Manifest::default()).expect("manifest is written");
-        let icons_dir = project_dir.join("icons");
-        fs::create_dir_all(&icons_dir).expect("icons dir is created");
+        let icons_dir = project_dir.join("images");
+        fs::create_dir_all(&icons_dir).expect("images dir is created");
 
         let tall_frame = icons_dir.join("frame-tall.png");
         let short_frame = icons_dir.join("frame-short.png");
@@ -434,7 +434,7 @@
         let config = RuntimeConfig {
             project_dir: project_dir.clone(),
             project_id: "test-animated-home-export-default-five".to_string(),
-            input_dir: project_dir.join("icons"),
+            input_dir: project_dir.join("images"),
             out_dir: project_dir.join("build"),
             font_name: "Petiglyph".to_string(),
             glyph_size: 8,
@@ -454,7 +454,7 @@
         app.glyphs = (1..=6)
             .map(|idx| InteractiveGlyph {
                 glyph: PreprocessedGlyph {
-                    source_path: PathBuf::from(format!("icons/f{idx}.png")),
+                    source_path: PathBuf::from(format!("images/f{idx}.png")),
                     source_key: format!("f{idx}.png"),
                     source_parent_key: format!("f{idx}.png"),
                     glyph_name: format!("f{idx}"),
@@ -491,8 +491,8 @@
         let manifest_path = project_dir.join("petiglyph.toml");
         write_manifest(&manifest_path, &Manifest::default()).expect("manifest is written");
 
-        let icons_dir = project_dir.join("icons");
-        fs::create_dir_all(&icons_dir).expect("icons dir is created");
+        let icons_dir = project_dir.join("images");
+        fs::create_dir_all(&icons_dir).expect("images dir is created");
         let external_dir = project_dir.join("external");
         fs::create_dir_all(&external_dir).expect("external dir is created");
         let dropped = external_dir.join("grid_source.png");
@@ -537,8 +537,8 @@
         let manifest_path = project_dir.join("petiglyph.toml");
         write_manifest(&manifest_path, &Manifest::default()).expect("manifest is written");
 
-        let icons_dir = project_dir.join("icons");
-        fs::create_dir_all(&icons_dir).expect("icons dir is created");
+        let icons_dir = project_dir.join("images");
+        fs::create_dir_all(&icons_dir).expect("images dir is created");
         let source_path = icons_dir.join("grid_source.png");
         write_test_png(&source_path);
 
@@ -585,8 +585,8 @@
         let manifest_path = project_dir.join("petiglyph.toml");
         write_manifest(&manifest_path, &Manifest::default()).expect("manifest is written");
 
-        let icons_dir = project_dir.join("icons");
-        fs::create_dir_all(&icons_dir).expect("icons dir is created");
+        let icons_dir = project_dir.join("images");
+        fs::create_dir_all(&icons_dir).expect("images dir is created");
         for file_name in ["runner_10.png", "runner_2.png", "runner_1.png"] {
             write_test_png(&icons_dir.join(file_name));
         }
@@ -654,8 +654,8 @@
         let manifest_path = project_dir.join("petiglyph.toml");
         write_manifest(&manifest_path, &Manifest::default()).expect("manifest is written");
 
-        let icons_dir = project_dir.join("icons");
-        fs::create_dir_all(&icons_dir).expect("icons dir is created");
+        let icons_dir = project_dir.join("images");
+        fs::create_dir_all(&icons_dir).expect("images dir is created");
         write_test_png(&icons_dir.join("frame.png"));
 
         persist_composition_definition(
@@ -746,8 +746,8 @@
         let project_dir = make_temp_dir("animation-create-spinner-advances");
         let manifest_path = project_dir.join("petiglyph.toml");
         write_manifest(&manifest_path, &Manifest::default()).expect("manifest is written");
-        let icons_dir = project_dir.join("icons");
-        fs::create_dir_all(&icons_dir).expect("icons dir is created");
+        let icons_dir = project_dir.join("images");
+        fs::create_dir_all(&icons_dir).expect("images dir is created");
         write_test_png(&icons_dir.join("frame.png"));
 
         let config = RuntimeConfig {
@@ -794,7 +794,7 @@
         let config = RuntimeConfig {
             project_dir: PathBuf::from("/tmp/project"),
             project_id: "test-animation-name-derive".to_string(),
-            input_dir: PathBuf::from("/tmp/project/icons"),
+            input_dir: PathBuf::from("/tmp/project/images"),
             out_dir: PathBuf::from("/tmp/project/build"),
             font_name: "Petiglyph".to_string(),
             glyph_size: 8,
@@ -818,7 +818,7 @@
         let mut config = RuntimeConfig {
             project_dir: PathBuf::from("/tmp/project"),
             project_id: "test-animation-name-conflicts".to_string(),
-            input_dir: PathBuf::from("/tmp/project/icons"),
+            input_dir: PathBuf::from("/tmp/project/images"),
             out_dir: PathBuf::from("/tmp/project/build"),
             font_name: "Petiglyph".to_string(),
             glyph_size: 8,
@@ -880,7 +880,7 @@
         let config = RuntimeConfig {
             project_dir: project_dir.clone(),
             project_id: "test-animation-threshold-sources".to_string(),
-            input_dir: project_dir.join("icons"),
+            input_dir: project_dir.join("images"),
             out_dir: project_dir.join("build"),
             font_name: "Petiglyph".to_string(),
             glyph_size: 8,
@@ -905,7 +905,7 @@
         app.glyphs = vec![
             InteractiveGlyph {
                 glyph: PreprocessedGlyph {
-                    source_path: PathBuf::from("icons/f1.png"),
+                    source_path: PathBuf::from("images/f1.png"),
                     source_key: "f1.png".to_string(),
                     source_parent_key: "f1.png".to_string(),
                     glyph_name: "f1".to_string(),
@@ -922,7 +922,7 @@
             },
             InteractiveGlyph {
                 glyph: PreprocessedGlyph {
-                    source_path: PathBuf::from("icons/f2.png"),
+                    source_path: PathBuf::from("images/f2.png"),
                     source_key: "f2.png".to_string(),
                     source_parent_key: "f2.png".to_string(),
                     glyph_name: "f2".to_string(),
@@ -979,7 +979,7 @@
         let config = RuntimeConfig {
             project_dir: project_dir.clone(),
             project_id: "test-animation-non-uniform-thresholds".to_string(),
-            input_dir: project_dir.join("icons"),
+            input_dir: project_dir.join("images"),
             out_dir: project_dir.join("build"),
             font_name: "Petiglyph".to_string(),
             glyph_size: 8,
@@ -994,7 +994,7 @@
         app.glyphs = vec![
             InteractiveGlyph {
                 glyph: PreprocessedGlyph {
-                    source_path: PathBuf::from("icons/a.png"),
+                    source_path: PathBuf::from("images/a.png"),
                     source_key: "a.png".to_string(),
                     source_parent_key: "a.png".to_string(),
                     glyph_name: "a".to_string(),
@@ -1011,7 +1011,7 @@
             },
             InteractiveGlyph {
                 glyph: PreprocessedGlyph {
-                    source_path: PathBuf::from("icons/b.png"),
+                    source_path: PathBuf::from("images/b.png"),
                     source_key: "b.png".to_string(),
                     source_parent_key: "b.png".to_string(),
                     glyph_name: "b".to_string(),
@@ -1055,7 +1055,7 @@
         let config = RuntimeConfig {
             project_dir: project_dir.clone(),
             project_id: "test-animation-non-uniform-invert".to_string(),
-            input_dir: project_dir.join("icons"),
+            input_dir: project_dir.join("images"),
             out_dir: project_dir.join("build"),
             font_name: "Petiglyph".to_string(),
             glyph_size: 8,
@@ -1070,7 +1070,7 @@
         app.glyphs = vec![
             InteractiveGlyph {
                 glyph: PreprocessedGlyph {
-                    source_path: PathBuf::from("icons/a.png"),
+                    source_path: PathBuf::from("images/a.png"),
                     source_key: "a.png".to_string(),
                     source_parent_key: "a.png".to_string(),
                     glyph_name: "a".to_string(),
@@ -1087,7 +1087,7 @@
             },
             InteractiveGlyph {
                 glyph: PreprocessedGlyph {
-                    source_path: PathBuf::from("icons/b.png"),
+                    source_path: PathBuf::from("images/b.png"),
                     source_key: "b.png".to_string(),
                     source_parent_key: "b.png".to_string(),
                     glyph_name: "b".to_string(),
@@ -1373,7 +1373,7 @@
     #[test]
     fn static_import_does_not_fail_when_grayscale_skips_non_rewritten_formats() {
         let project_dir = make_temp_dir("static-import-grayscale-gif");
-        let input_dir = project_dir.join("icons");
+        let input_dir = project_dir.join("images");
         let external_dir = project_dir.join("external");
         fs::create_dir_all(&input_dir).expect("input dir is created");
         fs::create_dir_all(&external_dir).expect("external dir is created");
@@ -1406,8 +1406,8 @@
     #[test]
     fn unescape_backslashes_preserves_windows_path_separators() {
         assert_eq!(
-            super::unescape_backslashes(r"C:\Users\alice\icons\frame.gif"),
-            r"C:\Users\alice\icons\frame.gif"
+            super::unescape_backslashes(r"C:\Users\alice\images\frame.gif"),
+            r"C:\Users\alice\images\frame.gif"
         );
     }
 

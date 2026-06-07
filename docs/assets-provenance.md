@@ -6,7 +6,7 @@ Last updated: 2026-06-05
 
 - The repository does not ship third-party logo packs or unknown-provenance media fixtures.
 - Public fixtures are stored under `test-assets/` and must be explicitly redistributable.
-- Project-local runtime media (`icons/` in each user project) is user-provided and is not part of this repository.
+- Project-local runtime media (`images/` in each user project) is user-provided and is not part of this repository.
 
 ## Current Repository Fixtures
 

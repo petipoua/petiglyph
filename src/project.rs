@@ -123,7 +123,7 @@ where
 impl Default for Manifest {
     fn default() -> Self {
         Self {
-            input_dir: "icons".to_string(),
+            input_dir: "images".to_string(),
             out_dir: "build".to_string(),
             font_name: "Petiglyph".to_string(),
             glyph_size: 64,
@@ -242,7 +242,7 @@ pub(crate) fn create_project_in_dir(base_dir: &Path, project_name: &str) -> Resu
         );
     }
 
-    let icons_dir = project_dir.join("icons");
+    let icons_dir = project_dir.join("images");
     let out_dir = project_dir.join("build");
     fs::create_dir_all(&icons_dir)
         .with_context(|| format!("failed to create {}", icons_dir.display()))?;
@@ -314,7 +314,7 @@ pub(crate) fn create_project(project_name: &str, no_launch: bool) -> Result<()> 
         .parent()
         .unwrap_or_else(|| Path::new("."))
         .to_path_buf();
-    let icons_dir = project_dir.join("icons");
+    let icons_dir = project_dir.join("images");
     let out_dir = project_dir.join("build");
 
     println!("created petiglyph project: {}", project_dir.display());

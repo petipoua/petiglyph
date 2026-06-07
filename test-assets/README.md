@@ -14,5 +14,5 @@ Current provenance:
 
 Notes:
 - This folder is intentionally not wired into code paths yet.
-- Project runtime still expects per-project source media in `icons/` inside each petiglyph project.
+- Project runtime still expects per-project source media in `images/` inside each petiglyph project.
 - `frames/rotate-*.png` is a 60-frame extracted sequence from `videos/triangle-rotate.mp4` and is the canonical frame-sequence fixture.

@@ -283,7 +283,7 @@ fn incompatible_artifact_warning_flags_legacy_lock_mismatch() {
 #[test]
 fn incompatible_artifact_warning_ignores_standard_runtime_errors() {
     let warning = incompatible_artifact_warning(
-        "no source images found in /tmp/x/icons",
+        "no source images found in /tmp/x/images",
         Some(Path::new("/tmp/x/petiglyph.toml")),
     );
     assert!(
@@ -530,8 +530,8 @@ fn unified_tui_zero_projects_starts_without_active_project() {
 fn unified_tui_single_project_can_start_active() {
     let workspace = make_temp_dir("unified-single-project");
     let project_dir = workspace.join("demo");
-    let icons_dir = project_dir.join("icons");
-    fs::create_dir_all(&icons_dir).expect("icons dir is created");
+    let icons_dir = project_dir.join("images");
+    fs::create_dir_all(&icons_dir).expect("images dir is created");
     write_test_png(&icons_dir.join("icon.png"));
     let manifest_path = project_dir.join("petiglyph.toml");
     write_manifest(&manifest_path, &Manifest::default()).expect("manifest is written");
@@ -578,7 +578,7 @@ fn unified_tui_malformed_project_is_listed_but_cannot_be_opened() {
     let workspace = make_temp_dir("unified-malformed-project");
 
     let valid_dir = workspace.join("a-valid");
-    fs::create_dir_all(valid_dir.join("icons")).expect("valid icons dir is created");
+    fs::create_dir_all(valid_dir.join("images")).expect("valid images dir is created");
     write_manifest(&valid_dir.join("petiglyph.toml"), &Manifest::default())
         .expect("valid manifest is written");
 
@@ -620,8 +620,8 @@ fn unified_tui_multiple_projects_can_be_selected_from_home() {
     let workspace = make_temp_dir("unified-multi-project");
     for name in ["project-a", "project-b"] {
         let project_dir = workspace.join(name);
-        let icons_dir = project_dir.join("icons");
-        fs::create_dir_all(&icons_dir).expect("icons dir is created");
+        let icons_dir = project_dir.join("images");
+        fs::create_dir_all(&icons_dir).expect("images dir is created");
         write_test_png(&icons_dir.join(format!("{name}.png")));
         let manifest_path = project_dir.join("petiglyph.toml");
         write_manifest(&manifest_path, &Manifest::default()).expect("manifest is written");
@@ -1037,8 +1037,8 @@ fn projects_card_hint_keeps_fixed_width_and_stays_local() {
 fn delete_project_flow_requires_explicit_focus_on_delete_button() {
     let workspace = make_temp_dir("home-delete-confirm");
     let project_dir = workspace.join("delete-me");
-    let icons_dir = project_dir.join("icons");
-    fs::create_dir_all(&icons_dir).expect("icons dir is created");
+    let icons_dir = project_dir.join("images");
+    fs::create_dir_all(&icons_dir).expect("images dir is created");
     write_test_png(&icons_dir.join("icon.png"));
     let manifest_path = project_dir.join("petiglyph.toml");
     write_manifest(&manifest_path, &Manifest::default()).expect("manifest is written");
@@ -1089,8 +1089,8 @@ fn delete_project_flow_requires_explicit_focus_on_delete_button() {
 fn delete_project_confirmation_can_be_canceled() {
     let workspace = make_temp_dir("home-delete-cancel");
     let project_dir = workspace.join("keep-me");
-    let icons_dir = project_dir.join("icons");
-    fs::create_dir_all(&icons_dir).expect("icons dir is created");
+    let icons_dir = project_dir.join("images");
+    fs::create_dir_all(&icons_dir).expect("images dir is created");
     write_test_png(&icons_dir.join("icon.png"));
     let manifest_path = project_dir.join("petiglyph.toml");
     write_manifest(&manifest_path, &Manifest::default()).expect("manifest is written");
@@ -1124,8 +1124,8 @@ fn project_action_labels_switch_with_current_project_state() {
 fn home_shortcut_starts_animated_glyph_workflow() {
     let project_dir = make_temp_dir("animate-glyph-enter");
     let manifest_path = project_dir.join("petiglyph.toml");
-    let icons_dir = project_dir.join("icons");
-    fs::create_dir_all(&icons_dir).expect("icons dir is created");
+    let icons_dir = project_dir.join("images");
+    fs::create_dir_all(&icons_dir).expect("images dir is created");
     write_test_png(&icons_dir.join("icon.png"));
 
     let config = RuntimeConfig {
@@ -1162,8 +1162,8 @@ fn standard_animation_config_escape_cancels_popup() {
     let manifest_path = project_dir.join("petiglyph.toml");
     write_manifest(&manifest_path, &Manifest::default()).expect("manifest is written");
 
-    let icons_dir = project_dir.join("icons");
-    fs::create_dir_all(&icons_dir).expect("icons dir is created");
+    let icons_dir = project_dir.join("images");
+    fs::create_dir_all(&icons_dir).expect("images dir is created");
     let imports_dir = project_dir.join("imports");
     fs::create_dir_all(&imports_dir).expect("imports dir is created");
     let frame = imports_dir.join("frame.png");
@@ -1225,8 +1225,8 @@ fn glyph_view_c_shortcuts_create_and_remove_composition_in_manifest() {
     let manifest_path = project_dir.join("petiglyph.toml");
     write_manifest(&manifest_path, &Manifest::default()).expect("manifest is written");
 
-    let icons_dir = project_dir.join("icons");
-    fs::create_dir_all(&icons_dir).expect("icons dir is created");
+    let icons_dir = project_dir.join("images");
+    fs::create_dir_all(&icons_dir).expect("images dir is created");
     write_test_png(&icons_dir.join("icon.png"));
 
     let mut app = App::new_workspace(
@@ -1275,8 +1275,8 @@ fn home_installed_font_buttons_can_be_navigated() {
     let manifest_path = project_dir.join("petiglyph.toml");
     write_manifest(&manifest_path, &Manifest::default()).expect("manifest is written");
 
-    let icons_dir = project_dir.join("icons");
-    fs::create_dir_all(&icons_dir).expect("icons dir is created");
+    let icons_dir = project_dir.join("images");
+    fs::create_dir_all(&icons_dir).expect("images dir is created");
     write_test_png(&icons_dir.join("icon.png"));
 
     let config = RuntimeConfig {
@@ -1385,8 +1385,8 @@ fn home_installed_font_animation_row_is_selectable_and_copyable() {
     let manifest_path = project_dir.join("petiglyph.toml");
     write_manifest(&manifest_path, &Manifest::default()).expect("manifest is written");
 
-    let icons_dir = project_dir.join("icons");
-    fs::create_dir_all(&icons_dir).expect("icons dir is created");
+    let icons_dir = project_dir.join("images");
+    fs::create_dir_all(&icons_dir).expect("images dir is created");
     write_test_png(&icons_dir.join("icon.png"));
 
     let config = RuntimeConfig {
@@ -1445,8 +1445,8 @@ fn home_view_renders_without_panicking() {
     let manifest_path = project_dir.join("petiglyph.toml");
     write_manifest(&manifest_path, &Manifest::default()).expect("manifest is written");
 
-    let icons_dir = project_dir.join("icons");
-    fs::create_dir_all(&icons_dir).expect("icons dir is created");
+    let icons_dir = project_dir.join("images");
+    fs::create_dir_all(&icons_dir).expect("images dir is created");
     write_test_png(&icons_dir.join("icon.png"));
 
     let config = RuntimeConfig {
@@ -1602,9 +1602,9 @@ fn supported_source_extensions_exclude_import_only_avif() {
 
 #[test]
 fn build_outputs_generates_non_empty_repo_icon_font() {
-    let out_dir = make_temp_dir("icons-e2e");
-    let input_dir = out_dir.join("icons");
-    fs::create_dir_all(&input_dir).expect("icons dir is created");
+    let out_dir = make_temp_dir("images-e2e");
+    let input_dir = out_dir.join("images");
+    fs::create_dir_all(&input_dir).expect("images dir is created");
     let fixture_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("test-assets/images");
     for name in ["diamond-128.png", "ring-128.png", "triangle-128.png"] {
         fs::copy(fixture_dir.join(name), input_dir.join(name))
@@ -1612,7 +1612,7 @@ fn build_outputs_generates_non_empty_repo_icon_font() {
     }
     let config = RuntimeConfig {
         project_dir: out_dir.clone(),
-        project_id: "test-icons-e2e".to_string(),
+        project_id: "test-images-e2e".to_string(),
         input_dir: input_dir.clone(),
         out_dir: out_dir.clone(),
         font_name: "Petiglyph".to_string(),
@@ -1681,8 +1681,8 @@ fn build_outputs_generates_non_empty_repo_icon_font() {
 #[test]
 fn build_outputs_composition_writes_grid_sample_and_contiguous_codepoints() {
     let project_dir = make_temp_dir("composition-grid-sample");
-    let input_dir = project_dir.join("icons");
-    fs::create_dir_all(&input_dir).expect("icons dir is created");
+    let input_dir = project_dir.join("images");
+    fs::create_dir_all(&input_dir).expect("images dir is created");
     write_quadrant_png(&input_dir.join("logo.png"), 80);
 
     let manifest_path = project_dir.join("petiglyph.toml");
@@ -1748,7 +1748,7 @@ fn composition_bleed_flags_default_horizontal_on_vertical_off_when_missing() {
     fs::write(
         &manifest_path,
         r#"
-input_dir = "icons"
+input_dir = "images"
 out_dir = "build"
 font_name = "Petiglyph"
 glyph_size = 16
@@ -1776,8 +1776,8 @@ codepoint_start = "U+100000"
 #[test]
 fn preprocess_composition_tiles_keep_corner_alignment_without_recentering() {
     let project_dir = make_temp_dir("composition-corner-alignment");
-    let input_dir = project_dir.join("icons");
-    fs::create_dir_all(&input_dir).expect("icons dir is created");
+    let input_dir = project_dir.join("images");
+    fs::create_dir_all(&input_dir).expect("images dir is created");
 
     let mut img = RgbaImage::from_pixel(32, 16, Rgba([255, 255, 255, 0]));
     for y in 5..=10 {
@@ -1850,8 +1850,8 @@ fn preprocess_composition_tiles_keep_corner_alignment_without_recentering() {
 #[test]
 fn composed_source_can_also_emit_standard_animation_glyph() {
     let project_dir = make_temp_dir("composition-standard-animation-glyph");
-    let input_dir = project_dir.join("icons");
-    fs::create_dir_all(&input_dir).expect("icons dir is created");
+    let input_dir = project_dir.join("images");
+    fs::create_dir_all(&input_dir).expect("images dir is created");
 
     let mut img = RgbaImage::from_pixel(32, 16, Rgba([255, 255, 255, 0]));
     for y in 4..12 {
@@ -1903,8 +1903,8 @@ fn composed_source_can_also_emit_standard_animation_glyph() {
 #[test]
 fn preprocess_composition_tiles_use_global_grid_scaling() {
     let project_dir = make_temp_dir("composition-global-grid-scaling");
-    let input_dir = project_dir.join("icons");
-    fs::create_dir_all(&input_dir).expect("icons dir is created");
+    let input_dir = project_dir.join("images");
+    fs::create_dir_all(&input_dir).expect("images dir is created");
 
     let mut img = RgbaImage::from_pixel(28, 28, Rgba([255, 255, 255, 0]));
     for y in 19..27 {
@@ -1971,8 +1971,8 @@ fn preprocess_composition_tiles_use_global_grid_scaling() {
 #[test]
 fn standard_animation_frames_preserve_full_source_frame_when_scaling() {
     let project_dir = make_temp_dir("standard-animation-full-frame-fit");
-    let input_dir = project_dir.join("icons");
-    fs::create_dir_all(&input_dir).expect("icons dir is created");
+    let input_dir = project_dir.join("images");
+    fs::create_dir_all(&input_dir).expect("images dir is created");
 
     let mut img = RgbaImage::from_pixel(32, 16, Rgba([255, 255, 255, 0]));
     for y in 4..12 {
@@ -2027,8 +2027,8 @@ fn standard_animation_frames_preserve_full_source_frame_when_scaling() {
 #[test]
 fn grid_animation_frames_preserve_full_source_frame_before_tile_split() {
     let project_dir = make_temp_dir("grid-animation-full-frame-fit");
-    let input_dir = project_dir.join("icons");
-    fs::create_dir_all(&input_dir).expect("icons dir is created");
+    let input_dir = project_dir.join("images");
+    fs::create_dir_all(&input_dir).expect("images dir is created");
 
     let mut img = RgbaImage::from_pixel(40, 20, Rgba([255, 255, 255, 0]));
     for y in 5..15 {
@@ -2113,8 +2113,8 @@ fn grid_animation_frames_preserve_full_source_frame_before_tile_split() {
 #[test]
 fn grid_animation_composed_frame_entries_preserve_parent_source_frame() {
     let project_dir = make_temp_dir("grid-animation-composed-entry-full-frame-fit");
-    let input_dir = project_dir.join("icons");
-    fs::create_dir_all(&input_dir).expect("icons dir is created");
+    let input_dir = project_dir.join("images");
+    fs::create_dir_all(&input_dir).expect("images dir is created");
 
     let mut img = RgbaImage::from_pixel(40, 20, Rgba([255, 255, 255, 0]));
     for y in 5..15 {
@@ -2199,8 +2199,8 @@ fn grid_animation_composed_frame_entries_preserve_parent_source_frame() {
 #[test]
 fn preprocess_composition_tiles_keep_raw_internal_threshold_gradient() {
     let project_dir = make_temp_dir("composition-sealed-seams");
-    let input_dir = project_dir.join("icons");
-    fs::create_dir_all(&input_dir).expect("icons dir is created");
+    let input_dir = project_dir.join("images");
+    fs::create_dir_all(&input_dir).expect("images dir is created");
 
     let mut img = RgbaImage::from_pixel(32, 16, Rgba([255, 255, 255, 0]));
     img.put_pixel(15, 8, Rgba([0, 0, 0, 20]));
@@ -2255,8 +2255,8 @@ fn preprocess_composition_tiles_keep_raw_internal_threshold_gradient() {
 #[test]
 fn build_outputs_composition_preserves_tile_offsets_in_ttf() {
     let project_dir = make_temp_dir("composition-ttf-offsets");
-    let input_dir = project_dir.join("icons");
-    fs::create_dir_all(&input_dir).expect("icons dir is created");
+    let input_dir = project_dir.join("images");
+    fs::create_dir_all(&input_dir).expect("images dir is created");
     write_split_edge_dots_png(&input_dir.join("split.png"), 32);
 
     let manifest_path = project_dir.join("petiglyph.toml");
@@ -2322,8 +2322,8 @@ fn build_outputs_composition_preserves_tile_offsets_in_ttf() {
 #[test]
 fn build_outputs_composition_bleeds_internal_ttf_edges() {
     let project_dir = make_temp_dir("composition-ttf-overlap");
-    let input_dir = project_dir.join("icons");
-    fs::create_dir_all(&input_dir).expect("icons dir is created");
+    let input_dir = project_dir.join("images");
+    fs::create_dir_all(&input_dir).expect("images dir is created");
 
     let mut img = RgbaImage::from_pixel(32, 16, Rgba([255, 255, 255, 0]));
     for y in 0..16 {
@@ -2421,8 +2421,8 @@ fn build_outputs_composition_bleeds_internal_ttf_edges() {
 #[test]
 fn build_outputs_composition_can_disable_horizontal_ttf_bleed() {
     let project_dir = make_temp_dir("composition-ttf-no-horizontal-bleed");
-    let input_dir = project_dir.join("icons");
-    fs::create_dir_all(&input_dir).expect("icons dir is created");
+    let input_dir = project_dir.join("images");
+    fs::create_dir_all(&input_dir).expect("images dir is created");
 
     let mut img = RgbaImage::from_pixel(32, 16, Rgba([255, 255, 255, 0]));
     for y in 0..16 {
@@ -2500,8 +2500,8 @@ fn build_outputs_composition_can_disable_horizontal_ttf_bleed() {
 #[test]
 fn build_outputs_composition_overlaps_internal_ttf_edges_vertically() {
     let project_dir = make_temp_dir("composition-ttf-overlap-vertical");
-    let input_dir = project_dir.join("icons");
-    fs::create_dir_all(&input_dir).expect("icons dir is created");
+    let input_dir = project_dir.join("images");
+    fs::create_dir_all(&input_dir).expect("images dir is created");
 
     let mut img = RgbaImage::from_pixel(16, 32, Rgba([255, 255, 255, 0]));
     for x in 0..16 {
@@ -2580,8 +2580,8 @@ fn build_outputs_composition_overlaps_internal_ttf_edges_vertically() {
 #[test]
 fn build_outputs_composition_can_disable_vertical_ttf_bleed() {
     let project_dir = make_temp_dir("composition-ttf-no-vertical-bleed");
-    let input_dir = project_dir.join("icons");
-    fs::create_dir_all(&input_dir).expect("icons dir is created");
+    let input_dir = project_dir.join("images");
+    fs::create_dir_all(&input_dir).expect("images dir is created");
 
     let mut img = RgbaImage::from_pixel(16, 32, Rgba([255, 255, 255, 0]));
     for x in 0..16 {
@@ -2657,8 +2657,8 @@ fn build_outputs_composition_can_disable_vertical_ttf_bleed() {
 #[test]
 fn build_outputs_empty_composition_tile_keeps_ttf_advance() {
     let project_dir = make_temp_dir("composition-empty-advance");
-    let input_dir = project_dir.join("icons");
-    fs::create_dir_all(&input_dir).expect("icons dir is created");
+    let input_dir = project_dir.join("images");
+    fs::create_dir_all(&input_dir).expect("images dir is created");
 
     let mut img = RgbaImage::from_pixel(48, 16, Rgba([255, 255, 255, 0]));
     img.put_pixel(1, 8, Rgba([0, 0, 0, 255]));
@@ -2717,8 +2717,8 @@ fn build_outputs_empty_composition_tile_keeps_ttf_advance() {
 #[test]
 fn build_outputs_remaps_noncontiguous_composition_lock_into_contiguous_run() {
     let project_dir = make_temp_dir("composition-lock-remap");
-    let input_dir = project_dir.join("icons");
-    fs::create_dir_all(&input_dir).expect("icons dir is created");
+    let input_dir = project_dir.join("images");
+    fs::create_dir_all(&input_dir).expect("images dir is created");
     write_quadrant_png(&input_dir.join("icon.png"), 64);
 
     let manifest_path = project_dir.join("petiglyph.toml");
@@ -2803,7 +2803,7 @@ fn build_outputs_remaps_noncontiguous_composition_lock_into_contiguous_run() {
 #[test]
 fn build_outputs_centers_non_square_glyphs_in_ttf_line_box() {
     let project_dir = make_temp_dir("non-square-centering");
-    let input_dir = project_dir.join("icons");
+    let input_dir = project_dir.join("images");
     let out_dir = project_dir.join("build");
     fs::create_dir_all(&input_dir).expect("input dir is created");
     write_transparent_rect_png(&input_dir.join("wide.png"), 100, 77);
@@ -2874,9 +2874,9 @@ fn build_outputs_centers_non_square_glyphs_in_ttf_line_box() {
 #[test]
 fn build_outputs_embeds_project_identity_in_ttf_unique_name() {
     let project_dir = make_temp_dir("ttf-unique-identity");
-    let input_dir = project_dir.join("icons");
+    let input_dir = project_dir.join("images");
     let out_dir = project_dir.join("build");
-    fs::create_dir_all(&input_dir).expect("icons dir is created");
+    fs::create_dir_all(&input_dir).expect("images dir is created");
     fs::create_dir_all(&out_dir).expect("build dir is created");
     write_test_png(&input_dir.join("alpha.png"));
 
@@ -2920,9 +2920,9 @@ fn build_outputs_embeds_project_identity_in_ttf_unique_name() {
 #[test]
 fn sample_glyphs_from_ttf_bytes_limits_preview_to_requested_count() {
     let project_dir = make_temp_dir("ttf-sample-limit");
-    let input_dir = project_dir.join("icons");
+    let input_dir = project_dir.join("images");
     let out_dir = project_dir.join("build");
-    fs::create_dir_all(&input_dir).expect("icons dir is created");
+    fs::create_dir_all(&input_dir).expect("images dir is created");
     fs::create_dir_all(&out_dir).expect("build dir is created");
     for idx in 0..20 {
         write_test_png(&input_dir.join(format!("icon-{idx}.png")));
@@ -2957,9 +2957,9 @@ fn sample_glyphs_from_ttf_bytes_limits_preview_to_requested_count() {
 fn scan_installed_petiglyph_fonts_keeps_deleted_project_fonts_visible() {
     let workspace_dir = make_temp_dir("deleted-project-installed-fonts-workspace");
     let project_dir = make_temp_dir("deleted-project-installed-fonts-project");
-    let input_dir = project_dir.join("icons");
+    let input_dir = project_dir.join("images");
     let out_dir = project_dir.join("build");
-    fs::create_dir_all(&input_dir).expect("icons dir is created");
+    fs::create_dir_all(&input_dir).expect("images dir is created");
     fs::create_dir_all(&out_dir).expect("build dir is created");
     write_test_png(&input_dir.join("alpha.png"));
 
@@ -3022,9 +3022,9 @@ fn scan_installed_petiglyph_fonts_keeps_deleted_project_fonts_visible() {
 #[test]
 fn build_outputs_supports_upper_unicode_edge() {
     let project_dir = make_temp_dir("unicode-edge");
-    let input_dir = project_dir.join("icons");
+    let input_dir = project_dir.join("images");
     let out_dir = project_dir.join("build");
-    fs::create_dir_all(&input_dir).expect("icons dir is created");
+    fs::create_dir_all(&input_dir).expect("images dir is created");
     fs::create_dir_all(&out_dir).expect("build dir is created");
     write_test_png(&input_dir.join("a.png"));
     write_test_png(&input_dir.join("b.png"));
@@ -3065,9 +3065,9 @@ fn build_outputs_supports_upper_unicode_edge() {
 #[test]
 fn build_outputs_rejects_codepoint_range_above_unicode_max() {
     let project_dir = make_temp_dir("unicode-overflow");
-    let input_dir = project_dir.join("icons");
+    let input_dir = project_dir.join("images");
     let out_dir = project_dir.join("build");
-    fs::create_dir_all(&input_dir).expect("icons dir is created");
+    fs::create_dir_all(&input_dir).expect("images dir is created");
     fs::create_dir_all(&out_dir).expect("build dir is created");
     write_test_png(&input_dir.join("a.png"));
     write_test_png(&input_dir.join("b.png"));
@@ -3100,9 +3100,9 @@ fn build_outputs_rejects_codepoint_range_above_unicode_max() {
 #[test]
 fn build_outputs_rejects_codepoint_range_crossing_surrogates() {
     let project_dir = make_temp_dir("unicode-surrogate-crossing");
-    let input_dir = project_dir.join("icons");
+    let input_dir = project_dir.join("images");
     let out_dir = project_dir.join("build");
-    fs::create_dir_all(&input_dir).expect("icons dir is created");
+    fs::create_dir_all(&input_dir).expect("images dir is created");
     fs::create_dir_all(&out_dir).expect("build dir is created");
     write_test_png(&input_dir.join("a.png"));
     write_test_png(&input_dir.join("b.png"));
@@ -3158,9 +3158,9 @@ fn load_runtime_config_generates_and_persists_project_id() {
 #[test]
 fn build_outputs_preserves_existing_codepoints_when_new_sorted_source_is_added() {
     let project_dir = make_temp_dir("stable-codepoints-on-insert");
-    let input_dir = project_dir.join("icons");
+    let input_dir = project_dir.join("images");
     let out_dir = project_dir.join("build");
-    fs::create_dir_all(&input_dir).expect("icons dir is created");
+    fs::create_dir_all(&input_dir).expect("images dir is created");
     fs::create_dir_all(&out_dir).expect("build dir is created");
 
     write_test_png(&input_dir.join("b.png"));
@@ -3243,9 +3243,9 @@ fn build_outputs_preserves_existing_codepoints_when_new_sorted_source_is_added()
 #[test]
 fn build_outputs_tombstones_removed_sources_and_does_not_reuse_their_codepoints() {
     let project_dir = make_temp_dir("stable-codepoints-tombstone");
-    let input_dir = project_dir.join("icons");
+    let input_dir = project_dir.join("images");
     let out_dir = project_dir.join("build");
-    fs::create_dir_all(&input_dir).expect("icons dir is created");
+    fs::create_dir_all(&input_dir).expect("images dir is created");
     fs::create_dir_all(&out_dir).expect("build dir is created");
 
     write_test_png(&input_dir.join("a.png"));
@@ -3439,9 +3439,9 @@ fn unicode_registry_avoids_external_font_pua_conflicts() {
     fs::create_dir_all(&external_dir).expect("external font scan dir is created");
 
     let source_project = make_temp_dir("external-font-source-project");
-    let source_input = source_project.join("icons");
+    let source_input = source_project.join("images");
     let source_out = source_project.join("build");
-    fs::create_dir_all(&source_input).expect("source icons dir is created");
+    fs::create_dir_all(&source_input).expect("source images dir is created");
     fs::create_dir_all(&source_out).expect("source build dir is created");
     write_test_png(&source_input.join("a.png"));
 
@@ -3490,9 +3490,9 @@ fn unicode_registry_avoids_external_font_pua_conflicts() {
 #[test]
 fn build_force_remap_recovers_from_foreign_codepoint_conflict() {
     let project_dir = make_temp_dir("force-remap-conflict");
-    let input_dir = project_dir.join("icons");
+    let input_dir = project_dir.join("images");
     let out_dir = project_dir.join("build");
-    fs::create_dir_all(&input_dir).expect("icons dir is created");
+    fs::create_dir_all(&input_dir).expect("images dir is created");
     fs::create_dir_all(&out_dir).expect("build dir is created");
     write_test_png(&input_dir.join("icon.png"));
 
@@ -3557,9 +3557,9 @@ fn build_force_remap_recovers_from_foreign_codepoint_conflict() {
 #[test]
 fn build_auto_remaps_when_existing_range_cannot_expand() {
     let project_dir = make_temp_dir("auto-remap-range-expansion");
-    let input_dir = project_dir.join("icons");
+    let input_dir = project_dir.join("images");
     let out_dir = project_dir.join("build");
-    fs::create_dir_all(&input_dir).expect("icons dir is created");
+    fs::create_dir_all(&input_dir).expect("images dir is created");
     fs::create_dir_all(&out_dir).expect("build dir is created");
     write_test_png(&input_dir.join("a.png"));
     write_test_png(&input_dir.join("b.png"));
@@ -3671,7 +3671,7 @@ fn app_new_hydrates_previous_build_outputs_from_disk() {
     let config = RuntimeConfig {
         project_dir: project_dir.clone(),
         project_id: "test-hydrate-last-build".to_string(),
-        input_dir: project_dir.join("icons"),
+        input_dir: project_dir.join("images"),
         out_dir: build_dir.clone(),
         font_name: "Petiglyph".to_string(),
         glyph_size: 8,
@@ -3705,7 +3705,7 @@ fn handle_key_updates_and_clears_selected_threshold_override() {
     let config = RuntimeConfig {
         project_dir: project_dir.clone(),
         project_id: "test-threshold-override".to_string(),
-        input_dir: project_dir.join("icons"),
+        input_dir: project_dir.join("images"),
         out_dir: project_dir.join("build"),
         font_name: "Petiglyph".to_string(),
         glyph_size: 8,
@@ -3720,7 +3720,7 @@ fn handle_key_updates_and_clears_selected_threshold_override() {
     let mut app = App::new(manifest_path.clone(), config);
     app.glyphs.push(InteractiveGlyph {
         glyph: PreprocessedGlyph {
-            source_path: project_dir.join("icons/icon.png"),
+            source_path: project_dir.join("images/icon.png"),
             source_key: "icon.png".to_string(),
             source_parent_key: "icon.png".to_string(),
             glyph_name: "icon".to_string(),
@@ -3764,7 +3764,7 @@ fn glyphs_preview_focus_edits_threshold_with_up_down() {
     let config = RuntimeConfig {
         project_dir: project_dir.clone(),
         project_id: "test-preview-threshold".to_string(),
-        input_dir: project_dir.join("icons"),
+        input_dir: project_dir.join("images"),
         out_dir: project_dir.join("build"),
         font_name: "Petiglyph".to_string(),
         glyph_size: 8,
@@ -3779,7 +3779,7 @@ fn glyphs_preview_focus_edits_threshold_with_up_down() {
     let mut app = App::new(manifest_path.clone(), config);
     app.glyphs.push(InteractiveGlyph {
         glyph: PreprocessedGlyph {
-            source_path: project_dir.join("icons/icon.png"),
+            source_path: project_dir.join("images/icon.png"),
             source_key: "icon.png".to_string(),
             source_parent_key: "icon.png".to_string(),
             glyph_name: "icon".to_string(),
@@ -3815,7 +3815,7 @@ fn grid_tile_threshold_editing_is_disabled_from_child_row() {
     let config = RuntimeConfig {
         project_dir: project_dir.clone(),
         project_id: "test-grid-child-threshold".to_string(),
-        input_dir: project_dir.join("icons"),
+        input_dir: project_dir.join("images"),
         out_dir: project_dir.join("build"),
         font_name: "Petiglyph".to_string(),
         glyph_size: 8,
@@ -3834,7 +3834,7 @@ fn grid_tile_threshold_editing_is_disabled_from_child_row() {
     {
         app.glyphs.push(InteractiveGlyph {
             glyph: PreprocessedGlyph {
-                source_path: project_dir.join("icons/grid.png"),
+                source_path: project_dir.join("images/grid.png"),
                 source_key: source_key.to_string(),
                 source_parent_key: "grid.png".to_string(),
                 glyph_name: format!("grid_0_{col}"),
@@ -3895,7 +3895,7 @@ fn animation_preview_controls_update_thresholds_and_fps() {
     let config = RuntimeConfig {
         project_dir: project_dir.clone(),
         project_id: "test-animation-preview-controls".to_string(),
-        input_dir: project_dir.join("icons"),
+        input_dir: project_dir.join("images"),
         out_dir: project_dir.join("build"),
         font_name: "Petiglyph".to_string(),
         glyph_size: 8,
@@ -3911,7 +3911,7 @@ fn animation_preview_controls_update_thresholds_and_fps() {
     for source in ["frame1.png", "frame2.png"] {
         app.glyphs.push(InteractiveGlyph {
             glyph: PreprocessedGlyph {
-                source_path: project_dir.join("icons").join(source),
+                source_path: project_dir.join("images").join(source),
                 source_key: source.to_string(),
                 source_parent_key: source.to_string(),
                 glyph_name: source.replace(".png", ""),
@@ -3949,8 +3949,8 @@ fn grid_config_tui_persists_bleed_toggles() {
     let manifest_path = project_dir.join("petiglyph.toml");
     write_manifest(&manifest_path, &Manifest::default()).expect("manifest is written");
 
-    let icons_dir = project_dir.join("icons");
-    fs::create_dir_all(&icons_dir).expect("icons dir is created");
+    let icons_dir = project_dir.join("images");
+    fs::create_dir_all(&icons_dir).expect("images dir is created");
     write_test_png(&icons_dir.join("icon.png"));
 
     let mut app = App::new_workspace(
@@ -4095,7 +4095,7 @@ fn handle_key_supports_keypad_plus_minus_aliases_for_threshold() {
     let config = RuntimeConfig {
         project_dir: project_dir.clone(),
         project_id: "test-keypad-threshold".to_string(),
-        input_dir: project_dir.join("icons"),
+        input_dir: project_dir.join("images"),
         out_dir: project_dir.join("build"),
         font_name: "Petiglyph".to_string(),
         glyph_size: 8,
@@ -4110,7 +4110,7 @@ fn handle_key_supports_keypad_plus_minus_aliases_for_threshold() {
     let mut app = App::new(manifest_path.clone(), config);
     app.glyphs.push(InteractiveGlyph {
         glyph: PreprocessedGlyph {
-            source_path: project_dir.join("icons/icon.png"),
+            source_path: project_dir.join("images/icon.png"),
             source_key: "icon.png".to_string(),
             source_parent_key: "icon.png".to_string(),
             glyph_name: "icon".to_string(),
@@ -4164,7 +4164,7 @@ fn empty_glyphs_panel_keeps_list_focus() {
     let config = RuntimeConfig {
         project_dir: project_dir.clone(),
         project_id: "test-empty-glyphs-focus".to_string(),
-        input_dir: project_dir.join("icons"),
+        input_dir: project_dir.join("images"),
         out_dir: project_dir.join("build"),
         font_name: "Petiglyph".to_string(),
         glyph_size: 8,
@@ -4200,7 +4200,7 @@ fn glyphs_install_button_reroutes_to_home_install() {
     let config = RuntimeConfig {
         project_dir: project_dir.clone(),
         project_id: "test-glyphs-install-reroute".to_string(),
-        input_dir: project_dir.join("icons"),
+        input_dir: project_dir.join("images"),
         out_dir: project_dir.join("build"),
         font_name: "Petiglyph".to_string(),
         glyph_size: 8,
@@ -4216,7 +4216,7 @@ fn glyphs_install_button_reroutes_to_home_install() {
     app.view = AppView::Glyphs;
     app.glyphs.push(InteractiveGlyph {
         glyph: PreprocessedGlyph {
-            source_path: project_dir.join("icons/icon.png"),
+            source_path: project_dir.join("images/icon.png"),
             source_key: "icon.png".to_string(),
             source_parent_key: "icon.png".to_string(),
             glyph_name: "icon".to_string(),
@@ -4254,7 +4254,7 @@ fn tab_cycles_panels_and_glyph_controls_stay_in_glyph_view() {
     let config = RuntimeConfig {
         project_dir: project_dir.clone(),
         project_id: "test-tab-cycle".to_string(),
-        input_dir: project_dir.join("icons"),
+        input_dir: project_dir.join("images"),
         out_dir: project_dir.join("build"),
         font_name: "Petiglyph".to_string(),
         glyph_size: 8,
@@ -4269,7 +4269,7 @@ fn tab_cycles_panels_and_glyph_controls_stay_in_glyph_view() {
     let mut app = App::new(manifest_path.clone(), config);
     app.glyphs.push(InteractiveGlyph {
         glyph: PreprocessedGlyph {
-            source_path: project_dir.join("icons/icon.png"),
+            source_path: project_dir.join("images/icon.png"),
             source_key: "icon.png".to_string(),
             source_parent_key: "icon.png".to_string(),
             glyph_name: "icon".to_string(),
@@ -4371,8 +4371,8 @@ fn dropped_image_on_home_imports_and_switches_to_glyphs() {
     let manifest_path = project_dir.join("petiglyph.toml");
     write_manifest(&manifest_path, &Manifest::default()).expect("manifest is written");
 
-    let icons_dir = project_dir.join("icons");
-    fs::create_dir_all(&icons_dir).expect("icons dir is created");
+    let icons_dir = project_dir.join("images");
+    fs::create_dir_all(&icons_dir).expect("images dir is created");
     let dropped_image = project_dir.join("drop source.png");
     write_test_png(&dropped_image);
 
@@ -4401,7 +4401,7 @@ fn dropped_image_on_home_imports_and_switches_to_glyphs() {
     assert_eq!(app.glyphs.len(), 1);
     assert!(
         icons_dir.join("drop source.png").is_file(),
-        "dropped image should be copied into icons directory"
+        "dropped image should be copied into images directory"
     );
     assert!(
         app.status
@@ -4420,8 +4420,8 @@ fn dropped_image_with_conflicting_name_is_renamed_without_overwrite() {
     let manifest_path = project_dir.join("petiglyph.toml");
     write_manifest(&manifest_path, &Manifest::default()).expect("manifest is written");
 
-    let icons_dir = project_dir.join("icons");
-    fs::create_dir_all(&icons_dir).expect("icons dir is created");
+    let icons_dir = project_dir.join("images");
+    fs::create_dir_all(&icons_dir).expect("images dir is created");
     let existing = icons_dir.join("icon.png");
     write_test_png(&existing);
     let existing_bytes = fs::read(&existing).expect("existing icon bytes are readable");
@@ -4489,7 +4489,7 @@ fn handle_key_w_is_not_a_navigation_path() {
     let config = RuntimeConfig {
         project_dir: project_a.clone(),
         project_id: "test-workspace-switch".to_string(),
-        input_dir: project_a.join("icons"),
+        input_dir: project_a.join("images"),
         out_dir: project_a.join("build"),
         font_name: "Petiglyph".to_string(),
         glyph_size: 8,
@@ -4525,8 +4525,8 @@ fn install_shortcut_reinstall_and_clear_previous_outputs() {
     let manifest_path = project_dir.join("petiglyph.toml");
     write_manifest(&manifest_path, &Manifest::default()).expect("manifest is written");
 
-    let icons_dir = project_dir.join("icons");
-    fs::create_dir_all(&icons_dir).expect("icons dir is created");
+    let icons_dir = project_dir.join("images");
+    fs::create_dir_all(&icons_dir).expect("images dir is created");
     write_test_png(&icons_dir.join("icon.png"));
 
     let config = RuntimeConfig {
@@ -4608,18 +4608,18 @@ fn install_shortcut_reinstall_and_clear_previous_outputs() {
 fn tui_launch_overrides_persist_through_reload_and_build() {
     let project_dir = make_temp_dir("tui-overrides");
     let manifest_path = project_dir.join("petiglyph.toml");
-    let default_icons = project_dir.join("icons");
-    let override_icons = project_dir.join("icons-override");
+    let default_icons = project_dir.join("images");
+    let override_icons = project_dir.join("images-override");
     let build_dir = project_dir.join("build");
 
-    fs::create_dir_all(&default_icons).expect("default icons dir is created");
-    fs::create_dir_all(&override_icons).expect("override icons dir is created");
+    fs::create_dir_all(&default_icons).expect("default images dir is created");
+    fs::create_dir_all(&override_icons).expect("override images dir is created");
     fs::create_dir_all(&build_dir).expect("build dir is created");
     write_test_png(&default_icons.join("default.png"));
     write_test_png(&override_icons.join("override.png"));
 
     let manifest = Manifest {
-        input_dir: "icons".to_string(),
+        input_dir: "images".to_string(),
         out_dir: "build".to_string(),
         font_name: "Petiglyph".to_string(),
         glyph_size: 8,

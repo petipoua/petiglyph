@@ -203,7 +203,7 @@ fn create_project_with_icon(workspace: &Path, project_name: &str) -> (PathBuf, P
     assert!(create.status.success(), "create command should succeed");
 
     let manifest_path = project_dir.join("petiglyph.toml");
-    let icons_dir = project_dir.join("icons");
+    let icons_dir = project_dir.join("images");
     write_test_png(&icons_dir.join("alpha.png"));
 
     (project_dir, manifest_path)
@@ -616,7 +616,7 @@ fn cli_composition_set_and_clear_json_updates_manifest() {
 fn cli_animation_create_set_fps_delete_json_updates_manifest() {
     let workspace = make_temp_dir("animation-lifecycle-json");
     let (project_dir, manifest_path) = create_project_with_icon(&workspace, "animation-demo");
-    write_test_png(&project_dir.join("icons/frame2.png"));
+    write_test_png(&project_dir.join("images/frame2.png"));
 
     let create_output = run_petiglyph(
         &project_dir,
@@ -624,9 +624,9 @@ fn cli_animation_create_set_fps_delete_json_updates_manifest() {
             "animation",
             "create-standard",
             "--input",
-            "icons/alpha.png",
+            "images/alpha.png",
             "--input",
-            "icons/frame2.png",
+            "images/frame2.png",
             "--name",
             "walk",
             "--fps",
@@ -782,8 +782,8 @@ fn cli_glyph_create_avif_imports_as_png_source() {
     let payload = parse_json_stdout(&output);
     assert_api_envelope(&payload, "glyph.create", true);
     assert_eq!(payload["data"]["imported_sources"][0], "glyph-source.png");
-    assert!(project_dir.join("icons/glyph-source.png").is_file());
-    assert!(!project_dir.join("icons/glyph-source.avif").exists());
+    assert!(project_dir.join("images/glyph-source.png").is_file());
+    assert!(!project_dir.join("images/glyph-source.avif").exists());
 
     let manifest_content = fs::read_to_string(&manifest_path).expect("manifest should be readable");
     assert!(
@@ -885,7 +885,7 @@ fn cli_animation_create_grid_json_sets_animation_and_compositions() {
             "animation",
             "create-grid",
             "--input",
-            "icons/alpha.png",
+            "images/alpha.png",
             "--input",
             frame2.to_str().expect("frame2 path should be utf8"),
             "--name",
@@ -1499,7 +1499,7 @@ fn cli_build_json_failure_returns_error_payload() {
     let output = run_petiglyph(&project_dir, &["build", "--json"], None, None);
     assert!(
         !output.status.success(),
-        "build --json should fail with no icons"
+        "build --json should fail with no images"
     );
     assert!(
         output.stderr.is_empty(),
@@ -1938,7 +1938,7 @@ fn cli_install_and_uninstall_json_lifecycle_is_idempotent_macos() {
         "second identical install should keep immutable artifact without replacement"
     );
 
-    let replacement_icon = project_dir.join("icons").join("alpha.png");
+    let replacement_icon = project_dir.join("images").join("alpha.png");
     let mut replacement = RgbaImage::from_pixel(8, 8, Rgba([255, 255, 255, 0]));
     replacement.put_pixel(1, 1, Rgba([0, 0, 0, 255]));
     replacement.put_pixel(6, 6, Rgba([0, 0, 0, 255]));

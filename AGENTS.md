@@ -5,7 +5,7 @@
 ### What This Repository Is
 
 - `petiglyph` is a Rust CLI/TUI tool for building monochrome icon fonts from project-local images plus animated workflows driven by GIF or video-derived frames.
-- The product model is intentionally **project-local and self-contained**: user projects keep `icons/`, `build/`, and `petiglyph.toml` together in one directory.
+- The product model is intentionally **project-local and self-contained**: user projects keep `images/`, `build/`, and `petiglyph.toml` together in one directory.
 - The TUI is the primary interface; CLI subcommands remain available for automation/scripting.
 
 ### Terminology
@@ -44,7 +44,7 @@
 - If exactly one project is found, it is auto-selected; otherwise the Home panel opens for selection/creation.
 - `doctor` runs global checks without a manifest and runs project checks when a project is resolvable.
 - Default manifest values:
-  - `input_dir = "icons"`
+  - `input_dir = "images"`
   - `out_dir = "build"`
   - `codepoint_start = "U+100000"`
 - Manifests may be mutated by normal reads/builds to add a missing `project_id` or normalized animation bleed defaults.

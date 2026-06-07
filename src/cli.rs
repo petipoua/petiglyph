@@ -70,7 +70,7 @@ enum CliCommand {
     },
     /// Shortcut for `glyph set-threshold`.
     SetThreshold {
-        /// The filename of the source image in the icons folder (e.g., 'alpha.png').
+        /// The filename of the source image in the images folder (e.g., 'alpha.png').
         image_name: String,
         /// The threshold value to set (0-255).
         threshold: u8,
@@ -83,7 +83,7 @@ enum CliCommand {
     },
     /// Shortcut for `glyph clear-threshold`.
     ClearThreshold {
-        /// The filename of the source image in the icons folder (e.g., 'alpha.png').
+        /// The filename of the source image in the images folder (e.g., 'alpha.png').
         image_name: String,
         /// Path to the manifest file. When omitted, auto-detect from the current directory or one level below.
         #[arg(short, long)]

@@ -122,7 +122,7 @@ impl App {
             self.live_glyph_source_probe_fingerprint = Some(0);
             self.live_glyph_source_probe_at = Some(Instant::now());
             self.status = Some(format!(
-                "icons directory not found yet: {}",
+                "images directory not found yet: {}",
                 self.config.input_dir.display()
             ));
             return Ok(());

@@ -17,7 +17,7 @@ This file records the dependency checks required by TODO item 8.
 
 ## Repository Asset Redistribution
 
-- The repository fixtures live under `test-assets/` (not `icons/`).
+- The repository fixtures live under `test-assets/` (not `images/`).
 - Asset provenance and license notes are tracked in `docs/assets-provenance.md`.
 - Do not publish a release if any repository fixture has unknown provenance.
 

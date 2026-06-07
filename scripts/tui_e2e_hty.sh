@@ -904,7 +904,7 @@ create_project_with_icon() {
   local icon_name="$3"
   local project_dir
   project_dir="$(create_empty_project "$workspace" "$name")"
-  write_test_png "$project_dir/icons/$icon_name"
+  write_test_png "$project_dir/images/$icon_name"
   printf '%s\n' "$project_dir"
 }
 
@@ -939,7 +939,7 @@ journey_create_project_from_home() {
   send_key "$session" "enter" "submit create"
 
   wait_for_path "$workspace/$project_name/petiglyph.toml" "$timeout_ms"
-  wait_for_path "$workspace/$project_name/icons" "$timeout_ms"
+  wait_for_path "$workspace/$project_name/images" "$timeout_ms"
 
   send_key "$session" "q" "quit"
   wait_exit "$session"
@@ -972,8 +972,8 @@ journey_build_and_rescan() {
   }
   send_key "$session" "space" "dismiss first-install guidance"
 
-  write_test_png "$project_dir/icons/beta.png"
-  wait_for_path "$project_dir/icons/beta.png" "$timeout_ms"
+  write_test_png "$project_dir/images/beta.png"
+  wait_for_path "$project_dir/images/beta.png" "$timeout_ms"
   send_key "$session" "R" "rescan"
   send_key_nowait "$session" "i" "reinstall (build + install)"
   wait_for_session_not_contains "$session" "Installing..." "$timeout_ms"
@@ -1063,7 +1063,7 @@ journey_creation_glyph() {
   project_dir="$(create_empty_project "$workspace" "home-glyph-demo")"
   session_home="$(create_session_home "$workspace")"
   source_png="$workspace/popup-glyph-source.png"
-  imported_png="$project_dir/icons/popup-glyph-source.png"
+  imported_png="$project_dir/images/popup-glyph-source.png"
   write_test_png "$source_png"
   session="petiglyph-e2e-home-glyph-$$-$(date +%s%N)"
 
@@ -1093,7 +1093,7 @@ journey_creation_grid() {
   project_dir="$(create_empty_project "$workspace" "home-grid-demo")"
   session_home="$(create_session_home "$workspace")"
   source_png="$workspace/popup-grid-source.png"
-  imported_png="$project_dir/icons/popup-grid-source.png"
+  imported_png="$project_dir/images/popup-grid-source.png"
   manifest_path="$project_dir/petiglyph.toml"
   write_test_png "$source_png"
   session="petiglyph-e2e-home-grid-$$-$(date +%s%N)"
@@ -1152,7 +1152,7 @@ journey_creation_animated_glyph() {
   send_key "$session" "enter" "start Create animated glyph workflow"
   wait_for_session_contains "$session" "Creation Workflow In Progress" "$timeout_ms"
   send_bracketed_paste "$session" "$source_gif" "paste GIF path"
-  wait_for_matching_file_count_ge "$project_dir/icons" "spinner--pgf-*.png" 2 "$timeout_ms"
+  wait_for_matching_file_count_ge "$project_dir/images" "spinner--pgf-*.png" 2 "$timeout_ms"
 
   send_key "$session" "enter" "advance to tweak step"
   wait_for_session_contains "$session" "Tweak grayscale / threshold / preview" "$timeout_ms"
@@ -1228,14 +1228,14 @@ journey_full_user_story() {
   send_literal_keys "$session" "$project_one_name" "j10: type first project name"
   send_key "$session" "enter" "j10: submit first project create"
   wait_for_path "$project_one_manifest" "$timeout_ms"
-  wait_for_path "$project_one_dir/icons" "$timeout_ms"
+  wait_for_path "$project_one_dir/images" "$timeout_ms"
 
   # Standard glyph creation + tweaks.
   focus_home_create_glyph_button "$session" "j10 standard glyph"
   send_key "$session" "enter" "j10: start standard glyph workflow"
   wait_for_session_contains "$session" "Creation Workflow In Progress" "$timeout_ms"
   send_bracketed_paste "$session" "$source_std" "j10: paste standard glyph source"
-  wait_for_path "$project_one_dir/icons/$(basename "$source_std")" "$timeout_ms"
+  wait_for_path "$project_one_dir/images/$(basename "$source_std")" "$timeout_ms"
   send_key "$session" "enter" "j10: standard glyph import -> tweak"
   workflow_tweak_threshold_then_continue "$session" "j10 standard glyph" "j10: complete standard glyph creation"
   wait_for_session_not_contains "$session" "Creation Workflow In Progress" "$timeout_ms"
@@ -1247,7 +1247,7 @@ journey_full_user_story() {
   send_key "$session" "enter" "j10: start standard grid workflow"
   wait_for_session_contains "$session" "Creation Workflow In Progress" "$timeout_ms"
   send_bracketed_paste "$session" "$source_grid" "j10: paste standard grid source"
-  wait_for_path "$project_one_dir/icons/$(basename "$source_grid")" "$timeout_ms"
+  wait_for_path "$project_one_dir/images/$(basename "$source_grid")" "$timeout_ms"
   send_key "$session" "enter" "j10: standard grid import -> tweak"
   workflow_tweak_threshold_then_continue "$session" "j10 standard grid" "j10: continue to grid config"
   wait_for_session_contains "$session" "Create grid: adjust rows/columns/bleed here" "$timeout_ms"
@@ -1269,7 +1269,7 @@ journey_full_user_story() {
   send_key "$session" "enter" "j10: start animated glyph workflow"
   wait_for_session_contains "$session" "Creation Workflow In Progress" "$timeout_ms"
   send_bracketed_paste "$session" "$source_anim" "j10: paste animated glyph GIF"
-  wait_for_matching_file_count_ge "$project_one_dir/icons" "fullstory-anim--pgf-*.png" 2 "$timeout_ms"
+  wait_for_matching_file_count_ge "$project_one_dir/images" "fullstory-anim--pgf-*.png" 2 "$timeout_ms"
   send_key "$session" "enter" "j10: animated glyph import -> tweak"
   workflow_tweak_threshold_then_continue "$session" "j10 animated glyph" "j10: continue to animation config (attempt 1/1)"
   continue_from_tweak_until_animation_config "$session" "j10 animated glyph"
@@ -1287,7 +1287,7 @@ journey_full_user_story() {
   send_key "$session" "enter" "j10: start animated grid glyph workflow"
   wait_for_session_contains "$session" "Creation Workflow In Progress" "$timeout_ms"
   send_bracketed_paste "$session" "$source_anim_grid" "j10: paste animated grid GIF"
-  wait_for_matching_file_count_ge "$project_one_dir/icons" "fullstory-anim-grid--pgf-*.png" 2 "$timeout_ms"
+  wait_for_matching_file_count_ge "$project_one_dir/images" "fullstory-anim-grid--pgf-*.png" 2 "$timeout_ms"
   send_key "$session" "enter" "j10: animated grid import -> tweak"
   workflow_tweak_threshold_then_continue "$session" "j10 animated grid glyph" "j10: continue to animated grid config (attempt 1/1)"
   continue_from_tweak_until_animation_config "$session" "j10 animated grid glyph"
@@ -1329,7 +1329,7 @@ journey_full_user_story() {
   send_literal_keys "$session" "$project_two_name" "j10: type second project name"
   send_key "$session" "enter" "j10: submit second project create"
   wait_for_path "$project_two_manifest" "$timeout_ms"
-  wait_for_path "$project_two_dir/icons" "$timeout_ms"
+  wait_for_path "$project_two_dir/images" "$timeout_ms"
 
   # Delete each installed font from sample area.
   while true; do
