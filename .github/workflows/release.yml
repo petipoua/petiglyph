@@ -137,7 +137,7 @@ jobs:
           Copy-Item "target/${{ matrix.target }}/release/petiglyph${{ matrix.bin_ext }}" "$base/"
           Copy-Item README.md "$base/"
           Copy-Item LICENSE "$base/"
-          Compress-Archive -Path "$base/*" -DestinationPath "$base.zip" -Force
+          Compress-Archive -Path $base -DestinationPath "$base.zip" -Force
 
       - name: Archive smoke check (unix)
         if: matrix.archive == 'tar.gz' && matrix.smoke
