@@ -32,6 +32,7 @@ check_required_tools() {
   require_tool cargo-clippy "rustup component add clippy"
   require_tool cargo-deny "cargo install --locked cargo-deny"
   require_tool cargo-audit "cargo install --locked cargo-audit"
+  require_tool ffmpeg "sudo pacman -S ffmpeg"
   require_tool python3 "sudo pacman -S python"
 
   if ((${#MISSING_TOOLS[@]} > 0)); then

@@ -579,17 +579,63 @@ fn resolve_command_path(command: &str) -> Option<PathBuf> {
     if candidate.is_absolute() && candidate.is_file() {
         return Some(candidate);
     }
+
     let path_var = std::env::var_os("PATH")?;
+    let path_exts = windows_path_extensions();
     for dir in std::env::split_paths(&path_var) {
         if dir.as_os_str().is_empty() {
             continue;
         }
-        let full = dir.join(&candidate);
-        if full.is_file() {
-            return Some(full);
+        if cfg!(windows) {
+            if candidate.extension().is_some() {
+                let full = dir.join(&candidate);
+                if full.is_file() {
+                    return Some(full);
+                }
+            } else {
+                for ext in &path_exts {
+                    let full = dir.join(format!("{command}{ext}"));
+                    if full.is_file() {
+                        return Some(full);
+                    }
+                }
+            }
+        } else {
+            let full = dir.join(&candidate);
+            if full.is_file() {
+                return Some(full);
+            }
         }
     }
     None
+}
+
+fn windows_path_extensions() -> Vec<String> {
+    if !cfg!(windows) {
+        return Vec::new();
+    }
+    std::env::var_os("PATHEXT")
+        .map(|raw| {
+            raw.to_string_lossy()
+                .split(';')
+                .filter_map(|value| {
+                    let trimmed = value.trim();
+                    if trimmed.is_empty() {
+                        None
+                    } else {
+                        Some(trimmed.to_ascii_lowercase())
+                    }
+                })
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_else(|| {
+            vec![
+                ".com".to_string(),
+                ".exe".to_string(),
+                ".bat".to_string(),
+                ".cmd".to_string(),
+            ]
+        })
 }
 
 fn media_identity_hash_hex8(path: &Path) -> Result<String> {

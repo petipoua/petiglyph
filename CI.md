@@ -18,6 +18,7 @@ Intent: keep core Rust quality bar consistent across major OS runners.
 
 Runs:
 
+- install FFmpeg
 - `cargo fmt --check`
 - `cargo clippy --locked --all-targets --all-features -- -D warnings`
 - `cargo test --locked`
@@ -43,6 +44,7 @@ Intent: catch interactive TUI regressions with process-level journeys.
 
 Runs:
 
+- install FFmpeg
 - install `hty` in CI
 - `hty --help`
 - `./scripts/tui_e2e_hty.sh --journey 1,2,3,4,5,6,7`
@@ -54,6 +56,7 @@ Intent: validate cross-platform runtime behavior in isolated home/config dirs.
 
 Runs:
 
+- install FFmpeg
 - Linux/macOS: `./scripts/clipboard_smoke.sh --skip-clipboard-checks`
 - Windows: `./scripts/clipboard_smoke.ps1 -SkipClipboardChecks`
 
