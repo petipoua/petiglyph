@@ -43,22 +43,24 @@ Review the resulting changes. The version sync updates `Cargo.toml`, `PKGBUILD`,
 the README JSON version sample. Commit any generated
 `docs/THIRD_PARTY_LICENSES.md` change with the release preparation.
 
-Run the local quality gates:
+Run the canonical local CI preflight:
 
 ```bash
-cargo fmt --check
-cargo check --locked
-cargo clippy --locked --all-targets --all-features -- -D warnings
-cargo test --locked
-cargo deny check
-cargo audit
-./scripts/tui_e2e_hty.sh
+./scripts/pf.sh
+```
+
+The preflight supports uncommitted changes and verifies the Rust checks, Cargo
+package contents, distribution matrix, runtime smoke tests, all TUI E2E
+journeys, and supply-chain checks.
+
+Commit the release preparation, then verify release-only tree hygiene:
+
+```bash
 ./scripts/release_assert_clean_tree.sh
 ```
 
-The clean-tree check must run after the release preparation commit. It verifies
-the Git state, Cargo package contents, staged npm binaries, and stray package
-artifacts.
+This final check requires a clean tree and also rejects staged npm binaries and
+stray package artifacts.
 
 For platform runtime validation:
 
