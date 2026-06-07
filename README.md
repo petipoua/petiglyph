@@ -21,7 +21,11 @@ Choose one:
 
 ```bash
 npm install -g petiglyph
+```
+``` bash
 pip install petiglyph
+```
+```bash
 yay -S petiglyph
 ```
 
