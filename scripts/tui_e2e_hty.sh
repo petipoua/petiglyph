@@ -707,15 +707,8 @@ go_home_panel() {
   if session_snapshot_text "$session" | grep -Fq "Petiglyph projects"; then
     return 0
   fi
-  send_key "$session" "tab" "normalize to Home panel (tab 1/2)"
-  if session_snapshot_text "$session" | grep -Fq "Petiglyph projects"; then
-    return 0
-  fi
-  send_key "$session" "tab" "normalize to Home panel (tab 2/2)"
-  if session_snapshot_text "$session" | grep -Fq "Petiglyph projects"; then
-    return 0
-  fi
-  send_raw_text "$session" "1" "normalize to Home panel fallback"
+  send_raw_text "$session" "1" "normalize to Home panel"
+  wait_for_session_contains "$session" "Petiglyph projects" "$timeout_ms"
 }
 
 go_glyphs_panel() {
@@ -730,15 +723,8 @@ go_glyphs_panel() {
   if glyphs_panel_visible; then
     return 0
   fi
-  send_key "$session" "tab" "normalize to Glyphs panel (tab 1/2)"
-  if glyphs_panel_visible; then
-    return 0
-  fi
-  send_key "$session" "tab" "normalize to Glyphs panel (tab 2/2)"
-  if glyphs_panel_visible; then
-    return 0
-  fi
-  send_raw_text "$session" "2" "normalize to Glyphs panel fallback"
+  send_raw_text "$session" "2" "normalize to Glyphs panel"
+  wait_for_session_contains "$session" "Glyphs" "$timeout_ms"
 }
 
 focus_home_create_glyph_button() {
@@ -762,7 +748,8 @@ focus_create_input_with_active_project() {
   for i in 1 2 3 4 5 6; do
     send_key "$session" "up" "$prefix: normalize focus upward ($i/6)"
   done
-  send_key "$session" "down" "$prefix: move to install action"
+  send_key "$session" "down" "$prefix: move to active project"
+  send_key "$session" "right" "$prefix: move to install action"
   send_key "$session" "left" "$prefix: move to create input"
 }
 
@@ -774,7 +761,8 @@ focus_installed_fonts_list() {
   for i in 1 2 3 4 5 6; do
     send_key "$session" "up" "$prefix: normalize focus upward ($i/6)"
   done
-  send_key "$session" "down" "$prefix: move to install action"
+  send_key "$session" "down" "$prefix: move to active project"
+  send_key "$session" "right" "$prefix: move to install action"
   send_key "$session" "left" "$prefix: move to create input"
   send_key "$session" "down" "$prefix: move to installed fonts list"
 }
@@ -787,7 +775,8 @@ focus_home_install_action() {
   for i in 1 2 3 4 5 6; do
     send_key "$session" "up" "$prefix: normalize focus upward ($i/6)"
   done
-  send_key "$session" "down" "$prefix: move to install action"
+  send_key "$session" "down" "$prefix: move to active project"
+  send_key "$session" "right" "$prefix: move to install action"
 }
 
 open_first_project_from_home() {
@@ -1008,7 +997,14 @@ journey_threshold_roundtrip() {
   session="petiglyph-e2e-threshold-$$-$(date +%s%N)"
 
   run_petiglyph_session "$session" "$project_dir" "$session_home"
-  send_raw_text "$session" "2" "switch to Glyphs"
+  for i in 1 2 3 4 5 6; do
+    send_key "$session" "up" "focus panel tabs ($i/6)"
+  done
+  send_key "$session" "right" "select Glyphs panel tab"
+  send_key "$session" "enter" "open selected Glyphs panel"
+  wait_for_session_contains "$session" "Glyphs" "$timeout_ms"
+  send_key "$session" "down" "focus Glyphs install action"
+  send_key "$session" "down" "focus glyph list"
   send_key "$session" "right" "focus preview threshold"
   send_key "$session" "up" "increase threshold"
 
