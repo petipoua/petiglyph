@@ -61,7 +61,7 @@ pub(crate) fn scan_installed_petiglyph_fonts(cwd: &Path) -> Result<Vec<Installed
         let (raw_blocks, animation_rows, animation_previews, animation_exports) =
             match metadata_sample {
                 Some(InstalledFontMetadataSample::Matched(payload)) => payload,
-                Some(InstalledFontMetadataSample::MissingSampleForMatchedMetadata) | _ => {
+                _ => {
                     let (sample, truncated) = fs::read(&path)
                         .ok()
                         .and_then(|bytes| {

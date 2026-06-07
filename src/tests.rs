@@ -37,9 +37,8 @@ use crate::tui::{
     handle_paste_event_for_test, install_action_name, installed_font_block_display_lines,
     persist_threshold_override, regroup_installed_sample_blocks, render_ui_for_test,
     requested_keyboard_enhancement_flags, resolve_installed_font_path_with,
-    scan_installed_petiglyph_fonts,
-    sample_glyphs_from_ttf_bytes, should_dispatch_key_kind, switch_notice_visible,
-    wrap_sample_for_display,
+    sample_glyphs_from_ttf_bytes, scan_installed_petiglyph_fonts, should_dispatch_key_kind,
+    switch_notice_visible, wrap_sample_for_display,
 };
 
 fn make_temp_dir(name: &str) -> PathBuf {
