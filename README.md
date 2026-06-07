@@ -2,16 +2,6 @@
 
 `petiglyph` is a TUI and CLI tool for turning images and videos into custom font glyphs.
 
-Each project is self-contained:
-
-```text
-my-font/
-  petiglyph.toml
-  images/
-  build/
-```
-
-`images/` holds source images and imported animation frames, `build/` holds generated artifacts, and `petiglyph.toml` holds project config.
 
 ## Quickstart
 
@@ -44,6 +34,17 @@ This opens the TUI Home panel, where you can create a project and start importin
 ## Reference
 
 ### Installation and runtime prerequisites
+
+Each project is self-contained:
+
+```text
+my-font/
+  petiglyph.toml
+  images/
+  build/
+```
+
+`images/` holds source images and imported animation frames, `build/` holds generated artifacts, and `petiglyph.toml` holds project config.
 
 Distribution surfaces in this repo:
 
