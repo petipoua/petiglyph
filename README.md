@@ -1,8 +1,8 @@
 # petiglyph
 
-`petiglyph` is a TUI-first CLI for turning project-local images into monochrome glyph fonts.
+`petiglyph` is a TUI-first CLI for turning project-local images and video-derived animation frames into monochrome glyph fonts.
 
-- Human workflow: create a project, import images, tune glyphs in the TUI, build/install/sample the font.
+- Human workflow: create a project, import images or animation media, tune glyphs in the TUI, build/install/sample the font.
 - Automation workflow: use the CLI subcommands and `--json` outputs from scripts or other tools.
 
 Each project is self-contained:
@@ -14,7 +14,7 @@ my-font/
   build/
 ```
 
-`icons/` holds source images, `build/` holds generated artifacts, and `petiglyph.toml` holds project config.
+`icons/` holds source images and imported animation frames, `build/` holds generated artifacts, and `petiglyph.toml` holds project config.
 
 ## Quickstart
 
@@ -92,6 +92,15 @@ Create an animation from frames, a GIF, or video:
 ```bash
 petiglyph animation create-standard \
   --input ../assets/run.gif \
+  --fps 8 \
+  --name run
+```
+
+Video files work here too:
+
+```bash
+petiglyph animation create-standard \
+  --input ../assets/run.mp4 \
   --fps 8 \
   --name run
 ```

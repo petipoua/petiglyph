@@ -4,7 +4,7 @@
 
 ### What This Repository Is
 
-- `petiglyph` is a Rust CLI/TUI tool for building monochrome icon fonts from a project-local folder of images.
+- `petiglyph` is a Rust CLI/TUI tool for building monochrome icon fonts from project-local images plus animated workflows driven by GIF or video-derived frames.
 - The product model is intentionally **project-local and self-contained**: user projects keep `icons/`, `build/`, and `petiglyph.toml` together in one directory.
 - The TUI is the primary interface; CLI subcommands remain available for automation/scripting.
 
