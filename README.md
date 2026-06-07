@@ -5,7 +5,7 @@
 
 ## Quickstart
 
-### 1. Install `petiglyph`
+### 1. Installation
 
 Choose one:
 
@@ -23,15 +23,21 @@ You can also download a prebuilt binary from GitHub Releases.
 
 Make sure `ffmpeg` is available on `PATH`.
 
-### 2. Open the TUI in the folder where you want the project
+### 2. Usage
+In a terminal, go in the folder where you want the project to be, and type:
 
 ```bash
 petiglyph
 ```
 
-This opens the TUI Home panel, where you can create a project and start importing glyphs, grids, and animations.
+This opens the TUI Home panel, where you can create a project and start importing media to create glyphs, grids, and animations.  
 
-## Reference
+<br> 
+
+--- 
+
+
+## Documentation
 
 ### Installation and runtime prerequisites
 
