@@ -9,6 +9,19 @@ repository = "https://github.com/petipoua/petiglyph"
 readme = "README.md"
 keywords = ["font", "glyph", "icons", "tui", "cli"]
 categories = ["command-line-utilities", "graphics"]
+include = [
+    "/src/**/*.rs",
+    "/Cargo.toml",
+    "/Cargo.lock",
+    "/README.md",
+    "/LICENSE",
+    "/pyproject.toml",
+    "/tests/cli_contract.rs",
+    "/test-assets/images/diamond-128.svg",
+    "/test-assets/images/diamond-128.png",
+    "/test-assets/images/ring-128.png",
+    "/test-assets/images/triangle-128.png",
+]
 
 [dependencies]
 anyhow = "1.0"
