@@ -8,7 +8,7 @@ the leading `v`; Git tags use `vX.Y.Z`.
 
 ## One-Time Setup
 
-- Protect `main` and restrict release tag creation.
+- Keep release tag creation restricted; `main` itself does not need push protection for this small single-maintainer repo.
 - Require approval for the GitHub environments `npm`, `testpypi`, and `pypi`.
 - Configure npm trusted publishing for `.github/workflows/npm-publish.yml`.
 - Configure TestPyPI and PyPI trusted publishing for
