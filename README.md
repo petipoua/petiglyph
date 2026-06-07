@@ -18,19 +18,7 @@ my-font/
 
 ## Quickstart
 
-### Before you start
-
-- `ffmpeg` must be available on `PATH` before `petiglyph` starts.
-- Interactive runs show an OS-aware install hint when `ffmpeg` is missing.
-- To let petiglyph run the suggested install command for that run, pass `--ffmpeg-auto-install`.
-- To suppress the one-time hint globally, set `PETIGLYPH_NO_FFMPEG_PROMPT=1`.
-
-Distribution surfaces in this repo:
-
-- GitHub Releases: prebuilt archives
-- AUR: `petiglyph`
-- npm: `petiglyph`
-- PyPI: `petiglyph`
+Install `petiglyph`, make sure `ffmpeg` is available on `PATH`, then start here.
 
 ### Create a project and open the TUI
 
@@ -41,12 +29,6 @@ petiglyph
 ```
 
 `petiglyph` with no subcommand launches the TUI. `petiglyph tui` does the same explicitly.
-
-If you do not want the post-create launch prompt:
-
-```bash
-petiglyph create my-font --no-launch
-```
 
 ### Fast path from images to a font
 
@@ -76,27 +58,9 @@ Build, install, refresh font state, and print the sample text you can paste into
 petiglyph sample
 ```
 
-### Other common creation flows
+### First animation flow
 
-Create a grid composition from one imported source image:
-
-```bash
-petiglyph grid create \
-  --input ../assets/sheet.png \
-  --rows 4 \
-  --cols 4
-```
-
-Create an animation from frames, a GIF, or video:
-
-```bash
-petiglyph animation create-standard \
-  --input ../assets/run.gif \
-  --fps 8 \
-  --name run
-```
-
-Video files work here too:
+Create an animated glyph from a GIF or video:
 
 ```bash
 petiglyph animation create-standard \
@@ -172,6 +136,22 @@ petiglyph install-font --force-remap
 ```
 
 `petiglyph uninstall` is intentionally a hidden stub that exits with guidance to use `uninstall-font` or `uninstall-all-fonts`.
+
+### Installation and runtime prerequisites
+
+Distribution surfaces in this repo:
+
+- GitHub Releases: prebuilt archives
+- AUR: `petiglyph`
+- npm: `petiglyph`
+- PyPI: `petiglyph`
+
+Runtime requirement:
+
+- `ffmpeg` must be available on `PATH` before `petiglyph` starts.
+- Interactive runs show an OS-aware install hint when `ffmpeg` is missing.
+- To let petiglyph run the suggested install command for that run, pass `--ffmpeg-auto-install`.
+- To suppress the one-time hint globally, set `PETIGLYPH_NO_FFMPEG_PROMPT=1`.
 
 ### Project resolution and TUI launch behavior
 
