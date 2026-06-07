@@ -1,9 +1,6 @@
 # petiglyph
 
-`petiglyph` is a TUI-first CLI for turning project-local images and video-derived animation frames into monochrome glyph fonts.
-
-- Human workflow: create a project, import images or animation media, tune glyphs in the TUI, build/install/sample the font.
-- Automation workflow: use the CLI subcommands and `--json` outputs from scripts or other tools.
+`petiglyph` is a TUI and CLI tool for turning images and videos into custom font glyphs.
 
 Each project is self-contained:
 
