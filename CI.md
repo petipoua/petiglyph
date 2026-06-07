@@ -152,6 +152,28 @@ Packaging, fixtures, and release hygiene:
   - Symptom: clean CI clones failed tests that referenced `test-assets/` because `/test-*/` ignored the fixture directory locally.
   - Fix used: explicitly unignore `/test-assets/` and commit the redistributable fixtures used by unit and integration-style tests.
 
+Release artifact workflow:
+
+- If the tag workflow fails while `main` CI is green, inspect `.github/workflows/release.yml` first. The release pipeline is not the same gate as `ci.yml`; it builds publishable artifacts, runs archive smoke checks, and then publishes a draft GitHub release.
+- Toolchain mismatches can hide behind the cross-build action.
+  - Symptom: `actions-rust-cross` ran with a toolchain that did not match `rust-toolchain.toml`, so non-native targets were missing at build time.
+  - Fix used: pinned the release build action to the repository toolchain (`1.88.0`) in `.github/workflows/release.yml` (`b5c2385`).
+- Cross-compiled binaries must not be executed on incompatible runners.
+  - Symptom: release smoke logic tried to run ARM-built artifacts on x86 runners.
+  - Fix used: added per-matrix `smoke` flags and only ran archive smoke checks on host-compatible targets (`b5c2385`).
+- `doctor` does not accept a `--workspace` flag.
+  - Symptom: the release workflow passed `doctor --json --workspace ...`, which failed against the real CLI contract.
+  - Fix used: changed smoke checks to `cd` into the temporary workspace and run `doctor --json` there (`b5c2385`).
+- Release smoke environments still need FFmpeg.
+  - Symptom: `doctor` was blocked before dispatch because the clean release runner did not have FFmpeg installed, while `ci.yml` did.
+  - Fix used: installed FFmpeg in the runnable release smoke jobs before invoking the archive checks (`a5a6edd`).
+- Windows ZIP packaging must preserve the top-level directory expected by the smoke check.
+  - Symptom: `Compress-Archive -Path "$base/*"` flattened the archive layout, while the smoke check expected the same root folder structure used by Unix archives.
+  - Fix used: changed Windows packaging to archive the directory itself (`Compress-Archive -Path $base -DestinationPath "$base.zip" -Force`) (`1e9a5e6`).
+- A non-TTY `tui` failure is expected and should be asserted as such, not treated as a step failure.
+  - Symptom: PowerShell propagated the expected non-interactive `tui` exit code as a failed smoke step.
+  - Fix used: explicitly accept the terminal-required failure after validating the error text and exit the script successfully (`e5fc1a3`).
+
 Dependency and supply-chain checks:
 
 - For dependency/security failures, inspect the `cargo-tree-normal.txt` artifact and [DEPENDENCY_SUPPLY_CHAIN.md](DEPENDENCY_SUPPLY_CHAIN.md).
