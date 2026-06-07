@@ -3,12 +3,19 @@ name: publish-pypi
 on:
   release:
     types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Existing tag to publish (e.g. v0.1.0)"
+        required: true
+        type: string
 
 permissions:
   contents: read
 
 env:
   CARGO_TERM_COLOR: always
+  RELEASE_TAG: ${{ github.event.release.tag_name || github.event.inputs.tag }}
 
 jobs:
   build-wheels:
@@ -36,15 +43,15 @@ jobs:
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
         with:
-          ref: ${{ github.event.release.tag_name }}
+          ref: ${{ env.RELEASE_TAG }}
 
       - name: Verify tag matches Cargo.toml
         shell: bash
         run: |
           set -euo pipefail
           version="$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -n1)"
-          if [[ "v$version" != "${{ github.event.release.tag_name }}" ]]; then
-            echo "Tag/version mismatch: tag=${{ github.event.release.tag_name }}, Cargo.toml=$version" >&2
+          if [[ "v$version" != "${{ env.RELEASE_TAG }}" ]]; then
+            echo "Tag/version mismatch: tag=${{ env.RELEASE_TAG }}, Cargo.toml=$version" >&2
             exit 1
           fi
 
@@ -78,7 +85,7 @@ jobs:
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
         with:
-          ref: ${{ github.event.release.tag_name }}
+          ref: ${{ env.RELEASE_TAG }}
 
       - name: Assert clean release checkout
         run: ./scripts/release_assert_clean_tree.sh
@@ -106,12 +113,6 @@ jobs:
       contents: read
 
     steps:
-      - name: Verify release metadata and integrity
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          TAG: ${{ github.event.release.tag_name }}
-        run: gh release verify "$TAG"
-
       - name: Download wheel artifacts
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
         with:

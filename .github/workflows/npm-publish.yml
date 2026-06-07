@@ -3,12 +3,19 @@ name: publish-npm
 on:
   release:
     types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Existing tag to publish (e.g. v0.1.0)"
+        required: true
+        type: string
 
 permissions:
   contents: read
 
 env:
   NODE_VERSION: "24"
+  RELEASE_TAG: ${{ github.event.release.tag_name || github.event.inputs.tag }}
 
 jobs:
   publish:
@@ -22,7 +29,7 @@ jobs:
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
         with:
-          ref: ${{ github.event.release.tag_name }}
+          ref: ${{ env.RELEASE_TAG }}
 
       - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e
         with:
@@ -35,24 +42,29 @@ jobs:
       - name: Verify release metadata and integrity
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          TAG: ${{ github.event.release.tag_name }}
+          TAG: ${{ env.RELEASE_TAG }}
         run: |
           set -euo pipefail
-          gh release verify "$TAG"
           mkdir -p dist-release
-          gh release download "$TAG" \
+          gh release download -R "$GITHUB_REPOSITORY" "$TAG" \
             --pattern "petiglyph-v*-*.tar.gz" \
             --pattern "petiglyph-v*-*.zip" \
             --pattern "SHA256SUMS" \
             --dir dist-release
+          for archive in dist-release/petiglyph-v*-*.tar.gz dist-release/petiglyph-v*-*.zip; do
+            [[ -f "$archive" ]] || continue
+            gh attestation verify "$archive" \
+              -R "$GITHUB_REPOSITORY" \
+              --signer-workflow "$GITHUB_REPOSITORY/.github/workflows/release.yml"
+          done
           (cd dist-release && sha256sum -c SHA256SUMS)
 
       - name: Verify tag and sync versions
         run: |
           set -euo pipefail
           version="$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -n1)"
-          if [[ "v$version" != "${{ github.event.release.tag_name }}" ]]; then
-            echo "Tag/version mismatch: tag=${{ github.event.release.tag_name }}, Cargo.toml=$version" >&2
+          if [[ "v$version" != "${{ env.RELEASE_TAG }}" ]]; then
+            echo "Tag/version mismatch: tag=${{ env.RELEASE_TAG }}, Cargo.toml=$version" >&2
             exit 1
           fi
           ./scripts/release_sync_versions.sh
