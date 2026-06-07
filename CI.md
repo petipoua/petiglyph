@@ -80,7 +80,6 @@ cargo test --locked
 ./scripts/clipboard_smoke.sh --skip-clipboard-checks
 cargo deny check
 cargo audit
-cargo tree --locked -e normal
 ```
 
 ## CI Debugging Notes
