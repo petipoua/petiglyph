@@ -38,6 +38,28 @@ jobs:
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
 
+      - name: Install FFmpeg
+        shell: bash
+        run: |
+          set -euo pipefail
+          case "$RUNNER_OS" in
+            Linux)
+              sudo apt-get update
+              sudo apt-get install -y ffmpeg
+              ;;
+            macOS)
+              brew install ffmpeg
+              ;;
+            Windows)
+              choco install ffmpeg --yes --no-progress
+              ;;
+            *)
+              echo "unsupported runner OS: $RUNNER_OS" >&2
+              exit 1
+              ;;
+          esac
+          ffmpeg -version
+
       - name: Cache rust-quality cargo + target
         uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae
         with:
@@ -96,6 +118,14 @@ jobs:
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
 
+      - name: Install FFmpeg
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y ffmpeg
+          ffmpeg -version
+
       - name: Install hty
         shell: bash
         run: |
@@ -133,6 +163,28 @@ jobs:
 
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+
+      - name: Install FFmpeg
+        shell: bash
+        run: |
+          set -euo pipefail
+          case "$RUNNER_OS" in
+            Linux)
+              sudo apt-get update
+              sudo apt-get install -y ffmpeg
+              ;;
+            macOS)
+              brew install ffmpeg
+              ;;
+            Windows)
+              choco install ffmpeg --yes --no-progress
+              ;;
+            *)
+              echo "unsupported runner OS: $RUNNER_OS" >&2
+              exit 1
+              ;;
+          esac
+          ffmpeg -version
 
       - name: Runtime smoke (Linux/macOS)
         if: runner.os != 'Windows'
