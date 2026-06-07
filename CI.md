@@ -151,7 +151,7 @@ Packaging, fixtures, and release hygiene:
 
 Dependency and supply-chain checks:
 
-- For dependency/security failures, inspect the `cargo-tree-normal.txt` artifact and `docs/dependency-supply-chain.md`.
+- For dependency/security failures, inspect the `cargo-tree-normal.txt` artifact and [DEPENDENCY_SUPPLY_CHAIN.md](DEPENDENCY_SUPPLY_CHAIN.md).
 - Native codec dependencies can break hosted runners even when local builds succeed.
   - Symptom: transitive native dependency pressure from the `image` AVIF native stack (`dav1d`/`dav1d-sys`) increased CI fragility.
   - Fix used: removed `avif-native` from `image` features (`8c4e7bc`), keeping AVIF support without requiring that native dependency chain on CI.

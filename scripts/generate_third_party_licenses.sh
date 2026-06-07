@@ -2,7 +2,7 @@
 set -euo pipefail
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-out_file="$repo_root/docs/THIRD_PARTY_LICENSES.md"
+out_file="$repo_root/THIRD_PARTY_LICENSES.md"
 
 if ! command -v cargo >/dev/null 2>&1; then
   echo "error: cargo is required" >&2

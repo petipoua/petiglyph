@@ -41,7 +41,7 @@ Start from the release commit on `main` with no unrelated working-tree changes.
 Review the resulting changes. The version sync updates `Cargo.toml`, `PKGBUILD`,
 `.SRCINFO` when `makepkg` is available, all npm package versions and pins, and
 the README JSON version sample. Commit any generated
-`docs/THIRD_PARTY_LICENSES.md` change with the release preparation.
+`THIRD_PARTY_LICENSES.md` change with the release preparation.
 
 Run the canonical local CI preflight:
 
@@ -89,7 +89,7 @@ git push origin vX.Y.Z
   ARM64;
 - smoke-tests each archive;
 - generates `SHA256SUMS` and artifact attestations;
-- creates a draft GitHub Release using `docs/release-notes-template.md`.
+- creates a draft GitHub Release using `RELEASE_NOTES_TEMPLATE.md`.
 
 Wait for the workflow to succeed, then verify the draft:
 

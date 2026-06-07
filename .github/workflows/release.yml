@@ -204,5 +204,5 @@ jobs:
           tag_name: ${{ env.RELEASE_TAG }}
           draft: true
           generate_release_notes: false
-          body_path: docs/release-notes-template.md
+          body_path: RELEASE_NOTES_TEMPLATE.md
           files: dist/*
