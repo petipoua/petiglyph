@@ -749,7 +749,8 @@ focus_home_create_glyph_button() {
   for i in 1 2 3 4 5 6; do
     send_key "$session" "up" "$prefix: normalize focus upward ($i/6)"
   done
-  send_key "$session" "down" "$prefix: move to install action"
+  send_key "$session" "down" "$prefix: move to active project"
+  send_key "$session" "right" "$prefix: move to install action"
   send_key "$session" "down" "$prefix: move to Create glyph button"
 }
 
