@@ -71,9 +71,7 @@
 - Root metadata/docs:
   - [Cargo.toml](Cargo.toml)
   - [README.md](README.md)
-  - [RELEASE-GUIDE.md](RELEASE-GUIDE.md)
-  - [RELEASE-CHECKLIST.md](RELEASE-CHECKLIST.md)
-  - [CROSS-COMPATIBILITY-GUIDE.md](CROSS-COMPATIBILITY-GUIDE.md)
+  - [RELEASE.md](RELEASE.md)
   - [pyproject.toml](pyproject.toml)
 - Local Arch packaging helpers:
   - [PKGBUILD](PKGBUILD)

@@ -399,11 +399,8 @@ After installing a font, fully quit and reopen terminal applications so they rel
 
 Useful docs:
 
-- [TESTS.md](TESTS.md)
 - [CI.md](CI.md)
-- [CROSS-COMPATIBILITY-GUIDE.md](CROSS-COMPATIBILITY-GUIDE.md)
-- [RELEASE-GUIDE.md](RELEASE-GUIDE.md)
-- [RELEASE-CHECKLIST.md](RELEASE-CHECKLIST.md)
+- [RELEASE.md](RELEASE.md)
 - [CONTRIBUTING.md](CONTRIBUTING.md)
 
 Useful env vars:
