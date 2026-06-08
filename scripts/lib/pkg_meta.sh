@@ -2,7 +2,7 @@
 
 # Canonical package metadata shared by local and release AUR helpers.
 AUR_PKGNAME="petiglyph"
-AUR_PKGDESC="Build icon fonts from project-local assets"
+AUR_PKGDESC="petiglyph is a TUI and CLI tool for turning images and videos into custom font glyphs"
 AUR_ARCH_LITERAL="'x86_64'"
 AUR_LICENSE_LITERAL="'MIT'"
 AUR_DEPENDS_LITERAL="'ffmpeg' 'fontconfig'"
