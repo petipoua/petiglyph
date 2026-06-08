@@ -49,6 +49,28 @@ cargo_version() {
   sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -n1
 }
 
+clean_staged_npm_binaries() {
+  local binary=""
+  local removed=0
+
+  while IFS= read -r -d '' binary; do
+    git check-ignore -q -- "$binary" \
+      || die "refusing to remove non-ignored npm binary: $binary"
+    rm -f -- "$binary"
+    removed=$((removed + 1))
+  done < <(
+    find npm \
+      -path 'npm/petiglyph-*/bin/*' \
+      -type f \
+      ! -name '.gitkeep' \
+      -print0
+  )
+
+  if ((removed > 0)); then
+    log "Removed $removed generated npm platform binaries from local staging"
+  fi
+}
+
 wait_for_new_run() {
   local workflow="$1"
   local sha="$2"
@@ -322,16 +344,17 @@ done
   || die "HEAD must be on the main branch"
 
 log "Checking repository and release metadata"
+clean_staged_npm_binaries
+./scripts/release_assert_clean_tree.sh
 gh auth status >/dev/null
-git ls-remote ssh://aur@aur.archlinux.org/petiglyph.git >/dev/null \
-  || die "cannot access the petiglyph AUR repository over SSH"
 git fetch --quiet origin main --tags
 [[ "$(git rev-parse HEAD)" == "$(git rev-parse origin/main)" ]] \
   || die "HEAD must equal origin/main"
-./scripts/release_assert_clean_tree.sh
 [[ "$(cargo_version)" == "$version" ]] \
   || die "Cargo.toml version $(cargo_version) does not match $tag"
 ./scripts/distribution_matrix.py --check-sync
+git ls-remote ssh://aur@aur.archlinux.org/petiglyph.git >/dev/null \
+  || die "cannot access the petiglyph AUR repository over SSH"
 
 pkgver="$(sed -n 's/^pkgver=//p' PKGBUILD | head -n1)"
 [[ "$pkgver" == "$version" ]] \

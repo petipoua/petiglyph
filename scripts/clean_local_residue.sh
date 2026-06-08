@@ -47,6 +47,9 @@ done
 for file in npm/petiglyph/*.tgz; do
   paths+=("$file")
 done
+for file in npm/petiglyph-*/bin/*; do
+  [[ "$(basename "$file")" != ".gitkeep" ]] && paths+=("$file")
+done
 for file in src/petiglyph-*.tar.gz; do
   paths+=("$file")
 done

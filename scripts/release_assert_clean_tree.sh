@@ -35,7 +35,7 @@ fi
 
 staged_npm_bins="$(find npm -path 'npm/petiglyph-*/bin/*' -type f ! -name '.gitkeep' -print | sort)"
 if [[ -n "$staged_npm_bins" ]]; then
-  report_failure "npm platform binaries are staged before release staging"
+  report_failure "generated npm platform binaries remain from local release staging"
   printf '%s\n' "$staged_npm_bins" >&2
 fi
 
