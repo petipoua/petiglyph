@@ -24,7 +24,8 @@ The working tree must start clean. For a new tag, the script creates and pushes
 a signed "chore: prepare vX.Y.Z" commit automatically. GitHub starts the npm and
 PyPI workflows concurrently when the draft release is published; this script
 waits for both before publishing to the AUR. Rerunning the same tag resumes
-incomplete steps, but the tag must still resolve to the same HEAD.
+incomplete steps from the immutable tagged commit. The current main branch may
+be ahead of that tag, but its release metadata must still match the version.
 
 Options:
   --notes-file PATH  Replace the draft body before publication. PATH may be
@@ -510,13 +511,16 @@ pkgver="$(sed -n 's/^pkgver=//p' PKGBUILD | head -n1)"
 ./scripts/release_assert_clean_tree.sh
 
 remote_tag_sha="$(remote_tag_commit "$tag")"
-if [[ -n "$remote_tag_sha" && "$remote_tag_sha" != "$head_sha" ]]; then
-  die "remote $tag resolves to $remote_tag_sha, not HEAD $head_sha"
+release_sha="$head_sha"
+if [[ -n "$remote_tag_sha" ]]; then
+  git merge-base --is-ancestor "$remote_tag_sha" "$head_sha" \
+    || die "remote $tag is not an ancestor of HEAD"
+  release_sha="$remote_tag_sha"
 fi
 if git rev-parse --verify --quiet "refs/tags/$tag" >/dev/null; then
   local_tag_sha="$(git rev-list -n1 "$tag")"
-  [[ "$local_tag_sha" == "$head_sha" ]] \
-    || die "local $tag resolves to $local_tag_sha, not HEAD $head_sha"
+  [[ "$local_tag_sha" == "$release_sha" ]] \
+    || die "local $tag resolves to $local_tag_sha, not $release_sha"
 fi
 
 git ls-remote ssh://aur@aur.archlinux.org/petiglyph.git >/dev/null \
@@ -531,10 +535,10 @@ if [[ -z "$remote_tag_sha" ]]; then
   git push origin "refs/tags/$tag"
   tag_pushed=1
 else
-  log "Tag $tag already resolves to HEAD; resuming release"
+  log "Tag $tag already resolves to $release_sha; resuming release"
 fi
 
-release_run_id="$(ensure_workflow_success release.yml "$tag" "$head_sha")"
+release_run_id="$(ensure_workflow_success release.yml "$tag" "$release_sha")"
 
 log "Verifying GitHub Release artifacts"
 gh release view "$tag" >/dev/null 2>&1 \
@@ -551,7 +555,13 @@ archive_count="$(
   || die "expected 8 release archives, found $archive_count"
 [[ -f "$dist_dir/SHA256SUMS" ]] || die "GitHub Release is missing SHA256SUMS"
 (cd "$dist_dir" && sha256sum -c SHA256SUMS)
-gh release verify "$tag" >/dev/null
+while IFS= read -r -d '' artifact; do
+  gh attestation verify "$artifact" \
+    --repo petipoua/petiglyph \
+    --signer-workflow petipoua/petiglyph/.github/workflows/release.yml \
+    --source-digest "$release_sha" \
+    >/dev/null
+done < <(find "$dist_dir" -maxdepth 1 -type f -print0)
 
 if [[ -n "$notes_file" ]]; then
   log "Applying release notes from $notes_file"
@@ -579,16 +589,16 @@ else
 fi
 
 if npm_any_package_exists \
-  && ! workflow_has_run npm-publish.yml "$head_sha"; then
+  && ! workflow_has_run npm-publish.yml "$release_sha"; then
   die "npm already contains $version without a matching workflow run for $tag"
 fi
 if curl -fsS "https://pypi.org/pypi/petiglyph/$version/json" >/dev/null 2>&1 \
-  && ! workflow_has_run pypi-publish.yml "$head_sha"; then
+  && ! workflow_has_run pypi-publish.yml "$release_sha"; then
   die "PyPI already contains $version without a matching workflow run for $tag"
 fi
 
-npm_run_id="$(ensure_workflow_success npm-publish.yml "$tag" "$head_sha")"
-pypi_run_id="$(ensure_workflow_success pypi-publish.yml "$tag" "$head_sha")"
+npm_run_id="$(ensure_workflow_success npm-publish.yml "$tag" "$release_sha")"
+pypi_run_id="$(ensure_workflow_success pypi-publish.yml "$tag" "$release_sha")"
 
 aur_pkgrel="$(aur_pkgrel_for_version "$version")"
 aur_pkgrel="${aur_pkgrel:-1}"

@@ -157,12 +157,12 @@ Publishing the draft GitHub Release triggers both registry workflows.
 ### npm
 
 `.github/workflows/npm-publish.yml` downloads the published release archives,
-verifies the GitHub artifact attestations and checksums, stages binaries from
-the release archives, validates every package with `npm pack --dry-run`,
-publishes the `petiglyph-*` platform packages, then publishes the `petiglyph`
-meta package. If the `NPM_PUBLISH_TOKEN` secret exists in the GitHub `npm`
-environment, the workflow uses that token for bootstrap publishing; otherwise
-it uses npm trusted publishing via OIDC.
+verifies each downloaded asset's build-provenance attestation and checksums,
+stages binaries from the release archives, validates every package with
+`npm pack --dry-run`, publishes the `petiglyph-*` platform packages, then
+publishes the `petiglyph` meta package. If the `NPM_PUBLISH_TOKEN` secret
+exists in the GitHub `npm` environment, the workflow uses that token for
+bootstrap publishing; otherwise it uses npm trusted publishing via OIDC.
 
 Approve the `npm` environment when ready. Optional local archive validation:
 
