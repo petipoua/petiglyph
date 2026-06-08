@@ -893,7 +893,7 @@ create_empty_project() {
   local name="$2"
   (
     cd "$workspace"
-    "$petiglyph_bin" create "$name" --no-launch >/dev/null
+    "$petiglyph_bin" new-project "$name" >/dev/null
   )
   printf '%s\n' "$workspace/$name"
 }

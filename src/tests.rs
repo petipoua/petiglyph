@@ -401,26 +401,21 @@ fn auto_detect_manifest_path_finds_single_child_manifest() {
 }
 
 #[test]
-fn auto_detect_manifest_path_ignores_deep_manifests_beyond_one_level() {
+fn auto_detect_manifest_path_finds_manifests_at_depth_two() {
     let root_dir = make_temp_dir("manifest-depth-limit");
     let deep_dir = root_dir.join("a").join("b");
     fs::create_dir_all(&deep_dir).expect("deep dir is created");
     let deep_manifest = deep_dir.join("petiglyph.toml");
     write_manifest(&deep_manifest, &Manifest::default()).expect("manifest is written");
 
-    let error =
-        auto_detect_manifest_path(&root_dir).expect_err("deep manifest should not auto-detect");
-    let message = format!("{error:#}");
-    assert!(
-        message.contains("no petiglyph project detected"),
-        "unexpected error: {message}"
-    );
+    let detected = auto_detect_manifest_path(&root_dir).expect("depth-two manifest is detected");
+    assert_eq!(detected, deep_manifest);
 
     fs::remove_dir_all(root_dir).expect("temp root dir is removed");
 }
 
 #[test]
-fn discover_project_manifests_scans_current_and_one_level_only() {
+fn discover_project_manifests_scans_through_depth_two() {
     let root_dir = make_temp_dir("discover-manifests");
     let root_manifest = root_dir.join("petiglyph.toml");
     write_manifest(&root_manifest, &Manifest::default()).expect("root manifest is written");
@@ -430,13 +425,16 @@ fn discover_project_manifests_scans_current_and_one_level_only() {
     let child_manifest = child_dir.join("petiglyph.toml");
     write_manifest(&child_manifest, &Manifest::default()).expect("child manifest is written");
 
-    let deep_dir = root_dir.join("nested").join("too-deep");
+    let deep_dir = root_dir.join("nested").join("depth-two");
     fs::create_dir_all(&deep_dir).expect("deep dir is created");
     let deep_manifest = deep_dir.join("petiglyph.toml");
     write_manifest(&deep_manifest, &Manifest::default()).expect("deep manifest is written");
 
     let manifests = discover_project_manifests(&root_dir).expect("manifest discovery succeeds");
-    assert_eq!(manifests, vec![root_manifest, child_manifest]);
+    assert_eq!(
+        manifests,
+        vec![root_manifest, child_manifest, deep_manifest]
+    );
 
     fs::remove_dir_all(root_dir).expect("temp root dir is removed");
 }

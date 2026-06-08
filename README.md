@@ -14,7 +14,7 @@ Choose one:
 npm install -g petiglyph
 ```
 
-``` bash
+```bash
 pip install petiglyph
 ```
 
@@ -62,7 +62,13 @@ Pressing ENTER on the animated glyphs copies all frames inside the clipboard. To
 
 ## Documentation
 
-### Installation and runtime prerequisites
+### CLI Workflows
+
+Create an automation-oriented project:
+
+```bash
+petiglyph new-project my-font
+```
 
 Each project is self-contained:
 
@@ -75,211 +81,141 @@ my-font/
 
 `images/` holds source images and imported animation frames, `build/` holds generated artifacts, and `petiglyph.toml` holds project config.
 
-Distribution surfaces in this repo:
-
-- GitHub Releases: prebuilt archives
-- AUR: `petiglyph`
-- npm: `petiglyph`
-- PyPI: `petiglyph`
-
-Install examples:
+Bare `petiglyph` and `petiglyph tui` open the workspace TUI. Scripted project operations use an exact project directory basename:
 
 ```bash
-npm install -g petiglyph
-pip install petiglyph
-yay -S petiglyph
+petiglyph use-project my-font build
+petiglyph use-project my-font install-font
+petiglyph use-project my-font show-sample
+petiglyph use-project my-font doctor --repair
+petiglyph use-project my-font tui
 ```
 
-Runtime requirement:
+Project discovery searches the current directory and descendants through depth 2 without following directory symlinks. Duplicate basenames are rejected with candidate paths.
 
-- `ffmpeg` must be available on `PATH` before `petiglyph` starts.
-- Interactive runs show an OS-aware install hint when `ffmpeg` is missing.
-- To let petiglyph run the suggested install command for that run, pass `--ffmpeg-auto-install`.
-- To suppress the one-time hint globally, set `PETIGLYPH_NO_FFMPEG_PROMPT=1`.
+### Create Glyphs
 
-### Create a project and open the TUI
+The four creation types match the TUI:
 
 ```bash
-petiglyph create my-font
-cd my-font
-petiglyph
+# One image per glyph
+petiglyph use-project my-font create glyph \
+  --input logo.png mark.svg
+
+# One sprite sheet split into glyph cells
+petiglyph use-project my-font create grid-glyph \
+  --input icons.png --rows 4 --cols 4
+
+# GIF/video frames as glyphs
+petiglyph use-project my-font create animated-glyph \
+  --input spinner.gif --name spinner --fps 8
+
+# Each GIF/video frame split as a grid
+petiglyph use-project my-font create animated-grid-glyph \
+  --input dashboard.mp4 --name dashboard --fps 10 \
+  --rows 2 --cols 4
 ```
 
-`petiglyph` with no subcommand launches the TUI. `petiglyph tui` does the same explicitly.
+One `--input` accepts multiple paths. Creation imports and configures sources without installing by default.
 
-### Fast path from images to a font
+- `--build` also generates BDF, TTF, mapping, sample, and preview artifacts.
+- `--install` implies build, performs managed installation and cache refresh, and prints the sample.
+- `--threshold` defaults to `64`.
+- `--invert` accepts `on` or `off`.
+- Brightness, contrast, and gamma options control grayscale preprocessing.
+- Static grayscale preprocessing defaults off; animated preprocessing defaults on.
+- Grid horizontal bleed defaults to `weak`; vertical bleed defaults to `off`.
 
-Import a few images as glyphs:
+Supported static inputs are `png`, `jpg`, `jpeg`, `webp`, `bmp`, `gif`, `svg`, and `avif`. AVIF is converted to project-local PNG. Animation media supports `gif`, `mp4`, `mov`, `mkv`, `webm`, `avi`, and `m4v`.
+
+### Configure Sources
 
 ```bash
-petiglyph glyph create \
-  --input ../assets/logo.png \
-  --input ../assets/mark.svg
+petiglyph use-project my-font configure glyph logo.png \
+  --threshold 88 --invert on
+
+petiglyph use-project my-font configure glyph logo.png \
+  --clear-threshold
+
+petiglyph use-project my-font configure grid-glyph icons.png \
+  --rows 2 --cols 8 \
+  --horizontal-bleed strong --vertical-bleed off
+
+petiglyph use-project my-font configure animation spinner \
+  --fps 12 --threshold 72 --invert off
+
+petiglyph use-project my-font delete animation spinner
 ```
 
-Build the font artifacts:
+Grid dimensions and bleed are rejected for non-grid animations. Clap rejects mutually exclusive threshold operations.
+
+### Build And Install
 
 ```bash
-petiglyph build
+petiglyph use-project my-font build
+petiglyph use-project my-font install-font
+petiglyph use-project my-font show-sample
 ```
 
-Install the built font into the current user font directory:
+Installation is always explicit. `show-sample` only reads `build/glyph-sample.txt`; it does not build or install and reports the required build command when the artifact is absent.
+
+### List And Delete
 
 ```bash
-petiglyph install-font
-```
-
-Build, install, refresh font state, and print the sample text you can paste into a terminal:
-
-```bash
-petiglyph sample
-```
-
-### First animation flow
-
-Create an animated glyph from a GIF or video:
-
-```bash
-petiglyph animation create-standard \
-  --input ../assets/run.mp4 \
-  --fps 8 \
-  --name run
-```
-
-### What the TUI is for
-
-The TUI is the primary interface for:
-
-- importing glyphs, grids, and animations through the Home panel workflows
-- previewing glyphs without aspect-ratio distortion
-- tuning per-glyph threshold and invert overrides
-- building, installing, uninstalling, and sampling fonts
-- selecting projects when no single manifest is auto-detected
-
-On Windows, the Home creation workflows use a native file picker.
-
-### Command reference
-
-Core commands:
-
-```bash
-petiglyph create <name>
-petiglyph create <name> --no-launch
-petiglyph
-petiglyph tui
-petiglyph list
-petiglyph delete
-petiglyph build
-petiglyph sample
-petiglyph install-font
-petiglyph uninstall-font
+petiglyph list projects
+petiglyph list installed-fonts
+petiglyph delete-project my-font another-project
+petiglyph uninstall-font "my-font Petiglyph"
 petiglyph uninstall-all-fonts
-petiglyph doctor
+petiglyph doctor --repair
 ```
 
-Glyph commands:
+`list installed-fonts` prints the exact managed family identifier accepted by `uninstall-font`. Batch deletion and uninstall validate all targets before changing files.
+
+Project listing includes directory name, relative path, font name, manifest path, project ID, and malformed-manifest warnings. Installed-font listing includes family, ownership, TTF path, manifest path, and stale metadata/artifact warnings.
+
+### JSON Automation
+
+Add `--json` to automation commands:
 
 ```bash
-petiglyph set-threshold <image> <threshold>
-petiglyph clear-threshold <image>
-
-petiglyph glyph create --input <path> [--input <path>...]
-petiglyph glyph set-threshold <image> <threshold>
-petiglyph glyph clear-threshold <image>
-petiglyph glyph set-invert <image> --invert on|off
+petiglyph list projects --json
+petiglyph use-project my-font create glyph --input logo.svg --build --json
+petiglyph use-project my-font doctor --json
 ```
 
-Composition and animation commands:
-
-```bash
-petiglyph grid create --input <path> --rows <n> --cols <n>
-petiglyph composition set <image> --rows <n> --cols <n>
-petiglyph composition clear <image>
-
-petiglyph animation create-standard --input <path> --fps <n>
-petiglyph animation create-grid --input <path> --rows <n> --cols <n> --fps <n>
-petiglyph animation set-fps <name> --fps <n>
-petiglyph animation delete <name>
-```
-
-Useful build-time options:
-
-```bash
-petiglyph build --force-remap
-petiglyph sample --force-remap
-petiglyph install-font --force-remap
-```
-
-`petiglyph uninstall` is intentionally a hidden stub that exits with guidance to use `uninstall-font` or `uninstall-all-fonts`.
-
-### Project resolution and TUI launch behavior
-
-Project-scoped commands accept `--manifest` to target a specific project.
-
-When `--manifest` is omitted, petiglyph checks:
-
-1. `./petiglyph.toml`
-2. one directory level below the current directory
-
-Behavior after discovery:
-
-- exactly one project: that project is used
-- zero projects: CLI commands fail with guidance; TUI opens on the Home panel
-- multiple projects: CLI commands fail with guidance; TUI opens on the Home panel
-
-`list` and `uninstall-all-fonts` are not manifest-scoped.
-
-`petiglyph` and `petiglyph tui` require an interactive terminal. In non-TTY contexts they fail with an explicit terminal-required error.
-
-### JSON automation contract
-
-`--json` is supported on:
-
-- `list`
-- `delete`
-- `set-threshold`
-- `clear-threshold`
-- `glyph create`
-- `glyph set-threshold`
-- `glyph clear-threshold`
-- `glyph set-invert`
-- `grid create`
-- `composition set`
-- `composition clear`
-- `animation create-standard`
-- `animation create-grid`
-- `animation set-fps`
-- `animation delete`
-- `build`
-- `sample`
-- `install-font`
-- `uninstall-font`
-- `uninstall-all-fonts`
-- `doctor`
-
-Envelope shape:
+Output uses a stable envelope:
 
 ```json
 {
   "ok": true,
-  "command": "build",
+  "command": "use-project.create.glyph",
   "version": "0.1.0",
-  "data": {}
+  "data": {},
+  "error": null
 }
 ```
 
-Failure rules:
+Failures return a non-zero exit code and include `error.message` plus nested causes.
 
-- non-zero exit code
-- `ok: false`
-- stable top-level fields: `ok`, `command`, `version`, `data`
-- `error.message` always present on failures
-- optional `error.causes[]` for nested context
-- no extra human-oriented logs on stdout in JSON mode
+### Runtime Notes
 
-### Manifest format
+`ffmpeg` is checked before every command:
 
-Default manifest values:
+- Pass `--ffmpeg-auto-install` to run the detected platform install command.
+- Set `PETIGLYPH_NO_FFMPEG_PROMPT=1` to suppress the interactive hint.
+
+The TUI requires a terminal. Its Home panel supports project selection, all four creation workflows, previewing, tuning, building, installing, and copying samples. On Windows, creation workflows use a native file picker.
+
+Managed install roots:
+
+- Linux: `~/.local/share/fonts/petiglyph/`
+- macOS: TTFs under `~/Library/Fonts/`, metadata under `~/Library/Fonts/petiglyph/`
+- Windows: `%LOCALAPPDATA%/Microsoft/Windows/Fonts/petiglyph/`
+
+After installation, fully restart applications that need to reload font state.
+
+### Manifest Defaults
 
 ```toml
 input_dir = "images"
@@ -290,135 +226,19 @@ threshold = 64
 codepoint_start = "U+100000"
 ```
 
-Common managed sections:
+`project_id` is managed automatically. Threshold and invert overrides use source keys relative to `images/`.
 
-```toml
-[threshold_overrides]
-"logo.png" = 72
-
-[invert_overrides]
-"logo.png" = true
-
-[compositions."sheet.png"]
-rows = 4
-cols = 4
-horizontal_bleed = "weak"
-vertical_bleed = "off"
-```
-
-Notes:
-
-- `project_id` is managed automatically and may be written back to the manifest during normal reads/builds.
-- animation entries may also be normalized and written back during normal reads/builds.
-- `threshold_overrides` and `invert_overrides` are keyed relative to `input_dir`.
-- composition bleed defaults are `horizontal_bleed = "weak"` and `vertical_bleed = "off"`.
-
-### Supported inputs
-
-Direct build inputs in `images/`:
-
-- `png`
-- `jpg`
-- `jpeg`
-- `webp`
-- `bmp`
-- `gif`
-- `svg`
-
-Import-only conversion path:
-
-- `avif` can be imported through CLI/TUI workflows, but it is converted to project-local `.png` files before build input scanning.
-
-Animated creation workflows also accept:
-
-- `gif`
-- `mp4`
-- `mov`
-- `mkv`
-- `webm`
-- `avi`
-- `m4v`
-
-Media-processing limits:
-
-- maximum `1200` extracted frames per media input
-- maximum `3000` extracted frames per import operation
-
-### Build outputs
-
-`petiglyph build` recreates `out_dir` and writes:
-
-- `<font-slug>.ttf`
-- `<font-slug>.bdf`
-- `glyph-map.json`
-- `glyph-sample.txt`
-- `previews/*.png`
-
-It also maintains project-local lock/mapping state such as:
-
-- `petiglyph.lock`
-- `.petiglyph-build.lock`
-
-`glyph-map.json` maps source files to assigned codepoints. `glyph-sample.txt` contains the generated sample string.
-
-### Install, sample, and doctor
-
-`install-font`:
-
-- builds the project
-- installs the `.ttf` into the current user font location
-- uses a project-prefixed installed family name by default
-- preserves project ownership through `project_id` and the Unicode registry
-
-`sample`:
-
-- builds the project
-- performs a managed install
-- refreshes platform font state
-- prints the private-use sample string
-
-`doctor`:
-
-- runs global health checks without a manifest
-- adds project-specific checks when a project is resolvable
-- can repair stale locks, orphan metadata, and missing registry assignment with `--repair`
-
-`uninstall-all-fonts` removes managed petiglyph fonts and managed metadata for the current user.
-
-### Platform notes
-
-Install roots:
-
-- Linux: `~/.local/share/fonts/petiglyph/`
-- macOS: `~/Library/Fonts/` for installed TTFs, with managed metadata under `~/Library/Fonts/petiglyph/`
-- Windows: `%LOCALAPPDATA%/Microsoft/Windows/Fonts/petiglyph/`
-
-Clipboard backends used by the TUI:
-
-- Linux: `wl-copy` or `xclip`
-- macOS: `pbcopy`
-- Windows: PowerShell `Set-Clipboard` or `clip.exe`
-
-After installing a font, fully quit and reopen terminal applications so they reload font state.
-
-### Debugging and tests
+### Development
 
 Useful docs:
 
 - [CI.md](CI.md)
 - [RELEASE.md](RELEASE.md)
 - [CONTRIBUTING.md](CONTRIBUTING.md)
-
-Project docs:
-
-- [ASSETS_PROVENANCE.md](ASSETS_PROVENANCE.md)
 - [DEPENDENCY_SUPPLY_CHAIN.md](DEPENDENCY_SUPPLY_CHAIN.md)
-- [RELEASE_NOTES_TEMPLATE.md](RELEASE_NOTES_TEMPLATE.md)
-- [THIRD_PARTY_LICENSES.md](THIRD_PARTY_LICENSES.md)
 
-Useful env vars:
+Useful environment variables:
 
 - `PETIGLYPH_NO_FFMPEG_PROMPT=1`
 - `PETIGLYPH_TUI_DEBUG=1`
 - `PETIGLYPH_TUI_DEBUG_LOG=/path/to/log`
-- `PETIGLYPH_TUI_HTY_FULL_REPAINT=1`

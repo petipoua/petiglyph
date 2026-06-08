@@ -174,44 +174,59 @@ pub(crate) fn manifest_path_from_option(manifest: Option<PathBuf>) -> Result<Pat
 
 pub(crate) fn discover_project_manifests(current_dir: &Path) -> Result<Vec<PathBuf>> {
     let mut manifests = Vec::new();
-    let mut nested_manifests = Vec::new();
+    discover_project_manifests_at_depth(current_dir, 0, &mut manifests)?;
+    manifests.sort_by(|left, right| {
+        let left_depth = left
+            .strip_prefix(current_dir)
+            .unwrap_or(left)
+            .components()
+            .count();
+        let right_depth = right
+            .strip_prefix(current_dir)
+            .unwrap_or(right)
+            .components()
+            .count();
+        left_depth.cmp(&right_depth).then(left.cmp(right))
+    });
+    Ok(manifests)
+}
 
-    let manifest_path = current_dir.join("petiglyph.toml");
+fn discover_project_manifests_at_depth(
+    directory: &Path,
+    depth: usize,
+    manifests: &mut Vec<PathBuf>,
+) -> Result<()> {
+    let manifest_path = directory.join("petiglyph.toml");
     if manifest_path.is_file() {
         manifests.push(manifest_path);
     }
+    if depth == 2 {
+        return Ok(());
+    }
 
-    for entry in fs::read_dir(current_dir).with_context(|| {
+    for entry in fs::read_dir(directory).with_context(|| {
         format!(
             "failed while searching for petiglyph.toml in {}",
-            current_dir.display()
+            directory.display()
         )
     })? {
         let entry = entry.with_context(|| {
             format!(
                 "failed while searching for petiglyph.toml in {}",
-                current_dir.display()
+                directory.display()
             )
         })?;
         let file_type = entry.file_type().with_context(|| {
             format!(
                 "failed while searching for petiglyph.toml in {}",
-                current_dir.display()
+                directory.display()
             )
         })?;
-        if !file_type.is_dir() {
-            continue;
-        }
-
-        let candidate = entry.path().join("petiglyph.toml");
-        if candidate.is_file() {
-            nested_manifests.push(candidate);
+        if file_type.is_dir() && !file_type.is_symlink() {
+            discover_project_manifests_at_depth(&entry.path(), depth + 1, manifests)?;
         }
     }
-
-    nested_manifests.sort();
-    manifests.extend(nested_manifests);
-    Ok(manifests)
+    Ok(())
 }
 
 pub(crate) fn auto_detect_manifest_path(current_dir: &Path) -> Result<PathBuf> {
@@ -219,11 +234,11 @@ pub(crate) fn auto_detect_manifest_path(current_dir: &Path) -> Result<PathBuf> {
     match manifests.len() {
         1 => Ok(manifests.remove(0)),
         0 => bail!(
-            "no petiglyph project detected in {} (run `petiglyph create <name>` or pass --manifest)",
+            "no petiglyph project detected in {} (run `petiglyph new-project <name>`)",
             current_dir.display()
         ),
         _ => bail!(
-            "multiple petiglyph projects detected in {} (pass --manifest to choose one)",
+            "multiple petiglyph projects detected in {} (use `petiglyph use-project <project> ...`)",
             current_dir.display()
         ),
     }

@@ -2300,6 +2300,91 @@ pub(crate) fn uninstall_project_font(manifest_path: &Path) -> Result<FontUninsta
     })
 }
 
+pub(crate) fn uninstall_installed_families_exact(families: &[String]) -> Result<()> {
+    let platform = current_platform()?;
+    let font_root = user_font_root()?;
+    fs::create_dir_all(&font_root)
+        .with_context(|| format!("failed to create {}", font_root.display()))?;
+    let _guard = acquire_file_lock(&install_lock_path(&font_root), "font install metadata")?;
+    let install_dir = install_dir_for_project(&font_root);
+
+    let mut records = Vec::new();
+    for metadata_path in metadata_paths_in_install_dir(&install_dir)? {
+        let raw = fs::read_to_string(&metadata_path)
+            .with_context(|| format!("failed to read {}", metadata_path.display()))?;
+        let metadata: InstalledFontMetadata = serde_json::from_str(&raw)
+            .with_context(|| format!("failed to parse {}", metadata_path.display()))?;
+        records.push((metadata_path, metadata));
+    }
+
+    let mut selected = Vec::new();
+    for family in families {
+        let matches = records
+            .iter()
+            .filter(|(_, metadata)| metadata.font_name == *family)
+            .collect::<Vec<_>>();
+        match matches.as_slice() {
+            [] => {
+                let candidates = records
+                    .iter()
+                    .map(|(_, metadata)| metadata.font_name.as_str())
+                    .collect::<BTreeSet<_>>()
+                    .into_iter()
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                bail!(
+                    "managed installed family not found: {family}; candidates: {}",
+                    if candidates.is_empty() {
+                        "(none)"
+                    } else {
+                        &candidates
+                    }
+                );
+            }
+            [record] => selected.push((record.0.clone(), PathBuf::from(&record.1.installed_ttf))),
+            _ => bail!(
+                "managed installed family is ambiguous: {family}; {} metadata records match",
+                matches.len()
+            ),
+        }
+    }
+
+    let mut seen_metadata = BTreeSet::new();
+    let mut seen_ttf = BTreeSet::new();
+    for (metadata_path, ttf_path) in &selected {
+        if !seen_metadata.insert(metadata_path.clone()) || !seen_ttf.insert(ttf_path.clone()) {
+            bail!("duplicate managed install target resolved during uninstall preflight");
+        }
+        if metadata_path.parent() != Some(install_dir.as_path()) {
+            bail!(
+                "unsafe metadata path resolved for uninstall: {}",
+                metadata_path.display()
+            );
+        }
+        if ttf_path.exists() && !ttf_path.is_file() {
+            bail!(
+                "blocked uninstall: expected file but found non-file at {}",
+                ttf_path.display()
+            );
+        }
+    }
+
+    for (_, ttf_path) in &selected {
+        if ttf_path.is_file() {
+            unregister_installed_font(ttf_path, platform)?;
+            fs::remove_file(ttf_path)
+                .with_context(|| format!("failed to remove {}", ttf_path.display()))?;
+        }
+    }
+    for (metadata_path, _) in &selected {
+        fs::remove_file(metadata_path)
+            .with_context(|| format!("failed to remove {}", metadata_path.display()))?;
+    }
+    update_fontconfig_petiglyph_alias(&install_dir, platform)?;
+    refresh_font_cache(&font_root, platform)?;
+    Ok(())
+}
+
 pub(crate) fn uninstall_installed_font_file(installed_ttf: &Path) -> Result<FontUninstallResult> {
     let platform = current_platform()?;
     let font_root = user_font_root()?;

@@ -2,6 +2,8 @@ use anyhow::{Context, Result};
 use clap::{Parser, Subcommand, ValueEnum};
 use serde::Serialize;
 use std::collections::BTreeSet;
+use std::error::Error as StdError;
+use std::fmt;
 use std::fs;
 use std::io::{self, IsTerminal};
 use std::path::{Path, PathBuf};
@@ -19,8 +21,8 @@ use crate::install::{
 };
 use crate::project::{
     AnimationDef, AnimationType, BleedLevel, CompositionDef, Manifest, RuntimeConfig,
-    create_project, delete_project_for_manifest, discover_project_manifests, format_codepoint,
-    load_runtime_config, manifest_path_from_option, read_manifest, slugify, write_manifest,
+    delete_project_for_manifest, discover_project_manifests, format_codepoint, load_runtime_config,
+    manifest_path_from_option, read_manifest, slugify, write_manifest,
 };
 use crate::tui::{tui, tui_workspace};
 
@@ -40,9 +42,256 @@ struct Cli {
     #[arg(long, global = true)]
     ffmpeg_auto_install: bool,
     #[command(subcommand)]
-    command: Option<CliCommand>,
+    command: Option<NewCliCommand>,
 }
 
+#[derive(Debug, Subcommand)]
+enum NewCliCommand {
+    /// Create a self-contained project in the current directory.
+    NewProject { name: String },
+    /// Run an operation against a project selected by directory basename.
+    UseProject {
+        project: String,
+        #[command(subcommand)]
+        command: ProjectCommand,
+    },
+    /// List projects or managed installed fonts.
+    List {
+        #[command(subcommand)]
+        command: NewListCommand,
+    },
+    /// Delete one or more projects after validating the whole batch.
+    DeleteProject {
+        #[arg(required = true, num_args = 1..)]
+        projects: Vec<String>,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Uninstall one or more exact managed installed family names.
+    UninstallFont {
+        #[arg(required = true, num_args = 1..)]
+        installed_families: Vec<String>,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Remove all managed installed petiglyph fonts and metadata.
+    UninstallAllFonts {
+        #[arg(long)]
+        json: bool,
+    },
+    /// Inspect and repair global managed-install and Unicode registry health.
+    Doctor {
+        #[arg(long)]
+        repair: bool,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Launch the workspace TUI.
+    Tui,
+}
+
+#[derive(Debug, Subcommand)]
+enum NewListCommand {
+    Projects {
+        #[arg(long)]
+        json: bool,
+    },
+    InstalledFonts {
+        #[arg(long)]
+        json: bool,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+enum ProjectCommand {
+    Create {
+        #[command(subcommand)]
+        command: NewCreateCommand,
+    },
+    Configure {
+        #[command(subcommand)]
+        command: ConfigureCommand,
+    },
+    Delete {
+        #[command(subcommand)]
+        command: DeleteResourceCommand,
+    },
+    Build {
+        #[arg(long)]
+        json: bool,
+        #[arg(long)]
+        force_remap: bool,
+    },
+    InstallFont {
+        #[arg(long)]
+        json: bool,
+    },
+    ShowSample {
+        #[arg(long)]
+        json: bool,
+    },
+    Doctor {
+        #[arg(long)]
+        repair: bool,
+        #[arg(long)]
+        json: bool,
+    },
+    Tui,
+}
+
+#[derive(Debug, Subcommand)]
+enum NewCreateCommand {
+    Glyph {
+        #[command(flatten)]
+        options: StaticCreateOptions,
+    },
+    GridGlyph {
+        #[command(flatten)]
+        options: StaticCreateOptions,
+        #[arg(long)]
+        rows: usize,
+        #[arg(long)]
+        cols: usize,
+        #[arg(long, value_enum, default_value_t = BleedValue::Weak)]
+        horizontal_bleed: BleedValue,
+        #[arg(long, value_enum, default_value_t = BleedValue::Off)]
+        vertical_bleed: BleedValue,
+    },
+    AnimatedGlyph {
+        #[command(flatten)]
+        options: AnimatedCreateOptions,
+    },
+    AnimatedGridGlyph {
+        #[command(flatten)]
+        options: AnimatedCreateOptions,
+        #[arg(long)]
+        rows: usize,
+        #[arg(long)]
+        cols: usize,
+        #[arg(long, value_enum, default_value_t = BleedValue::Weak)]
+        horizontal_bleed: BleedValue,
+        #[arg(long, value_enum, default_value_t = BleedValue::Off)]
+        vertical_bleed: BleedValue,
+    },
+}
+
+#[derive(Debug, clap::Args)]
+struct StaticCreateOptions {
+    #[arg(long = "input", required = true, num_args = 1..)]
+    input: Vec<PathBuf>,
+    #[arg(long, default_value_t = 64)]
+    threshold: u8,
+    #[arg(long, value_enum, default_value_t = InvertValue::Off)]
+    invert: InvertValue,
+    #[arg(long, default_value_t = false)]
+    grayscale_enabled: bool,
+    #[arg(long, default_value_t = 0)]
+    grayscale_brightness: i16,
+    #[arg(long, default_value_t = 0)]
+    grayscale_contrast: i16,
+    #[arg(long, default_value_t = 100)]
+    grayscale_gamma_percent: u16,
+    #[arg(long)]
+    build: bool,
+    #[arg(long)]
+    install: bool,
+    #[arg(long)]
+    json: bool,
+}
+
+#[derive(Debug, clap::Args)]
+struct AnimatedCreateOptions {
+    #[arg(long = "input", required = true, num_args = 1..)]
+    input: Vec<PathBuf>,
+    #[arg(long)]
+    fps: u8,
+    #[arg(long)]
+    name: Option<String>,
+    #[arg(long, default_value_t = 64)]
+    threshold: u8,
+    #[arg(long, value_enum, default_value_t = InvertValue::Off)]
+    invert: InvertValue,
+    #[arg(long, default_value_t = true)]
+    grayscale_enabled: bool,
+    #[arg(long, default_value_t = 0)]
+    grayscale_brightness: i16,
+    #[arg(long, default_value_t = 0)]
+    grayscale_contrast: i16,
+    #[arg(long, default_value_t = 100)]
+    grayscale_gamma_percent: u16,
+    #[arg(long)]
+    build: bool,
+    #[arg(long)]
+    install: bool,
+    #[arg(long)]
+    json: bool,
+}
+
+#[derive(Debug, Subcommand)]
+enum ConfigureCommand {
+    Glyph {
+        source: String,
+        #[arg(long, conflicts_with = "clear_threshold")]
+        threshold: Option<u8>,
+        #[arg(long)]
+        clear_threshold: bool,
+        #[arg(long, value_enum)]
+        invert: Option<InvertValue>,
+        #[arg(long)]
+        json: bool,
+    },
+    GridGlyph {
+        source: String,
+        #[arg(long)]
+        rows: usize,
+        #[arg(long)]
+        cols: usize,
+        #[arg(long, value_enum, default_value_t = BleedValue::Weak)]
+        horizontal_bleed: BleedValue,
+        #[arg(long, value_enum, default_value_t = BleedValue::Off)]
+        vertical_bleed: BleedValue,
+        #[arg(long, conflicts_with = "clear_threshold")]
+        threshold: Option<u8>,
+        #[arg(long)]
+        clear_threshold: bool,
+        #[arg(long, value_enum)]
+        invert: Option<InvertValue>,
+        #[arg(long)]
+        json: bool,
+    },
+    Animation {
+        name: String,
+        #[arg(long)]
+        fps: Option<u8>,
+        #[arg(long, conflicts_with = "clear_threshold")]
+        threshold: Option<u8>,
+        #[arg(long)]
+        clear_threshold: bool,
+        #[arg(long, value_enum)]
+        invert: Option<InvertValue>,
+        #[arg(long, requires_all = ["rows", "cols"])]
+        rows: Option<usize>,
+        #[arg(long, requires_all = ["rows", "cols"])]
+        cols: Option<usize>,
+        #[arg(long, value_enum)]
+        horizontal_bleed: Option<BleedValue>,
+        #[arg(long, value_enum)]
+        vertical_bleed: Option<BleedValue>,
+        #[arg(long)]
+        json: bool,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+enum DeleteResourceCommand {
+    Animation {
+        name: String,
+        #[arg(long)]
+        json: bool,
+    },
+}
+
+#[allow(dead_code)]
 #[derive(Debug, Subcommand)]
 enum CliCommand {
     /// Create a new self-contained petiglyph project in the current directory.
@@ -464,14 +713,19 @@ struct ApiResponse<T: Serialize> {
     command: &'static str,
     version: &'static str,
     data: T,
-    #[serde(skip_serializing_if = "Option::is_none")]
     error: Option<ApiErrorPayload>,
 }
 
 #[derive(Debug, Serialize)]
 struct ApiErrorPayload {
+    code: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    stage: Option<String>,
     message: String,
     causes: Vec<String>,
+    hints: Vec<String>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    candidates: Vec<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -555,7 +809,7 @@ struct AnimationMutationCommandData {
     frame_count: Option<usize>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, Serialize)]
 pub(crate) struct BuildCommandData {
     manifest: String,
     input_dir: String,
@@ -731,40 +985,53 @@ fn ffmpeg_prompt_globally_disabled_from_env(value: Option<std::ffi::OsString>) -
 
 fn json_command_name(cli: &Cli) -> Option<&'static str> {
     match &cli.command {
-        Some(CliCommand::List { json: true }) => Some("list"),
-        Some(CliCommand::Delete { json: true, .. }) => Some("delete"),
-        Some(CliCommand::SetThreshold { json: true, .. }) => Some("set-threshold"),
-        Some(CliCommand::ClearThreshold { json: true, .. }) => Some("clear-threshold"),
-        Some(CliCommand::Build { json: true, .. }) => Some("build"),
-        Some(CliCommand::Sample { json: true, .. }) => Some("sample"),
-        Some(CliCommand::InstallFont { json: true, .. }) => Some("install-font"),
-        Some(CliCommand::UninstallFont { json: true, .. }) => Some("uninstall-font"),
-        Some(CliCommand::UninstallAllFonts { json: true }) => Some("uninstall-all-fonts"),
-        Some(CliCommand::Doctor { json: true, .. }) => Some("doctor"),
-        Some(CliCommand::Glyph { command }) => match command {
-            GlyphCommand::Create { json: true, .. } => Some("glyph.create"),
-            GlyphCommand::SetThreshold { json: true, .. } => Some("glyph.set-threshold"),
-            GlyphCommand::ClearThreshold { json: true, .. } => Some("glyph.clear-threshold"),
-            GlyphCommand::SetInvert { json: true, .. } => Some("glyph.set-invert"),
-            _ => None,
-        },
-        Some(CliCommand::Grid {
-            command: GridCommand::Create { json: true, .. },
-        }) => Some("grid.create"),
-        Some(CliCommand::Composition { command }) => match command {
-            CompositionCommand::Set { json: true, .. } => Some("composition.set"),
-            CompositionCommand::Clear { json: true, .. } => Some("composition.clear"),
-            _ => None,
-        },
-        Some(CliCommand::Animation { command }) => match command {
-            AnimationCommand::CreateStandard { json: true, .. } => {
-                Some("animation.create-standard")
+        Some(NewCliCommand::List {
+            command: NewListCommand::Projects { json: true },
+        }) => Some("list.projects"),
+        Some(NewCliCommand::List {
+            command: NewListCommand::InstalledFonts { json: true },
+        }) => Some("list.installed-fonts"),
+        Some(NewCliCommand::DeleteProject { json: true, .. }) => Some("delete-project"),
+        Some(NewCliCommand::UninstallFont { json: true, .. }) => Some("uninstall-font"),
+        Some(NewCliCommand::UninstallAllFonts { json: true }) => Some("uninstall-all-fonts"),
+        Some(NewCliCommand::Doctor { json: true, .. }) => Some("doctor"),
+        Some(NewCliCommand::UseProject { command, .. }) => project_json_command_name(command),
+        _ => None,
+    }
+}
+
+fn project_json_command_name(command: &ProjectCommand) -> Option<&'static str> {
+    match command {
+        ProjectCommand::Create { command } => match command {
+            NewCreateCommand::Glyph { options } if options.json => Some("use-project.create.glyph"),
+            NewCreateCommand::GridGlyph { options, .. } if options.json => {
+                Some("use-project.create.grid-glyph")
             }
-            AnimationCommand::CreateGrid { json: true, .. } => Some("animation.create-grid"),
-            AnimationCommand::SetFps { json: true, .. } => Some("animation.set-fps"),
-            AnimationCommand::Delete { json: true, .. } => Some("animation.delete"),
+            NewCreateCommand::AnimatedGlyph { options } if options.json => {
+                Some("use-project.create.animated-glyph")
+            }
+            NewCreateCommand::AnimatedGridGlyph { options, .. } if options.json => {
+                Some("use-project.create.animated-grid-glyph")
+            }
             _ => None,
         },
+        ProjectCommand::Configure { command } => match command {
+            ConfigureCommand::Glyph { json: true, .. } => Some("use-project.configure.glyph"),
+            ConfigureCommand::GridGlyph { json: true, .. } => {
+                Some("use-project.configure.grid-glyph")
+            }
+            ConfigureCommand::Animation { json: true, .. } => {
+                Some("use-project.configure.animation")
+            }
+            _ => None,
+        },
+        ProjectCommand::Delete {
+            command: DeleteResourceCommand::Animation { json: true, .. },
+        } => Some("use-project.delete.animation"),
+        ProjectCommand::Build { json: true, .. } => Some("use-project.build"),
+        ProjectCommand::InstallFont { json: true } => Some("use-project.install-font"),
+        ProjectCommand::ShowSample { json: true } => Some("use-project.show-sample"),
+        ProjectCommand::Doctor { json: true, .. } => Some("use-project.doctor"),
         _ => None,
     }
 }
@@ -1106,6 +1373,73 @@ fn run_default_tui(_debug: bool) -> Result<()> {
 
 fn run_cli(cli: Cli) -> std::result::Result<(), CliRunError> {
     match cli.command {
+        None | Some(NewCliCommand::Tui) => run_default_tui(cli.debug).map_err(CliRunError::Plain),
+        Some(NewCliCommand::NewProject { name }) => {
+            let cwd = std::env::current_dir().map_err(|error| CliRunError::Plain(error.into()))?;
+            crate::project::create_project_in_dir(&cwd, &name)
+                .map(|manifest| {
+                    println!("petiglyph: project created");
+                    println!("  manifest: {}", manifest.display());
+                })
+                .map_err(CliRunError::Plain)
+        }
+        Some(NewCliCommand::List { command }) => match command {
+            NewListCommand::Projects { json } => run_automation_command(
+                "list.projects",
+                json,
+                list_projects_command,
+                print_projects_result,
+            ),
+            NewListCommand::InstalledFonts { json } => run_automation_command(
+                "list.installed-fonts",
+                json,
+                list_installed_fonts_command,
+                print_installed_fonts_result,
+            ),
+        },
+        Some(NewCliCommand::UseProject { project, command }) => {
+            let manifest = resolve_project(&project).map_err(|error| {
+                if let Some(command) = project_json_command_name(&command) {
+                    CliRunError::Json { command, error }
+                } else {
+                    CliRunError::Plain(error)
+                }
+            })?;
+            run_project_command(manifest, command)
+        }
+        Some(NewCliCommand::DeleteProject { projects, json }) => run_automation_command(
+            "delete-project",
+            json,
+            || delete_projects_command(projects),
+            print_delete_projects_result,
+        ),
+        Some(NewCliCommand::UninstallFont {
+            installed_families,
+            json,
+        }) => run_automation_command(
+            "uninstall-font",
+            json,
+            || uninstall_families_command(installed_families),
+            print_uninstall_families_result,
+        ),
+        Some(NewCliCommand::UninstallAllFonts { json }) => run_automation_command(
+            "uninstall-all-fonts",
+            json,
+            uninstall_tool_command,
+            print_uninstall_tool_result,
+        ),
+        Some(NewCliCommand::Doctor { repair, json }) => run_automation_command(
+            "doctor",
+            json,
+            || doctor_command(None, repair),
+            print_doctor_result,
+        ),
+    }
+}
+
+#[cfg(any())]
+fn run_legacy_cli(cli: Cli) -> std::result::Result<(), CliRunError> {
+    match cli.command {
         None => run_default_tui(cli.debug).map_err(CliRunError::Plain),
         Some(CliCommand::Create { name, no_launch }) => {
             create_project(&name, no_launch).map_err(CliRunError::Plain)
@@ -1303,6 +1637,776 @@ fn run_cli(cli: Cli) -> std::result::Result<(), CliRunError> {
             || doctor_command(manifest, repair),
             print_doctor_result,
         ),
+    }
+}
+
+#[derive(Debug, Serialize)]
+struct ProjectSummary {
+    directory_name: String,
+    relative_path: String,
+    font_name: String,
+    manifest_path: String,
+    project_id: Option<String>,
+    warnings: Vec<String>,
+}
+
+#[derive(Debug, Serialize)]
+struct ProjectsCommandData {
+    workspace_dir: String,
+    projects: Vec<ProjectSummary>,
+    warnings: Vec<ListWarningData>,
+}
+
+#[derive(Debug, Serialize)]
+struct InstalledFontSummary {
+    installed_family: String,
+    project_id: Option<String>,
+    ttf_path: String,
+    manifest_path: String,
+    warnings: Vec<String>,
+}
+
+#[derive(Debug, Serialize)]
+struct InstalledFontsCommandData {
+    installed_fonts: Vec<InstalledFontSummary>,
+    warnings: Vec<String>,
+}
+
+#[derive(Debug, Serialize)]
+struct BatchDeleteData {
+    deleted_projects: Vec<DeleteCommandData>,
+}
+
+#[derive(Debug, Serialize)]
+struct BatchUninstallData {
+    uninstalled_families: Vec<String>,
+}
+
+#[derive(Debug, Serialize)]
+struct ShowSampleData {
+    manifest: String,
+    sample_path: String,
+    sample: String,
+}
+
+#[derive(Debug, Serialize)]
+struct CreationWorkflowData {
+    project: ProjectSummary,
+    creation_kind: &'static str,
+    imported_sources: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    animation: Option<AnimationMutationCommandData>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    grid: Option<CompositionCommandData>,
+    completed_stages: Vec<&'static str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    build: Option<BuildCommandData>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    install: Option<InstallFontCommandData>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    sample: Option<String>,
+}
+
+#[derive(Debug)]
+struct WorkflowFailure {
+    stage: &'static str,
+    completed_stages: Vec<&'static str>,
+    source: anyhow::Error,
+}
+
+impl fmt::Display for WorkflowFailure {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            formatter,
+            "creation workflow failed during `{}` after completing [{}]: {:#}. Imported files and manifest changes were retained; fix the error and rerun the project build or install command.",
+            self.stage,
+            self.completed_stages.join(", "),
+            self.source
+        )
+    }
+}
+
+impl StdError for WorkflowFailure {
+    fn source(&self) -> Option<&(dyn StdError + 'static)> {
+        self.source.source()
+    }
+}
+
+fn workflow_failure(
+    stage: &'static str,
+    completed_stages: &[&'static str],
+    source: anyhow::Error,
+) -> anyhow::Error {
+    WorkflowFailure {
+        stage,
+        completed_stages: completed_stages.to_vec(),
+        source,
+    }
+    .into()
+}
+
+fn resolve_project(selector: &str) -> Result<PathBuf> {
+    let cwd = std::env::current_dir().context("failed to read current directory")?;
+    let matches = discover_project_manifests(&cwd)?
+        .into_iter()
+        .filter(|manifest| {
+            manifest
+                .parent()
+                .and_then(Path::file_name)
+                .and_then(|name| name.to_str())
+                == Some(selector)
+        })
+        .collect::<Vec<_>>();
+    match matches.as_slice() {
+        [manifest] => Ok(manifest.clone()),
+        [] => anyhow::bail!(
+            "project `{selector}` was not found within depth 2 of {}",
+            cwd.display()
+        ),
+        many => {
+            let candidates = many
+                .iter()
+                .map(|path| {
+                    let relative = path.strip_prefix(&cwd).unwrap_or(path);
+                    let font = read_manifest(path)
+                        .map(|manifest| manifest.font_name)
+                        .unwrap_or_else(|_| "<unreadable>".to_string());
+                    format!(
+                        "{} (font: {}, manifest: {})",
+                        relative
+                            .parent()
+                            .unwrap_or_else(|| Path::new("."))
+                            .display(),
+                        font,
+                        relative.display()
+                    )
+                })
+                .collect::<Vec<_>>()
+                .join("\n  - ");
+            anyhow::bail!("project `{selector}` is ambiguous:\n  - {candidates}")
+        }
+    }
+}
+
+fn project_summary(manifest_path: &Path) -> Result<ProjectSummary> {
+    let cwd = std::env::current_dir().context("failed to read current directory")?;
+    let manifest = read_manifest(manifest_path)?;
+    let project_dir = manifest_path.parent().unwrap_or_else(|| Path::new("."));
+    Ok(ProjectSummary {
+        directory_name: project_dir
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or(".")
+            .to_string(),
+        relative_path: project_dir
+            .strip_prefix(&cwd)
+            .unwrap_or(project_dir)
+            .display()
+            .to_string(),
+        font_name: manifest.font_name,
+        manifest_path: manifest_path.display().to_string(),
+        project_id: manifest.project_id,
+        warnings: Vec::new(),
+    })
+}
+
+fn list_projects_command() -> Result<ProjectsCommandData> {
+    let cwd = std::env::current_dir().context("failed to read current directory")?;
+    let mut projects = Vec::new();
+    let mut warnings = Vec::new();
+    for manifest_path in discover_project_manifests(&cwd)? {
+        match project_summary(&manifest_path) {
+            Ok(project) => projects.push(project),
+            Err(error) => warnings.push(ListWarningData {
+                code: "manifest_read_failed".to_string(),
+                manifest_path: manifest_path.display().to_string(),
+                message: format!("{error:#}"),
+            }),
+        }
+    }
+    Ok(ProjectsCommandData {
+        workspace_dir: cwd.display().to_string(),
+        projects,
+        warnings,
+    })
+}
+
+fn list_installed_fonts_command() -> Result<InstalledFontsCommandData> {
+    let install_dir = crate::install::managed_install_dir()?;
+    let mut installed_fonts = Vec::new();
+    let mut warnings = Vec::new();
+    for metadata_path in crate::install::metadata_paths_in_install_dir(&install_dir)? {
+        let raw = match fs::read_to_string(&metadata_path) {
+            Ok(raw) => raw,
+            Err(error) => {
+                warnings.push(format!("{}: {error}", metadata_path.display()));
+                continue;
+            }
+        };
+        let metadata = match serde_json::from_str::<crate::install::InstalledFontMetadata>(&raw) {
+            Ok(metadata) => metadata,
+            Err(error) => {
+                warnings.push(format!("{}: {error}", metadata_path.display()));
+                continue;
+            }
+        };
+        let mut record_warnings = Vec::new();
+        if !Path::new(&metadata.installed_ttf).is_file() {
+            record_warnings.push("installed artifact is missing".to_string());
+        }
+        if !Path::new(&metadata.manifest_path).is_file() {
+            record_warnings.push("project manifest is missing".to_string());
+        }
+        installed_fonts.push(InstalledFontSummary {
+            installed_family: metadata.font_name,
+            project_id: metadata.project_id,
+            ttf_path: metadata.installed_ttf,
+            manifest_path: metadata.manifest_path,
+            warnings: record_warnings,
+        });
+    }
+    installed_fonts.sort_by(|left, right| {
+        left.installed_family
+            .cmp(&right.installed_family)
+            .then(left.ttf_path.cmp(&right.ttf_path))
+    });
+    Ok(InstalledFontsCommandData {
+        installed_fonts,
+        warnings,
+    })
+}
+
+fn delete_projects_command(projects: Vec<String>) -> Result<BatchDeleteData> {
+    let mut seen = BTreeSet::new();
+    let mut manifests = Vec::new();
+    for project in projects {
+        if !seen.insert(project.clone()) {
+            anyhow::bail!("duplicate project target: {project}");
+        }
+        manifests.push(resolve_project(&project)?);
+    }
+    for manifest in &manifests {
+        preflight_project_deletion(manifest)?;
+    }
+    let mut deleted_projects = Vec::new();
+    for manifest in manifests {
+        deleted_projects.push(delete_command(manifest)?);
+    }
+    Ok(BatchDeleteData { deleted_projects })
+}
+
+fn preflight_project_deletion(manifest_path: &Path) -> Result<()> {
+    let project_dir = manifest_path
+        .parent()
+        .ok_or_else(|| anyhow::anyhow!("invalid manifest path: {}", manifest_path.display()))?;
+    let project_dir = fs::canonicalize(project_dir)?;
+    let cwd = fs::canonicalize(std::env::current_dir()?)?;
+    if cwd.starts_with(&project_dir) {
+        anyhow::bail!("refusing to delete project root from inside that project directory");
+    }
+    Ok(())
+}
+
+fn uninstall_families_command(families: Vec<String>) -> Result<BatchUninstallData> {
+    let mut seen = BTreeSet::new();
+    for family in &families {
+        if !seen.insert(family.clone()) {
+            anyhow::bail!("duplicate installed family target: {family}");
+        }
+    }
+    crate::install::uninstall_installed_families_exact(&families)?;
+    Ok(BatchUninstallData {
+        uninstalled_families: families,
+    })
+}
+
+fn run_project_command(
+    manifest_path: PathBuf,
+    command: ProjectCommand,
+) -> std::result::Result<(), CliRunError> {
+    match command {
+        ProjectCommand::Create { command } => run_creation_command(manifest_path, command),
+        ProjectCommand::Configure { command } => run_configure_command(manifest_path, command),
+        ProjectCommand::Delete {
+            command: DeleteResourceCommand::Animation { name, json },
+        } => run_automation_command(
+            "use-project.delete.animation",
+            json,
+            || animation_delete_command(manifest_path, name),
+            print_animation_mutation_result,
+        ),
+        ProjectCommand::Build { json, force_remap } => run_automation_command(
+            "use-project.build",
+            json,
+            || build_font(manifest_path, None, None, None, None, None, force_remap),
+            print_build_result,
+        ),
+        ProjectCommand::InstallFont { json } => run_automation_command(
+            "use-project.install-font",
+            json,
+            || install_font_command(manifest_path, None, None, None, None, None, false),
+            print_install_result,
+        ),
+        ProjectCommand::ShowSample { json } => run_automation_command(
+            "use-project.show-sample",
+            json,
+            || show_sample_command(manifest_path),
+            print_show_sample_result,
+        ),
+        ProjectCommand::Doctor { repair, json } => run_automation_command(
+            "use-project.doctor",
+            json,
+            || doctor_command(Some(manifest_path), repair),
+            print_doctor_result,
+        ),
+        ProjectCommand::Tui => {
+            if !io::stdin().is_terminal() || !io::stdout().is_terminal() {
+                return Err(CliRunError::Plain(anyhow::anyhow!(
+                    "interactive petiglyph TUI requires a terminal"
+                )));
+            }
+            tui(manifest_path, None, None, None, None).map_err(CliRunError::Plain)
+        }
+    }
+}
+
+fn run_creation_command(
+    manifest_path: PathBuf,
+    command: NewCreateCommand,
+) -> std::result::Result<(), CliRunError> {
+    let (command_name, json) = match &command {
+        NewCreateCommand::Glyph { options } => ("use-project.create.glyph", options.json),
+        NewCreateCommand::GridGlyph { options, .. } => {
+            ("use-project.create.grid-glyph", options.json)
+        }
+        NewCreateCommand::AnimatedGlyph { options } => {
+            ("use-project.create.animated-glyph", options.json)
+        }
+        NewCreateCommand::AnimatedGridGlyph { options, .. } => {
+            ("use-project.create.animated-grid-glyph", options.json)
+        }
+    };
+    run_automation_command(
+        command_name,
+        json,
+        || creation_workflow(manifest_path, command),
+        print_creation_result,
+    )
+}
+
+fn creation_workflow(
+    manifest_path: PathBuf,
+    command: NewCreateCommand,
+) -> Result<CreationWorkflowData> {
+    let project = project_summary(&manifest_path)?;
+    let mut completed_stages = vec!["resolve"];
+    let mut animation = None;
+    let mut grid = None;
+    let (creation_kind, imported_sources, should_build, should_install) = match command {
+        NewCreateCommand::Glyph { options } => {
+            let processing = static_processing(&options)?;
+            let result = create_glyphs_command(
+                manifest_path.clone(),
+                options.input,
+                options.threshold,
+                options.invert,
+                processing,
+            )
+            .map_err(|error| workflow_failure("import", &completed_stages, error))?;
+            (
+                "glyph",
+                result.imported_sources,
+                options.build,
+                options.install,
+            )
+        }
+        NewCreateCommand::GridGlyph {
+            options,
+            rows,
+            cols,
+            horizontal_bleed,
+            vertical_bleed,
+        } => {
+            let processing = static_processing(&options)?;
+            let result = create_grid_command(
+                manifest_path.clone(),
+                options.input,
+                rows,
+                cols,
+                horizontal_bleed.into(),
+                vertical_bleed.into(),
+                options.threshold,
+                options.invert,
+                processing,
+            )
+            .map_err(|error| workflow_failure("import", &completed_stages, error))?;
+            grid = Some(CompositionCommandData {
+                manifest: manifest_path.display().to_string(),
+                source_key: result.imported_sources[0].clone(),
+                rows: Some(rows),
+                cols: Some(cols),
+            });
+            (
+                "grid_glyph",
+                result.imported_sources,
+                options.build,
+                options.install,
+            )
+        }
+        NewCreateCommand::AnimatedGlyph { options } => {
+            let processing = animated_processing(&options)?;
+            let result = create_animation_command(
+                manifest_path.clone(),
+                options.input,
+                options.name,
+                AnimationType::Standard,
+                options.fps,
+                None,
+                None,
+                None,
+                None,
+                options.threshold,
+                options.invert,
+                processing,
+            )
+            .map_err(|error| workflow_failure("import", &completed_stages, error))?;
+            let manifest = read_manifest(&manifest_path)?;
+            let sources = manifest
+                .animations
+                .iter()
+                .find(|item| item.name == result.name)
+                .map(|item| item.frames.clone())
+                .unwrap_or_default();
+            animation = Some(result);
+            ("animated_glyph", sources, options.build, options.install)
+        }
+        NewCreateCommand::AnimatedGridGlyph {
+            options,
+            rows,
+            cols,
+            horizontal_bleed,
+            vertical_bleed,
+        } => {
+            let processing = animated_processing(&options)?;
+            let result = create_animation_command(
+                manifest_path.clone(),
+                options.input,
+                options.name,
+                AnimationType::Grid,
+                options.fps,
+                Some(rows),
+                Some(cols),
+                Some(horizontal_bleed.into()),
+                Some(vertical_bleed.into()),
+                options.threshold,
+                options.invert,
+                processing,
+            )
+            .map_err(|error| workflow_failure("import", &completed_stages, error))?;
+            let manifest = read_manifest(&manifest_path)?;
+            let sources = manifest
+                .animations
+                .iter()
+                .find(|item| item.name == result.name)
+                .map(|item| item.frames.clone())
+                .unwrap_or_default();
+            animation = Some(result);
+            (
+                "animated_grid_glyph",
+                sources,
+                options.build,
+                options.install,
+            )
+        }
+    };
+    completed_stages.extend(["import", "configure"]);
+    let mut build = None;
+    let mut install = None;
+    let mut sample = None;
+    if should_build || should_install {
+        build = Some(
+            build_font(manifest_path.clone(), None, None, None, None, None, false)
+                .map_err(|error| workflow_failure("build", &completed_stages, error))?,
+        );
+        completed_stages.push("build");
+    }
+    if should_install {
+        install = Some(
+            install_built_workflow_font(
+                &manifest_path,
+                build
+                    .as_ref()
+                    .expect("install creation workflow always builds first"),
+            )
+            .map_err(|error| workflow_failure("install", &completed_stages, error))?,
+        );
+        completed_stages.push("install");
+        sample = Some(
+            show_sample_command(manifest_path.clone())
+                .map_err(|error| workflow_failure("sample", &completed_stages, error))?
+                .sample,
+        );
+        completed_stages.push("sample");
+    }
+    Ok(CreationWorkflowData {
+        project,
+        creation_kind,
+        imported_sources,
+        animation,
+        grid,
+        completed_stages,
+        build,
+        install,
+        sample,
+    })
+}
+
+fn static_processing(
+    options: &StaticCreateOptions,
+) -> Result<crate::animation_media::AnimationImportProcessingOptions> {
+    grayscale_options(
+        options.grayscale_enabled,
+        options.grayscale_brightness,
+        options.grayscale_contrast,
+        options.grayscale_gamma_percent,
+    )
+}
+
+fn animated_processing(
+    options: &AnimatedCreateOptions,
+) -> Result<crate::animation_media::AnimationImportProcessingOptions> {
+    grayscale_options(
+        options.grayscale_enabled,
+        options.grayscale_brightness,
+        options.grayscale_contrast,
+        options.grayscale_gamma_percent,
+    )
+}
+
+fn run_configure_command(
+    manifest_path: PathBuf,
+    command: ConfigureCommand,
+) -> std::result::Result<(), CliRunError> {
+    let (name, json) = match &command {
+        ConfigureCommand::Glyph { json, .. } => ("use-project.configure.glyph", *json),
+        ConfigureCommand::GridGlyph { json, .. } => ("use-project.configure.grid-glyph", *json),
+        ConfigureCommand::Animation { json, .. } => ("use-project.configure.animation", *json),
+    };
+    run_automation_command(
+        name,
+        json,
+        || configure_command(manifest_path, command),
+        |data| {
+            println!(
+                "petiglyph: configuration updated\n  manifest: {}",
+                data.manifest
+            )
+        },
+    )
+}
+
+fn configure_command(
+    manifest_path: PathBuf,
+    command: ConfigureCommand,
+) -> Result<AnimationMutationCommandData> {
+    let mut manifest = read_manifest(&manifest_path)?;
+    let name = match command {
+        ConfigureCommand::Glyph {
+            source,
+            threshold,
+            clear_threshold,
+            invert,
+            ..
+        } => {
+            configure_source(&mut manifest, &source, threshold, clear_threshold, invert);
+            source
+        }
+        ConfigureCommand::GridGlyph {
+            source,
+            rows,
+            cols,
+            horizontal_bleed,
+            vertical_bleed,
+            threshold,
+            clear_threshold,
+            invert,
+            ..
+        } => {
+            validate_grid(rows, cols)?;
+            configure_source(&mut manifest, &source, threshold, clear_threshold, invert);
+            manifest.compositions.insert(
+                source.clone(),
+                CompositionDef {
+                    rows,
+                    cols,
+                    horizontal_bleed: horizontal_bleed.into(),
+                    vertical_bleed: vertical_bleed.into(),
+                },
+            );
+            source
+        }
+        ConfigureCommand::Animation {
+            name,
+            fps,
+            threshold,
+            clear_threshold,
+            invert,
+            rows,
+            cols,
+            horizontal_bleed,
+            vertical_bleed,
+            ..
+        } => {
+            let index = manifest
+                .animations
+                .iter()
+                .position(|animation| animation.name == name)
+                .ok_or_else(|| anyhow::anyhow!("animation not found: {name}"))?;
+            if let Some(fps) = fps {
+                validate_fps(fps)?;
+                manifest.animations[index].fps = fps;
+            }
+            let is_grid = manifest.animations[index].animation_type == AnimationType::Grid;
+            if !is_grid
+                && (rows.is_some()
+                    || cols.is_some()
+                    || horizontal_bleed.is_some()
+                    || vertical_bleed.is_some())
+            {
+                anyhow::bail!("grid dimensions and bleed require a grid animation");
+            }
+            if is_grid {
+                if let (Some(rows), Some(cols)) = (rows, cols) {
+                    validate_grid(rows, cols)?;
+                    manifest.animations[index].rows = Some(rows);
+                    manifest.animations[index].cols = Some(cols);
+                }
+                if let Some(value) = horizontal_bleed {
+                    manifest.animations[index].horizontal_bleed = Some(value.into());
+                }
+                if let Some(value) = vertical_bleed {
+                    manifest.animations[index].vertical_bleed = Some(value.into());
+                }
+            }
+            let frames = manifest.animations[index].frames.clone();
+            for frame in frames {
+                configure_source(&mut manifest, &frame, threshold, clear_threshold, invert);
+            }
+            name
+        }
+    };
+    write_manifest(&manifest_path, &manifest)?;
+    Ok(AnimationMutationCommandData {
+        manifest: manifest_path.display().to_string(),
+        name,
+        fps: None,
+        frame_count: None,
+    })
+}
+
+fn configure_source(
+    manifest: &mut Manifest,
+    source: &str,
+    threshold: Option<u8>,
+    clear_threshold: bool,
+    invert: Option<InvertValue>,
+) {
+    if let Some(threshold) = threshold {
+        manifest
+            .threshold_overrides
+            .insert(source.to_string(), threshold);
+    } else if clear_threshold {
+        manifest.threshold_overrides.remove(source);
+    }
+    if let Some(invert) = invert {
+        if matches!(invert, InvertValue::On) {
+            manifest.invert_overrides.insert(source.to_string(), true);
+        } else {
+            manifest.invert_overrides.remove(source);
+        }
+    }
+}
+
+fn show_sample_command(manifest_path: PathBuf) -> Result<ShowSampleData> {
+    let config = load_runtime_config(&manifest_path, None, None, None, None, None)?;
+    let sample_path = config.out_dir.join("glyph-sample.txt");
+    let sample = fs::read_to_string(&sample_path).with_context(|| {
+        format!(
+            "built sample is unavailable at {}; run `petiglyph use-project {} build`",
+            sample_path.display(),
+            manifest_path
+                .parent()
+                .and_then(Path::file_name)
+                .and_then(|name| name.to_str())
+                .unwrap_or("<project>")
+        )
+    })?;
+    Ok(ShowSampleData {
+        manifest: manifest_path.display().to_string(),
+        sample_path: sample_path.display().to_string(),
+        sample: sample.trim_end().to_string(),
+    })
+}
+
+fn print_projects_result(data: &ProjectsCommandData) {
+    println!("projects:");
+    for project in &data.projects {
+        println!(
+            "  - {} ({}, font: {})",
+            project.directory_name, project.relative_path, project.font_name
+        );
+    }
+    for warning in &data.warnings {
+        eprintln!("warning: {}: {}", warning.manifest_path, warning.message);
+    }
+}
+
+fn print_installed_fonts_result(data: &InstalledFontsCommandData) {
+    println!("installed fonts:");
+    for font in &data.installed_fonts {
+        println!("  - {} ({})", font.installed_family, font.ttf_path);
+    }
+    for warning in &data.warnings {
+        eprintln!("warning: {warning}");
+    }
+}
+
+fn print_delete_projects_result(data: &BatchDeleteData) {
+    for project in &data.deleted_projects {
+        print_delete_result(project);
+    }
+}
+
+fn print_uninstall_families_result(data: &BatchUninstallData) {
+    println!(
+        "petiglyph: uninstalled {} managed font(s)",
+        data.uninstalled_families.len()
+    );
+    for family in &data.uninstalled_families {
+        println!("  - {family}");
+    }
+}
+
+fn print_show_sample_result(data: &ShowSampleData) {
+    println!("{}", data.sample);
+}
+
+fn print_creation_result(data: &CreationWorkflowData) {
+    println!("petiglyph: {} creation complete", data.creation_kind);
+    println!("  project: {}", data.project.directory_name);
+    println!("  stages:  {}", data.completed_stages.join(", "));
+    for source in &data.imported_sources {
+        println!("  source:  {source}");
+    }
+    if let Some(build) = &data.build {
+        println!("  ttf:     {}", build.ttf);
+    }
+    if let Some(install) = &data.install {
+        println!("  installed: {}", install.installed_ttf);
+    }
+    if let Some(sample) = &data.sample {
+        println!();
+        println!("{sample}");
     }
 }
 
@@ -1611,14 +2715,38 @@ fn emit_json_error(command: &'static str, error: &anyhow::Error) {
         .skip(1)
         .map(|cause| cause.to_string())
         .collect::<Vec<_>>();
+    let workflow = error.downcast_ref::<WorkflowFailure>();
+    let data = workflow.map_or_else(
+        || serde_json::json!({}),
+        |failure| {
+            serde_json::json!({
+                "completed_stages": failure.completed_stages,
+            })
+        },
+    );
     let payload = ApiResponse {
         ok: false,
         command,
         version: CLI_VERSION,
-        data: serde_json::json!({}),
+        data,
         error: Some(ApiErrorPayload {
+            code: workflow
+                .map(|_| "creation_stage_failed")
+                .unwrap_or("command_failed")
+                .to_string(),
+            stage: workflow.map(|failure| failure.stage.to_string()),
             message: error.to_string(),
             causes,
+            hints: workflow
+                .map(|_| {
+                    vec![
+                        "Imported files and manifest changes were retained.".to_string(),
+                        "Fix the reported cause, then run the project build or install command."
+                            .to_string(),
+                    ]
+                })
+                .unwrap_or_default(),
+            candidates: Vec::new(),
         }),
     };
     if let Ok(line) = serde_json::to_string(&payload) {
@@ -2841,6 +3969,29 @@ fn install_font_command(
     )?;
     Ok(InstallFontCommandData {
         build: build_command_data(&manifest_path, &config, &summary),
+        platform: install_result.platform,
+        install_dir: install_result.install_dir.display().to_string(),
+        installed_ttf: install_result.install_path.display().to_string(),
+        replaced_previous_ttf_count: install_result.replaced_previous_ttf_count,
+    })
+}
+
+fn install_built_workflow_font(
+    manifest_path: &Path,
+    build: &BuildCommandData,
+) -> Result<InstallFontCommandData> {
+    let mut config = load_runtime_config(manifest_path, None, None, None, None, None)?;
+    config.font_name =
+        effective_font_name(manifest_path, &config.font_name, DEFAULT_INSTALL_NAME_MODE)?;
+    let install_result = install_built_font(
+        manifest_path,
+        &config.font_name,
+        &config.project_id,
+        Path::new(&build.ttf),
+        build.glyph_count,
+    )?;
+    Ok(InstallFontCommandData {
+        build: build.clone(),
         platform: install_result.platform,
         install_dir: install_result.install_dir.display().to_string(),
         installed_ttf: install_result.install_path.display().to_string(),
