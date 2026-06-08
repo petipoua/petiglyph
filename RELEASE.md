@@ -39,18 +39,20 @@ The process has two deliberate triggers:
 
 The AUR remains a separate manual publication.
 
-After the release preparation is committed and all required GitHub environment
-approvals are ready, the guarded end-to-end publisher can run the remaining
-steps:
+With a clean `main` checkout and all required GitHub environment approvals
+ready, the guarded end-to-end publisher runs the complete release:
 
 ```bash
 ./scripts/release_all.sh vX.Y.Z
 ```
 
-It tags the current `origin/main` commit, waits for and verifies the draft
-GitHub Release, publishes it, waits for npm and PyPI, publishes the AUR package,
-and verifies all public versions. Interactive runs pause for the draft notes to
-be completed. For intentional non-interactive use, pass both
+For a new tag, it synchronizes release versions, refreshes `Cargo.lock`,
+regenerates third-party licenses, runs `scripts/pf.sh`, creates and pushes the
+signed `chore: prepare vX.Y.Z` commit, and then tags that commit. It waits for
+and verifies the draft GitHub Release, publishes it, waits for npm and PyPI,
+publishes the AUR package, and verifies all public versions. Interactive runs
+pause for the draft notes to be completed. For intentional non-interactive use,
+pass both
 `--notes-file PATH` and `--yes`; the script rejects unreplaced template
 placeholders. The GitHub release event starts npm and PyPI concurrently; the
 script waits for both before publishing to the AUR.
@@ -80,7 +82,9 @@ Start from the release commit on `main` with no unrelated working-tree changes.
 
 Review the resulting changes. The version sync updates `Cargo.toml`, `PKGBUILD`,
 `.SRCINFO` when `makepkg` is available, all npm package versions and pins, and
-the README JSON version sample. Commit any generated
+the README JSON version sample. Before the immutable tag exists, synchronized
+AUR metadata uses `sha256sums=('SKIP')`; `release_prepare_aur.sh` replaces it
+with the tag archive checksum before AUR publication. Commit any generated
 `THIRD_PARTY_LICENSES.md` change with the release preparation.
 
 Run the canonical local CI preflight:

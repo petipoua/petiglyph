@@ -48,6 +48,10 @@ if [[ -z "$version" ]]; then
 fi
 
 VERSION="$version" perl -i -pe 's/^pkgver=.*/pkgver=$ENV{VERSION}/m' PKGBUILD
+VERSION="$version" perl -i -pe \
+  's#(archive/refs/tags/v)[^/"]+(\.tar\.gz)#$1$ENV{VERSION}$2#g' \
+  PKGBUILD
+perl -i -pe "s/^sha256sums=.*/sha256sums=('SKIP')/" PKGBUILD
 
 if command -v makepkg >/dev/null 2>&1; then
   makepkg --printsrcinfo > .SRCINFO

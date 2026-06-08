@@ -11,17 +11,20 @@ Usage:
   ./scripts/release_all.sh vX.Y.Z [--notes-file PATH] [--yes]
 
 Publishes or resumes the committed release at HEAD in this order:
-  1. Create and push a signed annotated tag, or verify the existing tag.
-  2. Run or resume release.yml until the GitHub artifacts exist.
-  3. Verify and publish the GitHub Release.
-  4. Wait for the npm and PyPI publication workflows.
-  5. Publish or verify the AUR package.
-  6. Verify all public channels report X.Y.Z.
+  1. Synchronize versions, licenses, and Cargo.lock when preparing a new tag.
+  2. Run the canonical preflight, commit release metadata, and push main.
+  3. Create and push a signed annotated tag, or verify the existing tag.
+  4. Run or resume release.yml until the GitHub artifacts exist.
+  5. Verify and publish the GitHub Release.
+  6. Wait for the npm and PyPI publication workflows.
+  7. Publish or verify the AUR package.
+  8. Verify all public channels report X.Y.Z.
 
-The version must already be synchronized and committed. GitHub starts the npm
-and PyPI workflows concurrently when the draft release is published; this
-script waits for both before publishing to the AUR. Rerunning the same tag
-resumes incomplete steps, but the tag must still resolve to the same HEAD.
+The working tree must start clean. For a new tag, the script creates and pushes
+a signed "chore: prepare vX.Y.Z" commit automatically. GitHub starts the npm and
+PyPI workflows concurrently when the draft release is published; this script
+waits for both before publishing to the AUR. Rerunning the same tag resumes
+incomplete steps, but the tag must still resolve to the same HEAD.
 
 Options:
   --notes-file PATH  Replace the draft body before publication. PATH may be
@@ -47,6 +50,105 @@ require_command() {
 
 cargo_version() {
   sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -n1
+}
+
+release_metadata_paths=(
+  .SRCINFO
+  Cargo.lock
+  Cargo.toml
+  PKGBUILD
+  README.md
+  THIRD_PARTY_LICENSES.md
+  npm/petiglyph-darwin-arm64/package.json
+  npm/petiglyph-darwin-x64/package.json
+  npm/petiglyph-linux-arm64-gnu/package.json
+  npm/petiglyph-linux-arm64-musl/package.json
+  npm/petiglyph-linux-x64-gnu/package.json
+  npm/petiglyph-linux-x64-musl/package.json
+  npm/petiglyph-win32-arm64-msvc/package.json
+  npm/petiglyph-win32-x64-msvc/package.json
+  npm/petiglyph/package.json
+)
+
+is_release_metadata_path() {
+  local candidate="$1"
+  local allowed=""
+
+  for allowed in "${release_metadata_paths[@]}"; do
+    if [[ "$candidate" == "$allowed" ]]; then
+      return 0
+    fi
+  done
+  return 1
+}
+
+assert_only_release_metadata_changed() {
+  local changed=""
+
+  while IFS= read -r changed; do
+    [[ -n "$changed" ]] || continue
+    is_release_metadata_path "$changed" \
+      || die "release preparation changed an unexpected path: $changed"
+  done < <(
+    {
+      git diff --name-only
+      git diff --cached --name-only
+      git ls-files --others --exclude-standard
+    } | sort -u
+  )
+}
+
+prepare_release_commit() {
+  local version="$1"
+  local tag="$2"
+
+  prep_in_progress=1
+  log "Synchronizing release metadata for $tag"
+  ./scripts/release_sync_versions.sh "$version"
+
+  log "Refreshing Cargo.lock for $tag"
+  cargo check --offline
+
+  log "Generating third-party license inventory"
+  ./scripts/generate_third_party_licenses.sh
+  assert_only_release_metadata_changed
+
+  log "Running canonical release preflight"
+  ./scripts/pf.sh
+  assert_only_release_metadata_changed
+
+  git add -- "${release_metadata_paths[@]}"
+  [[ -n "$(git diff --cached --name-only)" ]] \
+    || die "release preparation produced no changes for $tag"
+  git commit -S -m "chore: prepare $tag"
+  prep_in_progress=0
+
+  log "Pushing release preparation commit to origin/main"
+  git push origin main
+}
+
+resume_unpushed_preparation() {
+  local tag="$1"
+  local head_sha=""
+  local origin_sha=""
+  local parent_sha=""
+  local subject=""
+
+  head_sha="$(git rev-parse HEAD)"
+  origin_sha="$(git rev-parse origin/main)"
+  [[ "$head_sha" != "$origin_sha" ]] || return 0
+
+  parent_sha="$(git rev-parse HEAD^ 2>/dev/null || true)"
+  subject="$(git show -s --format=%s HEAD)"
+  if [[ "$parent_sha" == "$origin_sha" \
+    && "$subject" == "chore: prepare $tag" \
+    && "$(cargo_version)" == "${tag#v}" ]]; then
+    log "Retrying push of existing release preparation commit"
+    git push origin main
+    return 0
+  fi
+
+  die "HEAD must equal origin/main"
 }
 
 clean_staged_npm_binaries() {
@@ -336,7 +438,7 @@ if [[ -n "$notes_file" ]]; then
   [[ -f "$notes_file" ]] || die "release notes file not found: $notes_file"
 fi
 
-for command in cargo curl gh git makepkg node npm python3 sha256sum; do
+for command in cargo curl gh git jq makepkg node npm python3 rustc sha256sum; do
   require_command "$command"
 done
 
@@ -348,28 +450,10 @@ clean_staged_npm_binaries
 ./scripts/release_assert_clean_tree.sh
 gh auth status >/dev/null
 git fetch --quiet origin main --tags
-[[ "$(git rev-parse HEAD)" == "$(git rev-parse origin/main)" ]] \
-  || die "HEAD must equal origin/main"
-[[ "$(cargo_version)" == "$version" ]] \
-  || die "Cargo.toml version $(cargo_version) does not match $tag"
-./scripts/distribution_matrix.py --check-sync
-git ls-remote ssh://aur@aur.archlinux.org/petiglyph.git >/dev/null \
-  || die "cannot access the petiglyph AUR repository over SSH"
-
-pkgver="$(sed -n 's/^pkgver=//p' PKGBUILD | head -n1)"
-[[ "$pkgver" == "$version" ]] \
-  || die "PKGBUILD pkgver $pkgver does not match $version"
+resume_unpushed_preparation "$tag"
 
 head_sha="$(git rev-parse HEAD)"
 remote_tag_sha="$(remote_tag_commit "$tag")"
-if [[ -n "$remote_tag_sha" && "$remote_tag_sha" != "$head_sha" ]]; then
-  die "remote $tag resolves to $remote_tag_sha, not HEAD $head_sha"
-fi
-if git rev-parse --verify --quiet "refs/tags/$tag" >/dev/null; then
-  local_tag_sha="$(git rev-list -n1 "$tag")"
-  [[ "$local_tag_sha" == "$head_sha" ]] \
-    || die "local $tag resolves to $local_tag_sha, not HEAD $head_sha"
-fi
 
 if ((assume_yes == 0)); then
   [[ -t 0 ]] || die "confirmation requires a terminal; pass --yes for automation"
@@ -381,6 +465,7 @@ fi
 
 tag_created=0
 tag_pushed=0
+prep_in_progress=0
 dist_dir=""
 aur_backup_dir=""
 cleanup_unpushed_tag() {
@@ -394,6 +479,9 @@ cleanup_unpushed_tag() {
 
 cleanup() {
   set +e
+  if ((prep_in_progress == 1)); then
+    git restore --staged --worktree -- "${release_metadata_paths[@]}"
+  fi
   if [[ -n "$aur_backup_dir" && -d "$aur_backup_dir" ]]; then
     cp "$aur_backup_dir/PKGBUILD" "$repo_root/PKGBUILD"
     cp "$aur_backup_dir/.SRCINFO" "$repo_root/.SRCINFO"
@@ -405,6 +493,34 @@ cleanup() {
   cleanup_unpushed_tag
 }
 trap cleanup EXIT
+
+if [[ -z "$remote_tag_sha" ]]; then
+  prepare_release_commit "$version" "$tag"
+  head_sha="$(git rev-parse HEAD)"
+else
+  log "Tag $tag already exists; skipping release preparation"
+fi
+
+[[ "$(cargo_version)" == "$version" ]] \
+  || die "Cargo.toml version $(cargo_version) does not match $tag"
+./scripts/distribution_matrix.py --check-sync
+pkgver="$(sed -n 's/^pkgver=//p' PKGBUILD | head -n1)"
+[[ "$pkgver" == "$version" ]] \
+  || die "PKGBUILD pkgver $pkgver does not match $version"
+./scripts/release_assert_clean_tree.sh
+
+remote_tag_sha="$(remote_tag_commit "$tag")"
+if [[ -n "$remote_tag_sha" && "$remote_tag_sha" != "$head_sha" ]]; then
+  die "remote $tag resolves to $remote_tag_sha, not HEAD $head_sha"
+fi
+if git rev-parse --verify --quiet "refs/tags/$tag" >/dev/null; then
+  local_tag_sha="$(git rev-list -n1 "$tag")"
+  [[ "$local_tag_sha" == "$head_sha" ]] \
+    || die "local $tag resolves to $local_tag_sha, not HEAD $head_sha"
+fi
+
+git ls-remote ssh://aur@aur.archlinux.org/petiglyph.git >/dev/null \
+  || die "cannot access the petiglyph AUR repository over SSH"
 
 if [[ -z "$remote_tag_sha" ]]; then
   log "Creating signed tag $tag at $head_sha"
