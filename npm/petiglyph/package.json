@@ -1,6 +1,6 @@
 {
   "name": "petiglyph",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Meta package that installs the petiglyph native binary for your platform.",
   "license": "MIT",
   "homepage": "https://github.com/petipoua/petiglyph",
@@ -23,14 +23,14 @@
     "node": ">=18"
   },
   "optionalDependencies": {
-    "petiglyph-linux-x64-gnu": "0.1.0",
-    "petiglyph-linux-arm64-gnu": "0.1.0",
-    "petiglyph-linux-x64-musl": "0.1.0",
-    "petiglyph-linux-arm64-musl": "0.1.0",
-    "petiglyph-darwin-x64": "0.1.0",
-    "petiglyph-darwin-arm64": "0.1.0",
-    "petiglyph-win32-x64-msvc": "0.1.0",
-    "petiglyph-win32-arm64-msvc": "0.1.0"
+    "petiglyph-linux-x64-gnu": "0.1.1",
+    "petiglyph-linux-arm64-gnu": "0.1.1",
+    "petiglyph-linux-x64-musl": "0.1.1",
+    "petiglyph-linux-arm64-musl": "0.1.1",
+    "petiglyph-darwin-x64": "0.1.1",
+    "petiglyph-darwin-arm64": "0.1.1",
+    "petiglyph-win32-x64-msvc": "0.1.1",
+    "petiglyph-win32-arm64-msvc": "0.1.1"
   },
   "publishConfig": {
     "access": "public"

@@ -190,7 +190,7 @@ Output uses a stable envelope:
 {
   "ok": true,
   "command": "use-project.create.glyph",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "data": {},
   "error": null
 }

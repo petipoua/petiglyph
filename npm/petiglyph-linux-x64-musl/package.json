@@ -1,6 +1,6 @@
 {
   "name": "petiglyph-linux-x64-musl",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "petiglyph native binary package for linux/x64 (musl)",
   "license": "MIT",
   "homepage": "https://github.com/petipoua/petiglyph",

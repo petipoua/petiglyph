@@ -1,6 +1,6 @@
 [package]
 name = "petiglyph"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2024"
 rust-version = "1.88"
 description = "petiglyph is a TUI and CLI tool for turning images and videos into custom font glyphs"

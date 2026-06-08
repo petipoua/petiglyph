@@ -1,6 +1,6 @@
 {
   "name": "petiglyph-darwin-x64",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "petiglyph native binary package for darwin/x64",
   "license": "MIT",
   "homepage": "https://github.com/petipoua/petiglyph",

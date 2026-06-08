@@ -1,6 +1,6 @@
 {
   "name": "petiglyph-win32-x64-msvc",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "petiglyph native binary package for win32/x64",
   "license": "MIT",
   "homepage": "https://github.com/petipoua/petiglyph",
