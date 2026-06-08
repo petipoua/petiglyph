@@ -36,10 +36,9 @@ petiglyph
 
 This opens the TUI Home panel, where you can create a project and start importing media to create glyphs, grids, and animations.  
 
-Supported imports in the usage flows:
+Supported media:
 
-- images: `png`, `jpg`, `jpeg`, `webp`, `bmp`, `gif`, `svg`
-- import-only image conversion: `avif` is accepted on import and converted to project-local `.png`
+- images: `png`, `jpg`, `jpeg`, `webp`, `bmp`, `gif`, `svg`, `avif`
 - animation media: `gif`, `mp4`, `mov`, `mkv`, `webm`, `avi`, `m4v`
 
 Generated glyphs can be of 4 types:
