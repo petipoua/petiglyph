@@ -15,6 +15,9 @@ the leading `v`; Git tags use `vX.Y.Z`.
 - After the `petiglyph` packages exist on npm, configure trusted publishing for
   `.github/workflows/npm-publish.yml`, for example with
   `./scripts/release_npm_trust.sh`, then remove the token.
+- For bootstrap Python publishes, optional repository secrets
+  `TEST_PYPI_API_TOKEN` and `PYPI_API_TOKEN` can be added to the matching GitHub
+  environments. When absent, the workflow uses trusted publishing via OIDC.
 - Configure TestPyPI and PyPI trusted publishing for
   `.github/workflows/pypi-publish.yml`, using their matching environments.
 - Configure AUR SSH access and own the `petiglyph` package base.
@@ -22,7 +25,9 @@ the leading `v`; Git tags use `vX.Y.Z`.
 
 Release workflows prefer OIDC when trusted publishing is configured. Use a
 short-lived npm automation token only as the bootstrap path for the first
-publish, then remove it once trusted publishing is active.
+publish, then remove it once trusted publishing is active. The PyPI workflow
+also accepts short-lived API tokens as a bootstrap path when trusted publishing
+is not configured yet.
 
 ## Release Flow
 
@@ -135,6 +140,9 @@ Approve the `npm` environment when ready. Optional local archive validation:
 
 `.github/workflows/pypi-publish.yml` builds Linux GNU manylinux, macOS, and
 Windows wheels plus an sdist. Musllinux wheels are not currently published.
+If `TEST_PYPI_API_TOKEN` or `PYPI_API_TOKEN` are present in the corresponding
+GitHub environments, the workflow uses those tokens; otherwise it uses trusted
+publishing.
 
 Approve `testpypi`, then validate the uploaded package in a clean environment:
 

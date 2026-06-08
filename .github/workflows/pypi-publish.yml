@@ -16,6 +16,8 @@ permissions:
 env:
   CARGO_TERM_COLOR: always
   RELEASE_TAG: ${{ github.event.release.tag_name || github.event.inputs.tag }}
+  TEST_PYPI_API_TOKEN: ${{ secrets.TEST_PYPI_API_TOKEN }}
+  PYPI_API_TOKEN: ${{ secrets.PYPI_API_TOKEN }}
 
 jobs:
   build-wheels:
@@ -132,9 +134,18 @@ jobs:
           python -m twine check dist/*
 
       - name: Publish distributions to TestPyPI
+        if: env.TEST_PYPI_API_TOKEN == ''
         uses: pypa/gh-action-pypi-publish@cef221092ed1bacb1cc03d23a2d87d1d172e277b
         with:
           repository-url: https://test.pypi.org/legacy/
+
+      - name: Publish distributions to TestPyPI with token
+        if: env.TEST_PYPI_API_TOKEN != ''
+        uses: pypa/gh-action-pypi-publish@cef221092ed1bacb1cc03d23a2d87d1d172e277b
+        with:
+          repository-url: https://test.pypi.org/legacy/
+          user: __token__
+          password: ${{ secrets.TEST_PYPI_API_TOKEN }}
 
   publish-pypi:
     name: publish-pypi
@@ -165,4 +176,12 @@ jobs:
           python -m twine check dist/*
 
       - name: Publish distributions to PyPI
+        if: env.PYPI_API_TOKEN == ''
         uses: pypa/gh-action-pypi-publish@cef221092ed1bacb1cc03d23a2d87d1d172e277b
+
+      - name: Publish distributions to PyPI with token
+        if: env.PYPI_API_TOKEN != ''
+        uses: pypa/gh-action-pypi-publish@cef221092ed1bacb1cc03d23a2d87d1d172e277b
+        with:
+          user: __token__
+          password: ${{ secrets.PYPI_API_TOKEN }}
