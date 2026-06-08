@@ -152,6 +152,20 @@ Platform-specific behavior:
 Packaging, fixtures, and release hygiene:
 
 - For packaging drift, run `./scripts/release_assert_clean_tree.sh` and re-check version sync with `./scripts/release_sync_versions.sh`.
+- AUR metadata is generator-driven, not hand-maintained.
+  - Symptom: an AUR description or other metadata change appeared in `PKGBUILD` locally, then reverted or failed to appear on the AUR page after running the release helper.
+  - Cause: `PKGBUILD` and `.SRCINFO` are regenerated from `scripts/lib/pkg_meta.sh`; editing only the generated files is not durable.
+  - Fix used: update the canonical metadata in `scripts/lib/pkg_meta.sh`, then regenerate/publish with `./scripts/release_prepare_aur.sh` or `./scripts/release_publish_aur.sh` (`3512adc`).
+- AUR packaging-only updates must bump `pkgrel`, not `pkgver`.
+  - Symptom: an AUR-only fix such as description or packaging metadata changes was pushed without any visible version progression, or attempted to reuse the same `pkgver-pkgrel`.
+  - Fix used: keep `pkgver` at the upstream release version and increment `pkgrel` (`0453dfa`, `12baab9`).
+- AUR publication is a separate SSH-backed Git push, not a GitHub Actions publish step.
+  - Symptom: release artifacts, npm, and PyPI were all green, but AUR was unchanged.
+  - Cause: the AUR package is published from a separate `ssh://aur@aur.archlinux.org/petiglyph.git` repo and depends on local SSH configuration and key registration.
+  - Fix used: publish with `./scripts/release_publish_aur.sh`, ensure `~/.ssh/config` points `aur.archlinux.org` at the intended key, and verify auth with `ssh aur@aur.archlinux.org help` before debugging packaging content.
+- Generated release/download trees are working state, not source of truth.
+  - Symptom: untracked directories such as `dist-release/` or extracted `src/petiglyph-*` trees created confusion during release cleanup or accidental diff review.
+  - Fix used: treat them as disposable local state and remove them after the release/AUR flow; only commit intentional changes to canonical packaging files.
 - Test fixtures must not match throwaway-project ignore rules.
   - Symptom: clean CI clones failed tests that referenced `test-assets/` because `/test-*/` ignored the fixture directory locally.
   - Fix used: explicitly unignore `/test-assets/` and commit the redistributable fixtures used by unit and integration-style tests.
