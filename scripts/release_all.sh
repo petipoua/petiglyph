@@ -1,8 +1,23 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+if [[ -z "${PETIGLYPH_RELEASE_SCRIPT_SNAPSHOT:-}" ]]; then
+  snapshot_dir="$(mktemp -d)"
+  snapshot_path="$snapshot_dir/release_all.sh"
+  cp "${BASH_SOURCE[0]}" "$snapshot_path"
+  chmod +x "$snapshot_path"
+  release_repo_root="$(
+    cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd
+  )"
+  trap 'rm -rf "$snapshot_dir"' EXIT
+  PETIGLYPH_RELEASE_SCRIPT_SNAPSHOT="$snapshot_path" \
+    PETIGLYPH_RELEASE_REPO_ROOT="$release_repo_root" \
+    "$snapshot_path" "$@"
+  exit $?
+fi
+
 invocation_dir="$PWD"
-repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+repo_root="$PETIGLYPH_RELEASE_REPO_ROOT"
 cd "$repo_root"
 
 usage() {
