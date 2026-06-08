@@ -171,8 +171,17 @@ namcap PKGBUILD
 namcap petiglyph-*.pkg.tar.zst
 ```
 
-Copy `PKGBUILD` and `.SRCINFO` into the AUR package repository, commit them, and
-push. The generated package declares the required `ffmpeg` dependency.
+Then either copy `PKGBUILD` and `.SRCINFO` into the separate AUR package
+repository, commit them, and push, or use the local publish helper:
+
+```bash
+./scripts/release_publish_aur.sh X.Y.Z
+```
+
+The helper regenerates release-ready AUR metadata, clones the AUR repo into
+`../petiglyph-aur` when needed, copies `PKGBUILD` and `.SRCINFO`, commits when
+the packaging changed, and pushes over your local AUR SSH key. The generated
+package declares the required `ffmpeg` dependency.
 
 ## 5. Verify
 
