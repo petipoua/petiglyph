@@ -138,12 +138,14 @@ jobs:
         uses: pypa/gh-action-pypi-publish@cef221092ed1bacb1cc03d23a2d87d1d172e277b
         with:
           repository-url: https://test.pypi.org/legacy/
+          skip-existing: true
 
       - name: Publish distributions to TestPyPI with token
         if: env.TEST_PYPI_API_TOKEN != ''
         uses: pypa/gh-action-pypi-publish@cef221092ed1bacb1cc03d23a2d87d1d172e277b
         with:
           repository-url: https://test.pypi.org/legacy/
+          skip-existing: true
           user: __token__
           password: ${{ secrets.TEST_PYPI_API_TOKEN }}
 
