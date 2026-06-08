@@ -183,6 +183,13 @@ The helper regenerates release-ready AUR metadata, clones the AUR repo into
 the packaging changed, and pushes over your local AUR SSH key. The generated
 package declares the required `ffmpeg` dependency.
 
+For packaging-only AUR changes on the same upstream release, keep `pkgver`
+unchanged and increment `pkgrel`:
+
+```bash
+./scripts/release_publish_aur.sh X.Y.Z --pkgrel 2
+```
+
 ## 5. Verify
 
 Confirm all channels report `X.Y.Z` and launch the CLI:
