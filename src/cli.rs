@@ -1745,6 +1745,10 @@ fn workflow_failure(
     .into()
 }
 
+fn portable_path_display(path: &Path) -> String {
+    path.to_string_lossy().replace('\\', "/")
+}
+
 fn resolve_project(selector: &str) -> Result<PathBuf> {
     let cwd = std::env::current_dir().context("failed to read current directory")?;
     let matches = discover_project_manifests(&cwd)?
@@ -1773,12 +1777,9 @@ fn resolve_project(selector: &str) -> Result<PathBuf> {
                         .unwrap_or_else(|_| "<unreadable>".to_string());
                     format!(
                         "{} (font: {}, manifest: {})",
-                        relative
-                            .parent()
-                            .unwrap_or_else(|| Path::new("."))
-                            .display(),
+                        portable_path_display(relative.parent().unwrap_or_else(|| Path::new("."))),
                         font,
-                        relative.display()
+                        portable_path_display(relative)
                     )
                 })
                 .collect::<Vec<_>>()
@@ -1798,11 +1799,7 @@ fn project_summary(manifest_path: &Path) -> Result<ProjectSummary> {
             .and_then(|name| name.to_str())
             .unwrap_or(".")
             .to_string(),
-        relative_path: project_dir
-            .strip_prefix(&cwd)
-            .unwrap_or(project_dir)
-            .display()
-            .to_string(),
+        relative_path: portable_path_display(project_dir.strip_prefix(&cwd).unwrap_or(project_dir)),
         font_name: manifest.font_name,
         manifest_path: manifest_path.display().to_string(),
         project_id: manifest.project_id,
