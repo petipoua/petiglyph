@@ -1,6 +1,6 @@
 {
   "name": "petiglyph-linux-arm64-gnu",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "petiglyph native binary package for linux/arm64 (glibc)",
   "license": "MIT",
   "homepage": "https://github.com/petipoua/petiglyph",
