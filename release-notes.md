@@ -1,156 +1,38 @@
-# petiglyph v0.1.1
+# petiglyph v0.1.2
 
 ## Summary
 
-- Version: `0.1.1`
-- Date: `2026-06-08`
+- Version: `0.1.2`
+- Date: `2026-06-09`
 - Release type: patch
 
-This release reorganizes the automation CLI around explicit project selection,
-adds safer batch project and font management, expands project discovery, and
-hardens the GitHub, npm, PyPI, and AUR release pipelines.
+This release improves multi-registry release reliability and fixes README
+rendering on PyPI and npm. There are no CLI or TUI behavior changes.
 
-## Highlights
+## Package Descriptions
 
-- Added `new-project` and `use-project` as the primary automation workflow.
-- Consolidated glyph, grid, and animation imports under four creation types
-  matching the TUI workflows.
-- Added source configuration commands for thresholds, inversion, grids,
-  animation timing, and bleed.
-- Made installation explicit: creation imports content by default, `--build`
-  generates artifacts, and `--install` additionally installs the font.
-- Added structured project and installed-font listings with warnings for stale
-  or malformed state.
-- Added validated batch project deletion and exact-family font uninstall.
-- Expanded project discovery through two directory levels without following
-  directory symlinks.
-- Normalized project paths across operating systems.
+- Fixed the demo image and video links in the PyPI description by using
+  absolute GitHub asset URLs.
+- Expanded the npm meta-package description to include the full repository
+  README after its npm-specific installation and platform-package guidance.
+- Added deterministic npm README generation from the canonical repository
+  README.
+- Added release hygiene checks that reject a stale generated npm README.
 
-## CLI Contract
+## Release Reliability
 
-The automation CLI changed substantially from v0.1.0.
+- Made same-version release retries resume from the immutable tagged commit
+  when `main` has advanced.
+- Corrected GitHub artifact verification to validate each asset's provenance
+  attestation and tagged source digest.
+- Added visible per-package progress while waiting for npm, PyPI, and AUR
+  registry propagation.
+- Made the public AUR cgit metadata authoritative during verification while
+  treating delayed AUR RPC indexing as informational.
+- Prevented long-running releases from reading a script modified during
+  execution by running from an immutable temporary snapshot.
 
-Added top-level commands:
-
-- `petiglyph new-project NAME`
-- `petiglyph use-project PROJECT ...`
-- `petiglyph list projects`
-- `petiglyph list installed-fonts`
-- `petiglyph delete-project PROJECT...`
-
-Project-scoped operations now include:
-
-- `create glyph`
-- `create grid-glyph`
-- `create animated-glyph`
-- `create animated-grid-glyph`
-- `configure glyph`
-- `configure grid-glyph`
-- `configure animation`
-- `delete animation`
-- `build`
-- `install-font`
-- `show-sample`
-- `doctor`
-- `tui`
-
-Behavior changes:
-
-- Project selection uses an exact project directory basename.
-- Duplicate project basenames are rejected with candidate paths.
-- `--input` accepts multiple paths for creation commands.
-- Creation no longer installs automatically.
-- `--install` implies `--build`.
-- `show-sample` only reads the existing `build/glyph-sample.txt`; it does not
-  build or install.
-- Batch deletion and uninstall validate every target before modifying files.
-- `list installed-fonts` reports the exact family identifier accepted by
-  `uninstall-font`.
-
-## JSON API Schema Changes
-
-The top-level JSON envelope remains:
-
-- `ok`
-- `command`
-- `version`
-- `data`
-- `error` on failure
-
-Command identifiers now follow the project-oriented hierarchy, including:
-
-- `list.projects`
-- `list.installed-fonts`
-- `delete-project`
-- `use-project.create.glyph`
-- `use-project.create.grid-glyph`
-- `use-project.create.animated-glyph`
-- `use-project.create.animated-grid-glyph`
-- `use-project.configure.glyph`
-- `use-project.configure.grid-glyph`
-- `use-project.configure.animation`
-- `use-project.show-sample`
-
-Project listings now include directory name, relative path, font name, manifest
-path, project ID, and malformed-manifest warnings. Installed-font listings now
-include family, ownership, TTF path, manifest path, and stale metadata or
-artifact warnings.
-
-Failures continue to return a non-zero exit code and include an error message
-with nested causes.
-
-## Font Lifecycle
-
-- Installation is always explicit.
-- Exact managed font families can be uninstalled directly.
-- Multiple uninstall targets are validated before any font files or metadata
-  are removed.
-- Managed font cache and alias state are refreshed after uninstall.
-
-## Integrator Impact
-
-This release contains breaking automation CLI changes.
-
-Scripts written for v0.1.0 should migrate from manifest-scoped command families
-to project-scoped commands. Typical migrations include:
-
-```text
-petiglyph create my-font
-petiglyph new-project my-font
-
-petiglyph build --manifest my-font/petiglyph.toml
-petiglyph use-project my-font build
-
-petiglyph sample --manifest my-font/petiglyph.toml
-petiglyph use-project my-font show-sample
-
-petiglyph glyph create --input logo.png --manifest my-font/petiglyph.toml
-petiglyph use-project my-font create glyph --input logo.png
-```
-
-Consumers parsing JSON should update expected `command` identifiers and data
-objects to the new project-oriented contract.
-
-## Distribution And Release Reliability
-
-- Repaired GitHub release archive creation and smoke checks.
-- Preserved the expected directory structure in Windows release archives.
-- Installed FFmpeg for release smoke tests with hardened Windows fallback
-  handling.
-- Improved npm and PyPI bootstrap publication using scoped tokens or trusted
-  publishing.
-- Added npm trusted-publishing setup support.
-- Made TestPyPI publication tolerate files already uploaded during retries.
-- Added AUR publication helpers and packaging-only `pkgrel` update support.
-- Aligned AUR package metadata and dependencies.
-
-## Supported Media
-
-- Static imports: PNG, JPEG, WebP, BMP, GIF, SVG, and AVIF.
-- Animation imports: GIF, MP4, MOV, MKV, WebM, AVI, and M4V.
-- AVIF imports are converted to project-local PNG files.
-
-## Binaries
+## Distribution
 
 Prebuilt GitHub and npm binaries are provided for:
 
@@ -160,8 +42,6 @@ Prebuilt GitHub and npm binaries are provided for:
 - Windows on x86-64 and ARM64
 
 PyPI provides Linux GNU manylinux, macOS, and Windows wheels plus a source
-distribution. Musllinux wheels are not currently published.
-
-The AUR package requires `ffmpeg` and `fontconfig`.
+distribution. The AUR package requires `ffmpeg` and `fontconfig`.
 
 macOS and Windows artifacts are unsigned.

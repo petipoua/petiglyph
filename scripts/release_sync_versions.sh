@@ -18,6 +18,7 @@ Behavior:
   - Regenerate .SRCINFO from PKGBUILD.
   - Sync optionalDependencies pins in npm/petiglyph/package.json.
   - Sync README JSON envelope sample version.
+  - Sync the npm meta-package README from the repository README.
 USAGE
 }
 
@@ -66,5 +67,7 @@ done
 VERSION="$version" perl -0i -pe 's/("petiglyph-[^"]+"\s*:\s*")[^"]+(")/$1$ENV{VERSION}$2/g' npm/petiglyph/package.json
 
 VERSION="$version" perl -0i -pe 's/("version":\s*")[^"]+(",\s*\n\s*"data")/$1$ENV{VERSION}$2/' README.md
+
+./scripts/release_sync_readmes.sh
 
 echo "Synchronized release versions to $version"

@@ -17,6 +17,10 @@ if [[ -n "$status" ]]; then
   echo "$status" >&2
 fi
 
+if ! ./scripts/release_sync_readmes.sh --check; then
+  report_failure "package README is not synchronized"
+fi
+
 if ! command -v cargo >/dev/null 2>&1; then
   report_failure "cargo is required to inspect package contents"
 else

@@ -82,10 +82,12 @@ Start from the release commit on `main` with no unrelated working-tree changes.
 
 Review the resulting changes. The version sync updates `Cargo.toml`, `PKGBUILD`,
 `.SRCINFO` when `makepkg` is available, all npm package versions and pins, and
-the README JSON version sample. Before the immutable tag exists, synchronized
-AUR metadata uses `sha256sums=('SKIP')`; `release_prepare_aur.sh` replaces it
-with the tag archive checksum before AUR publication. Commit any generated
-`THIRD_PARTY_LICENSES.md` change with the release preparation.
+the README JSON version sample. It also rebuilds the npm meta-package README
+from its npm-specific intro and the repository README. Before the immutable tag
+exists, synchronized AUR metadata uses `sha256sums=('SKIP')`;
+`release_prepare_aur.sh` replaces it with the tag archive checksum before AUR
+publication. Commit any generated `THIRD_PARTY_LICENSES.md` change with the
+release preparation.
 
 Run the canonical local CI preflight:
 

@@ -75,6 +75,7 @@ release_metadata_paths=(
   PKGBUILD
   README.md
   THIRD_PARTY_LICENSES.md
+  npm/petiglyph/README.md
   npm/petiglyph-darwin-arm64/package.json
   npm/petiglyph-darwin-x64/package.json
   npm/petiglyph-linux-arm64-gnu/package.json
