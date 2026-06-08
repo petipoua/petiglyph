@@ -173,6 +173,10 @@ Packaging, fixtures, and release hygiene:
 Release artifact workflow:
 
 - If the tag workflow fails while `main` CI is green, inspect `.github/workflows/release.yml` first. The release pipeline is not the same gate as `ci.yml`; it builds publishable artifacts, runs archive smoke checks, and then publishes a draft GitHub release.
+- Registry publish workflows are separate from the main release build.
+  - Symptom: the GitHub Release existed and release artifacts were green, but npm or PyPI/TestPyPI publishing still failed afterward.
+  - Cause: `.github/workflows/npm-publish.yml` and `.github/workflows/pypi-publish.yml` run after a published GitHub Release and have their own auth, integrity, and environment-gate failure modes.
+  - Fix used: debug those workflows directly rather than re-reading `ci.yml` or rebuilding release archives.
 - Toolchain mismatches can hide behind the cross-build action.
   - Symptom: `actions-rust-cross` ran with a toolchain that did not match `rust-toolchain.toml`, so non-native targets were missing at build time.
   - Fix used: pinned the release build action to the repository toolchain (`1.88.0`) in `.github/workflows/release.yml` (`b5c2385`).
@@ -191,6 +195,28 @@ Release artifact workflow:
 - A non-TTY `tui` failure is expected and should be asserted as such, not treated as a step failure.
   - Symptom: PowerShell propagated the expected non-interactive `tui` exit code as a failed smoke step.
   - Fix used: explicitly accept the terminal-required failure after validating the error text and exit the script successfully (`e5fc1a3`).
+- npm release verification must validate the built archives, not rely on release-level attestations being present.
+  - Symptom: `gh release verify vX.Y.Z` failed with `no attestations for tag ...` even though the release archives themselves were valid.
+  - Cause: release-level attestation availability did not match the workflow assumption for an already-published release.
+  - Fix used: download the published archives, verify each archive with `gh attestation verify`, then verify `SHA256SUMS` before publish (`1d33b13`).
+- npm bootstrap publishing and long-term trusted publishing are distinct phases.
+  - Symptom: the first npm publish failed even after package naming and workflow logic were corrected.
+  - Cause: brand-new npm packages cannot use trusted publishing until the packages already exist and the trust relationship is configured per package.
+  - Fix used: support a temporary `NPM_PUBLISH_TOKEN` bootstrap path in `.github/workflows/npm-publish.yml`, publish once, then configure trusted publishing for all package names and remove the token (`39e1394`, `191e30a`, `ac71674`).
+- Manual reruns of the npm publish workflow must use the workflow file path and a stable checkout ref.
+  - Symptom: `gh workflow run publish-npm ...` failed to find the workflow, or a manual rerun used the wrong checkout context for package metadata changes.
+  - Fix used: dispatch `.github/workflows/npm-publish.yml` directly and make workflow-dispatch runs check out `main` while still validating the requested tag against `Cargo.toml` (`50a2310`).
+- PyPI/TestPyPI trusted publishing is environment-specific.
+  - Symptom: TestPyPI succeeded without a token, but the real PyPI publish still failed or remained pending.
+  - Cause: TestPyPI and PyPI each need their own trusted publisher or token path; success on one registry does not imply success on the other.
+  - Fix used: keep separate `testpypi` and `pypi` environments, and support separate bootstrap tokens only when trusted publishing is not configured (`ff24874`, `2d14f33`).
+- `twine check` can fail on clean runners because the bundled metadata tooling is too old for current package metadata.
+  - Symptom: validation rejected `license-file` or similar metadata even though the package itself was otherwise correct.
+  - Fix used: upgrade `packaging` alongside `pip` and `twine` before running `twine check` in the publish workflow (`14964d5`).
+- TestPyPI reruns for the same version must tolerate duplicate files.
+  - Symptom: a rerun failed with `400 File already exists` from `https://test.pypi.org/legacy/`.
+  - Cause: TestPyPI already had the exact wheel/sdist filenames from an earlier successful publish.
+  - Fix used: publish to TestPyPI with `skip-existing: true` so the workflow can continue to the real PyPI gate on reruns (`71fd607`).
 
 Dependency and supply-chain checks:
 
