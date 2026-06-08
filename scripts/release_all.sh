@@ -314,6 +314,7 @@ npm_any_package_exists() {
 
 verify_registry_versions() {
   local expected="$1"
+  local attempt=""
   local npm_name=""
   local npm_version=""
 
@@ -322,11 +323,17 @@ verify_registry_versions() {
     [[ -n "$package_dir" ]] || continue
     npm_name="$(node -p "require('./$package_dir/package.json').name")"
     npm_version=""
-    for _ in {1..30}; do
+    for attempt in {1..30}; do
       npm_version="$(npm view "$npm_name@$expected" version 2>/dev/null || true)"
       if [[ "$npm_version" == "$expected" ]]; then
+        printf 'registry: npm %s@%s verified\n' "$npm_name" "$expected" >&2
         break
       fi
+      printf \
+        'registry: npm %s@%s pending (attempt %s/30); retrying in 10s\n' \
+        "$npm_name" "$expected" "$attempt" \
+        >&2
+      [[ "$attempt" -lt 30 ]] || break
       sleep 10
     done
     [[ "$npm_version" == "$expected" ]] \
@@ -341,6 +348,7 @@ verify_registry_versions() {
   VERSION="$expected" python3 <<'PY'
 import json
 import os
+import sys
 import time
 import urllib.request
 
@@ -350,30 +358,115 @@ checks = (
         "PyPI",
         f"https://pypi.org/pypi/petiglyph/{version}/json",
         lambda payload: payload["info"]["version"] == version,
-    ),
-    (
-        "AUR",
-        "https://aur.archlinux.org/rpc/v5/info?arg[]=petiglyph",
-        lambda payload: any(
-            result.get("Version", "").rsplit("-", 1)[0] == version
-            for result in payload.get("results", [])
-        ),
+        lambda payload: payload.get("info", {}).get("version", "missing"),
     ),
 )
 
-for name, url, matches in checks:
+for name, url, matches, observed_version in checks:
     last_error = None
-    for _ in range(30):
+    for attempt in range(1, 31):
         try:
             with urllib.request.urlopen(url, timeout=20) as response:
-                if matches(json.load(response)):
+                payload = json.load(response)
+                if matches(payload):
+                    print(
+                        f"registry: {name} {version} verified",
+                        file=sys.stderr,
+                        flush=True,
+                    )
                     break
+                observed = observed_version(payload)
+                print(
+                    f"registry: {name} {version} pending; currently reports "
+                    f"{observed} (attempt {attempt}/30)",
+                    file=sys.stderr,
+                    flush=True,
+                )
         except Exception as error:
             last_error = error
+            print(
+                f"registry: {name} check failed (attempt {attempt}/30): {error}",
+                file=sys.stderr,
+                flush=True,
+            )
+        if attempt == 30:
+            continue
+        print("registry: retrying in 10s", file=sys.stderr, flush=True)
         time.sleep(10)
     else:
         detail = f": {last_error}" if last_error else ""
         raise SystemExit(f"release: {name} does not report {version}{detail}")
+
+aur_srcinfo_url = (
+    "https://aur.archlinux.org/cgit/aur.git/plain/.SRCINFO?h=petiglyph"
+)
+last_error = None
+for attempt in range(1, 31):
+    try:
+        with urllib.request.urlopen(aur_srcinfo_url, timeout=20) as response:
+            srcinfo = response.read().decode()
+        observed = next(
+            (
+                line.split("=", 1)[1].strip()
+                for line in srcinfo.splitlines()
+                if line.strip().startswith("pkgver =")
+            ),
+            "missing",
+        )
+        if observed == version:
+            print(
+                f"registry: AUR {version} verified via public cgit",
+                file=sys.stderr,
+                flush=True,
+            )
+            break
+        print(
+            f"registry: AUR {version} pending; cgit currently reports "
+            f"{observed} (attempt {attempt}/30)",
+            file=sys.stderr,
+            flush=True,
+        )
+    except Exception as error:
+        last_error = error
+        print(
+            f"registry: AUR cgit check failed (attempt {attempt}/30): {error}",
+            file=sys.stderr,
+            flush=True,
+        )
+    if attempt < 30:
+        print("registry: retrying in 10s", file=sys.stderr, flush=True)
+        time.sleep(10)
+else:
+    detail = f": {last_error}" if last_error else ""
+    raise SystemExit(f"release: AUR cgit does not report {version}{detail}")
+
+try:
+    with urllib.request.urlopen(
+        "https://aur.archlinux.org/rpc/v5/info?arg[]=petiglyph",
+        timeout=20,
+    ) as response:
+        payload = json.load(response)
+    rpc_version = next(
+        (
+            result.get("Version", "missing")
+            for result in payload.get("results", [])
+            if result.get("Name") == "petiglyph"
+        ),
+        "missing",
+    )
+    if rpc_version.rsplit("-", 1)[0] != version:
+        print(
+            f"registry: AUR RPC index still reports {rpc_version}; "
+            "public cgit is current",
+            file=sys.stderr,
+            flush=True,
+        )
+except Exception as error:
+    print(
+        f"registry: AUR RPC status unavailable after cgit verification: {error}",
+        file=sys.stderr,
+        flush=True,
+    )
 PY
 }
 
