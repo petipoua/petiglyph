@@ -22,6 +22,8 @@ jobs:
     name: npm-publish
     runs-on: ubuntu-latest
     environment: npm
+    env:
+      NPM_PUBLISH_TOKEN: ${{ secrets.NPM_PUBLISH_TOKEN }}
     permissions:
       contents: read
       id-token: write
@@ -90,9 +92,9 @@ jobs:
           done
 
       - name: Publish platform packages
-        if: ${{ secrets.NPM_PUBLISH_TOKEN != '' }}
+        if: ${{ env.NPM_PUBLISH_TOKEN != '' }}
         env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_PUBLISH_TOKEN }}
+          NODE_AUTH_TOKEN: ${{ env.NPM_PUBLISH_TOKEN }}
         run: |
           set -euo pipefail
           while IFS= read -r pkg; do
@@ -101,15 +103,15 @@ jobs:
           done < <(./scripts/distribution_matrix.py --npm-package-dirs)
 
       - name: Publish meta package
-        if: ${{ secrets.NPM_PUBLISH_TOKEN != '' }}
+        if: ${{ env.NPM_PUBLISH_TOKEN != '' }}
         env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_PUBLISH_TOKEN }}
+          NODE_AUTH_TOKEN: ${{ env.NPM_PUBLISH_TOKEN }}
         run: |
           set -euo pipefail
           (cd npm/petiglyph && npm publish --access public)
 
       - name: Publish platform packages with trusted publishing
-        if: ${{ secrets.NPM_PUBLISH_TOKEN == '' }}
+        if: ${{ env.NPM_PUBLISH_TOKEN == '' }}
         run: |
           set -euo pipefail
           while IFS= read -r pkg; do
@@ -118,7 +120,7 @@ jobs:
           done < <(./scripts/distribution_matrix.py --npm-package-dirs)
 
       - name: Publish meta package with trusted publishing
-        if: ${{ secrets.NPM_PUBLISH_TOKEN == '' }}
+        if: ${{ env.NPM_PUBLISH_TOKEN == '' }}
         run: |
           set -euo pipefail
           (cd npm/petiglyph && npm publish --access public)
