@@ -40,25 +40,7 @@ jobs:
 
       - name: Install FFmpeg
         shell: bash
-        run: |
-          set -euo pipefail
-          case "$RUNNER_OS" in
-            Linux)
-              sudo apt-get update
-              sudo apt-get install -y ffmpeg
-              ;;
-            macOS)
-              brew install ffmpeg
-              ;;
-            Windows)
-              choco install ffmpeg --yes --no-progress
-              ;;
-            *)
-              echo "unsupported runner OS: $RUNNER_OS" >&2
-              exit 1
-              ;;
-          esac
-          ffmpeg -version
+        run: ./scripts/ci_install_ffmpeg.sh
 
       - name: Cache rust-quality cargo + target
         uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae
@@ -166,25 +148,7 @@ jobs:
 
       - name: Install FFmpeg
         shell: bash
-        run: |
-          set -euo pipefail
-          case "$RUNNER_OS" in
-            Linux)
-              sudo apt-get update
-              sudo apt-get install -y ffmpeg
-              ;;
-            macOS)
-              brew install ffmpeg
-              ;;
-            Windows)
-              choco install ffmpeg --yes --no-progress
-              ;;
-            *)
-              echo "unsupported runner OS: $RUNNER_OS" >&2
-              exit 1
-              ;;
-          esac
-          ffmpeg -version
+        run: ./scripts/ci_install_ffmpeg.sh
 
       - name: Runtime smoke (Linux/macOS)
         if: runner.os != 'Windows'
