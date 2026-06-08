@@ -132,6 +132,10 @@ TUI and headless runner behavior:
 
 Platform-specific behavior:
 
+- Windows FFmpeg install can fail transiently on Chocolatey feed timeouts.
+  - Symptom: `Failed to fetch results from V2 feed ... 504 (Gateway Timeout)` followed by `ffmpeg: command not found`.
+  - Current handling: CI and release smoke jobs now use `scripts/ci_install_ffmpeg.sh`, which retries `choco install ffmpeg` and falls back to `winget install Gyan.FFmpeg` if Chocolatey stays unavailable.
+  - If this regresses again, inspect the `Install FFmpeg` step first before digging into downstream Rust/test failures; those are usually secondary fallout from the missing binary.
 - Cross-platform lint/test imports must be gated precisely, not broadly.
   - Symptom: `#[cfg(unix)]` import logic caused issues in non-Linux CI contexts.
   - Fix used: narrowed permission import gates to `#[cfg(target_os = "linux")]` (`085a732`).
