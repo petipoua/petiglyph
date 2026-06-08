@@ -13,7 +13,8 @@ the leading `v`; Git tags use `vX.Y.Z`.
 - For the first npm publish, add a temporary npm automation token as the
   `NPM_PUBLISH_TOKEN` secret in the GitHub `npm` environment.
 - After the `petiglyph` packages exist on npm, configure trusted publishing for
-  `.github/workflows/npm-publish.yml` on npmjs.com, then remove the token.
+  `.github/workflows/npm-publish.yml`, for example with
+  `./scripts/release_npm_trust.sh`, then remove the token.
 - Configure TestPyPI and PyPI trusted publishing for
   `.github/workflows/pypi-publish.yml`, using their matching environments.
 - Configure AUR SSH access and own the `petiglyph` package base.
