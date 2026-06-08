@@ -85,11 +85,13 @@ if [[ ! -d "$aur_repo_dir/.git" ]]; then
   git clone "$aur_repo_url" "$aur_repo_dir"
 fi
 
-cp "$repo_root/PKGBUILD" "$aur_repo_dir/PKGBUILD"
-cp "$repo_root/.SRCINFO" "$aur_repo_dir/.SRCINFO"
-
 cd "$aur_repo_dir"
+if git rev-parse --verify HEAD >/dev/null 2>&1; then
+  git pull --ff-only
+fi
 
+cp "$repo_root/PKGBUILD" PKGBUILD
+cp "$repo_root/.SRCINFO" .SRCINFO
 git add PKGBUILD .SRCINFO
 
 if git diff --cached --quiet; then

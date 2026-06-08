@@ -39,6 +39,36 @@ The process has two deliberate triggers:
 
 The AUR remains a separate manual publication.
 
+After the release preparation is committed and all required GitHub environment
+approvals are ready, the guarded end-to-end publisher can run the remaining
+steps:
+
+```bash
+./scripts/release_all.sh vX.Y.Z
+```
+
+It tags the current `origin/main` commit, waits for and verifies the draft
+GitHub Release, publishes it, waits for npm and PyPI, publishes the AUR package,
+and verifies all public versions. Interactive runs pause for the draft notes to
+be completed. For intentional non-interactive use, pass both
+`--notes-file PATH` and `--yes`; the script rejects unreplaced template
+placeholders. The GitHub release event starts npm and PyPI concurrently; the
+script waits for both before publishing to the AUR.
+
+The publisher is resumable. Rerunning the same command verifies that the
+existing tag still resolves to the current release commit, skips completed
+channels, and resumes failed or interrupted GitHub Actions workflows. npm
+publication is idempotent per platform package, PyPI uses `skip-existing`, and
+an already-matching AUR upstream version is left unchanged.
+
+Published npm and PyPI files are immutable. A release-note typo can be corrected
+by rerunning with `--notes-file`, but any source or binary correction requires a
+new version and tag. Never move an existing published tag.
+
+The tag is the cross-channel code identity. npm stages the exact verified
+GitHub Release binaries; PyPI wheels and the AUR package are rebuilt from that
+same immutable tag because their distribution formats require separate builds.
+
 ## 1. Prepare
 
 Start from the release commit on `main` with no unrelated working-tree changes.

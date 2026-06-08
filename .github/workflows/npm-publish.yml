@@ -99,7 +99,13 @@ jobs:
           set -euo pipefail
           while IFS= read -r pkg; do
             [[ -n "$pkg" ]] || continue
-            (cd "$pkg" && npm publish --access public)
+            name="$(node -p "require('./$pkg/package.json').name")"
+            version="$(node -p "require('./$pkg/package.json').version")"
+            if npm view "$name@$version" version >/dev/null 2>&1; then
+              echo "Already published: $name@$version"
+            else
+              (cd "$pkg" && npm publish --access public)
+            fi
           done < <(./scripts/distribution_matrix.py --npm-package-dirs)
 
       - name: Publish meta package
@@ -108,7 +114,12 @@ jobs:
           NODE_AUTH_TOKEN: ${{ env.NPM_PUBLISH_TOKEN }}
         run: |
           set -euo pipefail
-          (cd npm/petiglyph && npm publish --access public)
+          version="$(node -p "require('./npm/petiglyph/package.json').version")"
+          if npm view "petiglyph@$version" version >/dev/null 2>&1; then
+            echo "Already published: petiglyph@$version"
+          else
+            (cd npm/petiglyph && npm publish --access public)
+          fi
 
       - name: Publish platform packages with trusted publishing
         if: ${{ env.NPM_PUBLISH_TOKEN == '' }}
@@ -116,11 +127,22 @@ jobs:
           set -euo pipefail
           while IFS= read -r pkg; do
             [[ -n "$pkg" ]] || continue
-            (cd "$pkg" && npm publish --access public)
+            name="$(node -p "require('./$pkg/package.json').name")"
+            version="$(node -p "require('./$pkg/package.json').version")"
+            if npm view "$name@$version" version >/dev/null 2>&1; then
+              echo "Already published: $name@$version"
+            else
+              (cd "$pkg" && npm publish --access public)
+            fi
           done < <(./scripts/distribution_matrix.py --npm-package-dirs)
 
       - name: Publish meta package with trusted publishing
         if: ${{ env.NPM_PUBLISH_TOKEN == '' }}
         run: |
           set -euo pipefail
-          (cd npm/petiglyph && npm publish --access public)
+          version="$(node -p "require('./npm/petiglyph/package.json').version")"
+          if npm view "petiglyph@$version" version >/dev/null 2>&1; then
+            echo "Already published: petiglyph@$version"
+          else
+            (cd npm/petiglyph && npm publish --access public)
+          fi
