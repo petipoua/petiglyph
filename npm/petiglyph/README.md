@@ -172,6 +172,77 @@ petiglyph use-project my-font delete animation spinner
 
 Grid dimensions and bleed are rejected for non-grid animations. Clap rejects mutually exclusive threshold operations.
 
+### Tuning Parameters And What They Do
+
+All image-facing tuning in petiglyph follows the same broad pipeline:
+
+1. Optional grayscale preprocessing during import.
+2. Aspect-fit scaling into the glyph or grid canvas.
+3. Thresholding into on/off pixels.
+4. Optional invert after thresholding.
+5. Optional grid bleed when adjacent grid tiles become final font outlines.
+
+The same ideas show up in both the TUI and the CLI. The Home popup gives you live previews; CLI `create` and `configure` commands write the saved settings into `petiglyph.toml`.
+
+#### Threshold And Invert
+
+- `threshold`: `0..=255`, default `64`.
+  Higher values keep only darker or more opaque pixels, so glyphs usually become thinner, cleaner, and more selective. Lower values include lighter grays and softer antialiasing, so glyphs usually become fuller or heavier.
+- `invert`: `on` or `off`, default `off`.
+  This flips the thresholded result after thresholding. Use it when your source has the opposite polarity from what you want, for example light foreground on dark background instead of dark foreground on light background.
+- Manifest behavior:
+  The top-level `threshold` value is the project-wide default. Per-source changes are stored in `threshold_overrides` and `invert_overrides`, keyed by paths relative to `images/`. `--clear-threshold` removes a per-source threshold override and falls back to the project default.
+
+#### Grayscale Preprocessing
+
+- `grayscale_enabled`:
+  Controls whether petiglyph first converts imported raster media to grayscale and applies tone adjustments before later thresholding. Default is `off` for static image creation and `on` for animated GIF/video creation.
+- `grayscale_brightness`: `-80..=80`, default `0`.
+  Adds or subtracts brightness from the grayscale image. Positive values brighten the whole source and can wash out faint dark detail. Negative values darken the source and can make weak strokes survive thresholding.
+- `grayscale_contrast`: `-80..=80`, default `0`.
+  Pushes tones away from or toward mid-gray. Positive values increase separation between dark and light areas, which can make edges crisper at a given threshold. Negative values flatten the image and keep transitions softer.
+- `grayscale_gamma_percent`: `50..=200`, default `100` which is gamma `1.00`.
+  Remaps midtones before contrast and brightness. Values above `100` brighten midtones; values below `100` darken them. This is often the most useful control when the source is neither clearly too dark nor clearly too bright.
+- Processing order:
+  Petiglyph converts to grayscale, applies gamma, then contrast, then brightness, then threshold.
+- Import behavior:
+  In the Home creation workflow these controls update the preview live before you continue. For imported raster files they also affect the imported pixels that petiglyph keeps in the project for future builds. SVG sources are not rewritten, and AVIF imports are first converted to PNG.
+
+#### Grid Slicing And Seam Controls
+
+- `rows` and `cols`: both must be `> 0`.
+  These define how a grid source is split. More rows or columns means more glyph cells and less detail per cell. Petiglyph fits the whole source to the full grid first, then slices it into cells, so changing the grid changes the composition of every tile.
+- `horizontal_bleed`: `off`, `weak`, or `strong`, default `weak`.
+  Allows neighboring grid glyphs to overlap slightly across left/right internal boundaries in the generated outlines. Use it to reduce visible seams when adjacent grid tiles are displayed together. This is fairly compatible across terminal emulators, so `weak`` is good usually.
+- `vertical_bleed`: `off`, `weak`, or `strong`, default `off`.
+  Same idea for top/bottom internal boundaries. This is NOT very compatible across terminal emulators, and it can make round shapes appear wobbly because shapes are just propagated in a straight line. That's why the default is `off`. Stripes over a consistent shape is better than weird wobbly shapes that are not consistent across terminals you render them on.
+- Bleed strength:
+  `off` keeps cell edges hard-clipped, `weak` adds mild overlap, and `strong` doubles that overlap. Bleed affects the final outline geometry, not the thresholding math itself.
+- Scope:
+  Bleed settings only apply to grid glyphs and animated grid glyphs. Standard single-glyph animations do not use rows, cols, or bleed.
+
+#### Animation Controls
+
+- `fps`: `1..=30`.
+  Controls animation playback speed only. It changes how quickly frames advance in the installed font sample and other animation outputs; it does not modify the frame images themselves.
+- `name`:
+  The manifest identifier for an animation. It affects how you refer to the animation later with `configure animation ...` or `delete animation ...`, but it does not change the pixels.
+- Home popup `Frames` control:
+  Chooses which imported frame you are previewing while tuning. It is preview-only and does not change the saved animation.
+- Home popup `Export Test` count: `1..=120`.
+  Chooses how many frames the popup exports for a temporary test image/export flow. It does not change the saved animation or its FPS.
+
+#### Project-Level Rendering Knobs
+
+- `glyph_size`, default `64`.
+  Controls the raster working size used when fitting source imagery into glyph cells. Higher values preserve more detail and subtle edges before thresholding, but they can also preserve more noise. Lower values simplify shapes sooner.
+- `font_name`:
+  Controls the generated font family name. It affects installation and display naming, not image processing.
+- `codepoint_start`, default `U+100000`.
+  Sets the first Unicode codepoint assigned to generated glyphs. It affects mapping and interoperability, not rasterization.
+- `input_dir` and `out_dir`, defaults `images` and `build`.
+  Control where petiglyph reads project-local sources from and where it writes artifacts.
+
 ### Build And Install
 
 ```bash
