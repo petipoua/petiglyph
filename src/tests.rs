@@ -439,6 +439,32 @@ fn discover_project_manifests_scans_through_depth_two() {
     fs::remove_dir_all(root_dir).expect("temp root dir is removed");
 }
 
+#[cfg(unix)]
+#[test]
+fn discover_project_manifests_skips_inaccessible_descendants() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let root_dir = make_temp_dir("discover-inaccessible");
+    let manifest_path = root_dir.join("petiglyph.toml");
+    write_manifest(&manifest_path, &Manifest::default()).expect("manifest is written");
+
+    let inaccessible_dir = root_dir.join("inaccessible");
+    fs::create_dir(&inaccessible_dir).expect("inaccessible dir is created");
+    fs::set_permissions(&inaccessible_dir, fs::Permissions::from_mode(0o000))
+        .expect("permissions are removed");
+
+    let result = discover_project_manifests(&root_dir);
+
+    fs::set_permissions(&inaccessible_dir, fs::Permissions::from_mode(0o700))
+        .expect("permissions are restored");
+    fs::remove_dir_all(&root_dir).expect("temp root dir is removed");
+
+    assert_eq!(
+        result.expect("inaccessible descendants are skipped"),
+        vec![manifest_path]
+    );
+}
+
 #[test]
 fn resolve_default_tui_target_prefers_single_project_direct_open() {
     let root_dir = make_temp_dir("default-target-single");

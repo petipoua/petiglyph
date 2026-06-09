@@ -114,7 +114,7 @@ petiglyph use-project my-font doctor --repair
 petiglyph use-project my-font tui
 ```
 
-Project discovery searches the current directory and descendants through depth 2 without following directory symlinks. Duplicate basenames are rejected with candidate paths.
+Project discovery searches the current directory and descendants through depth 2 without following directory symlinks. Inaccessible descendant directories are skipped. Duplicate basenames are rejected with candidate paths.
 
 ### Create Glyphs
 

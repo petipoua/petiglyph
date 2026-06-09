@@ -204,24 +204,44 @@ fn discover_project_manifests_at_depth(
         return Ok(());
     }
 
-    for entry in fs::read_dir(directory).with_context(|| {
-        format!(
-            "failed while searching for petiglyph.toml in {}",
-            directory.display()
-        )
-    })? {
-        let entry = entry.with_context(|| {
-            format!(
-                "failed while searching for petiglyph.toml in {}",
-                directory.display()
-            )
-        })?;
-        let file_type = entry.file_type().with_context(|| {
-            format!(
-                "failed while searching for petiglyph.toml in {}",
-                directory.display()
-            )
-        })?;
+    let entries = match fs::read_dir(directory) {
+        Ok(entries) => entries,
+        Err(err) if depth > 0 && err.kind() == io::ErrorKind::PermissionDenied => return Ok(()),
+        Err(err) => {
+            return Err(err).with_context(|| {
+                format!(
+                    "failed while searching for petiglyph.toml in {}",
+                    directory.display()
+                )
+            });
+        }
+    };
+
+    for entry in entries {
+        let entry = match entry {
+            Ok(entry) => entry,
+            Err(err) if err.kind() == io::ErrorKind::PermissionDenied => continue,
+            Err(err) => {
+                return Err(err).with_context(|| {
+                    format!(
+                        "failed while searching for petiglyph.toml in {}",
+                        directory.display()
+                    )
+                });
+            }
+        };
+        let file_type = match entry.file_type() {
+            Ok(file_type) => file_type,
+            Err(err) if err.kind() == io::ErrorKind::PermissionDenied => continue,
+            Err(err) => {
+                return Err(err).with_context(|| {
+                    format!(
+                        "failed while searching for petiglyph.toml in {}",
+                        directory.display()
+                    )
+                });
+            }
+        };
         if file_type.is_dir() && !file_type.is_symlink() {
             discover_project_manifests_at_depth(&entry.path(), depth + 1, manifests)?;
         }
