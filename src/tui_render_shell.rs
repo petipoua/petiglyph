@@ -777,7 +777,7 @@ fn draw_animation_import_workflow_ui(
                     " *"
                 };
                 padded_button_label(format!(
-                    "Th: {}{dirty}",
+                    "Threshold: {}{dirty}",
                     app.animation_import_settings.threshold
                 ))
             }

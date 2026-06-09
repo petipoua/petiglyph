@@ -825,6 +825,7 @@
             );
         });
         let (x, y) = find_text_in_buffer(&buffer, " Gray: ON ").expect("gray toggle should render");
+        find_text_in_buffer(&buffer, " Threshold: 64 ").expect("threshold button should render");
         let row = buffer_row(&buffer, y);
         let start = x as usize;
         let end = start + " Gray: ON ".len();
