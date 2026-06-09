@@ -1,4 +1,4 @@
-# petiglyph Release Notes Template
+# petiglyph v<version>
 
 ## Summary
 
@@ -6,71 +6,30 @@
 - Date: `<YYYY-MM-DD>`
 - Release type: `<patch|minor|major>`
 
-## Highlights
+`<one short paragraph explaining what this release is mainly about>`
 
-- `<high-level item 1>`
-- `<high-level item 2>`
+## Changes
 
-## CLI Contract
+- `<change 1>`
+- `<change 2>`
+- `<change 3>`
 
-- Added commands: `<none|list>`
-- Removed commands: `<none|list>`
-- Changed command behavior: `<none|list>`
+## Compatibility
 
-## JSON API Schema Changes
+- CLI/API breaking changes: `<none|details>`
+- Migration required: `<none|details>`
 
-Canonical command coverage for `--json` (including nested command families like `glyph`, `grid`, `composition`, and `animation`) is defined in:
+## Distribution
 
-- `README.md` -> `Automation API Contract`
+Prebuilt GitHub and npm binaries are provided for:
 
-Release notes should not duplicate that command list. Instead, document only what changed in this release relative to the canonical contract.
+- Linux GNU on x86-64 and ARM64
+- Linux musl on x86-64 and ARM64
+- macOS on Intel and Apple Silicon
+- Windows on x86-64 and ARM64
 
-Top-level envelope fields (must remain):
+PyPI provides Linux GNU manylinux, macOS, and Windows wheels plus a source
+distribution. The AUR package requires `ffmpeg` and `fontconfig`.
 
-- `ok`
-- `command`
-- `version`
-- `data`
-- `error` (failure only)
-
-Schema changes this release:
-
-- Added fields in `data`: `<none|list>`
-- Removed fields in `data`: `<none|list>`
-- Semantic changes in existing fields: `<none|list>`
-
-## Font Lifecycle
-
-- Install behavior changes: `<none|details>`
-- Uninstall behavior changes: `<none|details>`
-- Platform-specific behavior changes: `<none|details>`
-
-## Integrator Impact
-
-- Breaking changes: `<none|list>`
-- Migration steps required: `<none|steps>`
-
-## Binaries
-
-Attach prebuilt binaries for:
-
-- Linux GNU (`x86_64-unknown-linux-gnu`, `aarch64-unknown-linux-gnu`)
-- Linux musl (`x86_64-unknown-linux-musl`, `aarch64-unknown-linux-musl`)
-- macOS (`x86_64-apple-darwin`, `aarch64-apple-darwin`)
-- Windows (`x86_64-pc-windows-msvc`, `aarch64-pc-windows-msvc`)
-
-Distribution callouts:
-
-- AUR package requires `ffmpeg` and `fontconfig`.
-- npm publishes `petiglyph` plus all `petiglyph-*` platform packages.
-- PyPI publishes Linux GNU manylinux, macOS, and Windows wheels plus sdist.
-- macOS and Windows artifacts are unsigned unless this release explicitly states otherwise.
-
-## Verification Checklist
-
-- [ ] `cargo fmt --all -- --check`
-- [ ] `cargo check`
-- [ ] `cargo clippy --all-targets --all-features -- -D warnings`
-- [ ] `cargo test`
-- [ ] README command section matches implementation
-- [ ] JSON samples still parse and match envelope contract
+macOS and Windows artifacts are unsigned unless the release explicitly states
+otherwise.

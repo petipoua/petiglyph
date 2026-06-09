@@ -1,36 +1,37 @@
-# petiglyph v0.1.2
+# petiglyph v0.1.3
 
 ## Summary
 
-- Version: `0.1.2`
+- Version: `0.1.3`
 - Date: `2026-06-09`
 - Release type: patch
 
-This release improves multi-registry release reliability and fixes README
-rendering on PyPI and npm. There are no CLI or TUI behavior changes.
+This release is primarily a documentation and wording update on top of
+`v0.1.2`. It adds a detailed tuning reference to the README, syncs agent-facing
+repo instructions with the current CLI/TUI contract, and replaces the `Th`
+abbreviation with `Threshold` in the Home creation workflow popup. There are no
+behavioral CLI, JSON API, build-output, install, or font-runtime changes.
 
-## Package Descriptions
+## Changes
 
-- Fixed the demo image and video links in the PyPI description by using
-  absolute GitHub asset URLs.
-- Expanded the npm meta-package description to include the full repository
-  README after its npm-specific installation and platform-package guidance.
-- Added deterministic npm README generation from the canonical repository
-  README.
-- Added release hygiene checks that reject a stale generated npm README.
+- Added a new README tuning reference that explains threshold, invert,
+  grayscale preprocessing, rows, columns, bleed, FPS, and project-level
+  rendering knobs such as `glyph_size`, `codepoint_start`, `input_dir`, and
+  `out_dir`.
+- Documented the actual defaults, accepted ranges, and practical visual effect
+  of each image-processing control so users can predict how a change will alter
+  imported imagery before rebuilding.
+- Updated agent-facing repo guidance to match the current project terminology,
+  CLI/TUI contract, code layout, generated paths, TUI guardrails, and `hty`
+  E2E workflow expectations.
+- Consolidated dependency supply-chain guidance into the current docs layout.
+- Replaced the abbreviated `Th` label with `Threshold` in the Home creation
+  workflow popup for wording consistency.
 
-## Release Reliability
+## Compatibility
 
-- Made same-version release retries resume from the immutable tagged commit
-  when `main` has advanced.
-- Corrected GitHub artifact verification to validate each asset's provenance
-  attestation and tagged source digest.
-- Added visible per-package progress while waiting for npm, PyPI, and AUR
-  registry propagation.
-- Made the public AUR cgit metadata authoritative during verification while
-  treating delayed AUR RPC indexing as informational.
-- Prevented long-running releases from reading a script modified during
-  execution by running from an immutable temporary snapshot.
+- CLI/API breaking changes: none
+- Migration required: none
 
 ## Distribution
 
