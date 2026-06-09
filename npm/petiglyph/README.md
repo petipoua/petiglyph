@@ -307,7 +307,9 @@ Managed install roots:
 - macOS: TTFs under `~/Library/Fonts/`, metadata under `~/Library/Fonts/petiglyph/`
 - Windows: `%LOCALAPPDATA%/Microsoft/Windows/Fonts/petiglyph/`
 
-After installation, fully restart applications that need to reload font state.
+After installation, fully restart applications that need to reload font state. On Windows
+Terminal 1.21 or newer, add the installed petiglyph family after the primary terminal font
+as a fallback, for example `"Cascadia Mono, my-font Petiglyph"`.
 
 ### Manifest Defaults
 
