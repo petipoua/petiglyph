@@ -1616,11 +1616,11 @@ fn run_refresh_command(mut command: ProcessCommand, description: &str) -> Result
     Ok(())
 }
 
-fn register_installed_font(path: &Path, platform: FontPlatform) -> Result<()> {
+fn register_installed_font(_path: &Path, platform: FontPlatform) -> Result<()> {
     if matches!(platform, FontPlatform::Windows) {
         #[cfg(target_os = "windows")]
         {
-            return windows_font_manager::register(path);
+            return windows_font_manager::register(_path);
         }
         #[cfg(not(target_os = "windows"))]
         {
@@ -1630,7 +1630,7 @@ fn register_installed_font(path: &Path, platform: FontPlatform) -> Result<()> {
     if matches!(platform, FontPlatform::Macos) {
         #[cfg(target_os = "macos")]
         {
-            return macos_font_manager::register(path);
+            return macos_font_manager::register(_path);
         }
         #[cfg(not(target_os = "macos"))]
         {
@@ -1640,11 +1640,11 @@ fn register_installed_font(path: &Path, platform: FontPlatform) -> Result<()> {
     Ok(())
 }
 
-fn unregister_installed_font(path: &Path, platform: FontPlatform) -> Result<()> {
+fn unregister_installed_font(_path: &Path, platform: FontPlatform) -> Result<()> {
     if matches!(platform, FontPlatform::Windows) {
         #[cfg(target_os = "windows")]
         {
-            return windows_font_manager::unregister(path);
+            return windows_font_manager::unregister(_path);
         }
         #[cfg(not(target_os = "windows"))]
         {
@@ -1654,7 +1654,7 @@ fn unregister_installed_font(path: &Path, platform: FontPlatform) -> Result<()> 
     if matches!(platform, FontPlatform::Macos) {
         #[cfg(target_os = "macos")]
         {
-            return macos_font_manager::unregister(path);
+            return macos_font_manager::unregister(_path);
         }
         #[cfg(not(target_os = "macos"))]
         {
