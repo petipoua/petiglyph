@@ -24,6 +24,7 @@ use crate::image_pipeline::terminal_cell_width_for_height;
 use crate::install::{
     DEFAULT_INSTALL_NAME_MODE, FontInstallNameMode, effective_font_name,
     expected_install_ttf_path_for_mode, install_dir_for_manifest, reserve_project_unicode_range,
+    uninstall_project_font,
 };
 use crate::project::{
     AnimationDef, AnimationType, BleedLevel, CompositionDef, Manifest, RuntimeConfig,
@@ -4625,6 +4626,12 @@ fn install_shortcut_reinstall_and_clear_previous_outputs() {
     }
     assert_eq!(app.view, AppView::Welcome);
 
+    let uninstall =
+        uninstall_project_font(&manifest_path).expect("test-installed font should uninstall");
+    assert!(
+        uninstall.removed_ttf_count > 0,
+        "test should clean up its installed font"
+    );
     fs::remove_dir_all(project_dir).expect("temp project dir is removed");
 }
 
@@ -4707,5 +4714,11 @@ fn tui_launch_overrides_persist_through_reload_and_build() {
         "build should honor glyph_size override; bdf={bdf}"
     );
 
+    let uninstall =
+        uninstall_project_font(&manifest_path).expect("test-installed font should uninstall");
+    assert!(
+        uninstall.removed_ttf_count > 0,
+        "test should clean up its installed font"
+    );
     fs::remove_dir_all(project_dir).expect("temp project dir is removed");
 }
