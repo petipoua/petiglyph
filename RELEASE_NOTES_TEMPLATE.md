@@ -1,4 +1,4 @@
-# petiglyph v<version>
+# petiglyph
 
 ## Summary
 
