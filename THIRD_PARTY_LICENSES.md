@@ -1,6 +1,6 @@
 # Third-Party License Inventory
 
-Generated: 2026-06-09T12:23:17Z (UTC)
+Generated: 2026-06-09T15:14:55Z (UTC)
 
 Tooling:
 - `rustc 1.88.0 (6b00bc388 2025-06-23)`
@@ -136,7 +136,7 @@ This inventory is generated from `cargo metadata --locked` and captures the tran
 | `pest_derive` | `2.8.6` | `MIT OR Apache-2.0` |
 | `pest_generator` | `2.8.6` | `MIT OR Apache-2.0` |
 | `pest_meta` | `2.8.6` | `MIT OR Apache-2.0` |
-| `petiglyph` | `0.1.3` | `MIT` |
+| `petiglyph` | `0.1.4` | `MIT` |
 | `phf` | `0.11.3` | `MIT` |
 | `phf_codegen` | `0.11.3` | `MIT` |
 | `phf_generator` | `0.11.3` | `MIT` |

@@ -284,7 +284,7 @@ Output uses a stable envelope:
 {
   "ok": true,
   "command": "use-project.create.glyph",
-  "version": "0.1.3",
+  "version": "0.1.4",
   "data": {},
   "error": null
 }

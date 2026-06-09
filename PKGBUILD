@@ -1,5 +1,5 @@
 pkgname=petiglyph
-pkgver=0.1.3
+pkgver=0.1.4
 pkgrel=3
 pkgdesc='petiglyph is a TUI and CLI tool for turning images and videos into custom font glyphs'
 arch=('x86_64')
@@ -7,7 +7,7 @@ url='https://github.com/petipoua/petiglyph'
 license=('MIT')
 depends=('ffmpeg' 'fontconfig')
 makedepends=('cargo')
-source=("$pkgname-$pkgver.tar.gz::https://github.com/petipoua/petiglyph/archive/refs/tags/v0.1.3.tar.gz")
+source=("$pkgname-$pkgver.tar.gz::https://github.com/petipoua/petiglyph/archive/refs/tags/v0.1.4.tar.gz")
 sha256sums=('SKIP')
 
 build() {
