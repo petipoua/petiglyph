@@ -16,6 +16,125 @@ use crate::project::{
     AnimationType, format_codepoint, load_runtime_config, parse_codepoint, read_manifest, slugify,
 };
 
+#[cfg(target_os = "windows")]
+mod windows_font_manager {
+    use anyhow::{Context, Result, bail};
+    use std::fs;
+    use std::os::windows::ffi::OsStrExt;
+    use std::path::Path;
+    use std::process::Command;
+
+    const FONTS_REGISTRY_KEY: &str = r"HKCU\Software\Microsoft\Windows NT\CurrentVersion\Fonts";
+
+    #[link(name = "Gdi32")]
+    unsafe extern "system" {
+        fn AddFontResourceExW(
+            name: *const u16,
+            flags: u32,
+            reserved: *mut core::ffi::c_void,
+        ) -> i32;
+        fn RemoveFontResourceExW(
+            name: *const u16,
+            flags: u32,
+            reserved: *mut core::ffi::c_void,
+        ) -> i32;
+    }
+
+    fn font_family(path: &Path) -> Result<String> {
+        let bytes = fs::read(path)
+            .with_context(|| format!("failed to read font metadata from {}", path.display()))?;
+        let face = ttf_parser::Face::parse(&bytes, 0)
+            .with_context(|| format!("failed to parse font metadata from {}", path.display()))?;
+        face.names()
+            .into_iter()
+            .find(|name| name.name_id == ttf_parser::name_id::FAMILY)
+            .and_then(|name| name.to_string())
+            .filter(|name| !name.trim().is_empty())
+            .with_context(|| format!("font {} has no readable family name", path.display()))
+    }
+
+    fn registry_value_name(path: &Path) -> Result<String> {
+        Ok(format!("{} (TrueType)", font_family(path)?))
+    }
+
+    fn wide_path(path: &Path) -> Vec<u16> {
+        path.as_os_str().encode_wide().chain(Some(0)).collect()
+    }
+
+    fn run_reg(args: &[&str], description: &str) -> Result<()> {
+        let output = Command::new("reg.exe")
+            .args(args)
+            .output()
+            .with_context(|| format!("failed to run {description}"))?;
+        if !output.status.success() {
+            bail!(
+                "{description} failed with status {}\nstdout:\n{}\nstderr:\n{}",
+                output.status,
+                String::from_utf8_lossy(&output.stdout).trim(),
+                String::from_utf8_lossy(&output.stderr).trim()
+            );
+        }
+        Ok(())
+    }
+
+    pub(super) fn register(path: &Path) -> Result<()> {
+        let canonical = path
+            .canonicalize()
+            .with_context(|| format!("failed to resolve installed font {}", path.display()))?;
+        let value_name = registry_value_name(&canonical)?;
+        let canonical_text = canonical.display().to_string();
+        run_reg(
+            &[
+                "add",
+                FONTS_REGISTRY_KEY,
+                "/v",
+                &value_name,
+                "/t",
+                "REG_SZ",
+                "/d",
+                &canonical_text,
+                "/f",
+            ],
+            &format!("Windows font registration for {value_name}"),
+        )?;
+
+        let wide = wide_path(&canonical);
+        // SAFETY: wide is a valid NUL-terminated UTF-16 path for the duration of the call.
+        let added = unsafe { AddFontResourceExW(wide.as_ptr(), 0, std::ptr::null_mut()) };
+        if added == 0 {
+            let _ = Command::new("reg.exe")
+                .args(["delete", FONTS_REGISTRY_KEY, "/v", &value_name, "/f"])
+                .output();
+            bail!("Windows rejected font resource {}", canonical.display());
+        }
+        Ok(())
+    }
+
+    pub(super) fn unregister(path: &Path) -> Result<()> {
+        let value_name = registry_value_name(path).ok();
+        let wide = wide_path(path);
+        // SAFETY: wide is a valid NUL-terminated UTF-16 path for the duration of the call.
+        unsafe {
+            RemoveFontResourceExW(wide.as_ptr(), 0, std::ptr::null_mut());
+        }
+
+        let Some(value_name) = value_name else {
+            return Ok(());
+        };
+        let query = Command::new("reg.exe")
+            .args(["query", FONTS_REGISTRY_KEY, "/v", &value_name])
+            .output()
+            .context("failed to query the current-user Windows Fonts registry key")?;
+        if !query.status.success() {
+            return Ok(());
+        }
+        run_reg(
+            &["delete", FONTS_REGISTRY_KEY, "/v", &value_name, "/f"],
+            &format!("Windows font unregistration for {value_name}"),
+        )
+    }
+}
+
 #[cfg(target_os = "macos")]
 mod macos_font_manager {
     use anyhow::{Context, Result, bail};
@@ -1497,11 +1616,21 @@ fn run_refresh_command(mut command: ProcessCommand, description: &str) -> Result
     Ok(())
 }
 
-fn register_installed_font(_path: &Path, platform: FontPlatform) -> Result<()> {
+fn register_installed_font(path: &Path, platform: FontPlatform) -> Result<()> {
+    if matches!(platform, FontPlatform::Windows) {
+        #[cfg(target_os = "windows")]
+        {
+            return windows_font_manager::register(path);
+        }
+        #[cfg(not(target_os = "windows"))]
+        {
+            bail!("Windows font registration is only available on Windows");
+        }
+    }
     if matches!(platform, FontPlatform::Macos) {
         #[cfg(target_os = "macos")]
         {
-            return macos_font_manager::register(_path);
+            return macos_font_manager::register(path);
         }
         #[cfg(not(target_os = "macos"))]
         {
@@ -1511,11 +1640,21 @@ fn register_installed_font(_path: &Path, platform: FontPlatform) -> Result<()> {
     Ok(())
 }
 
-fn unregister_installed_font(_path: &Path, platform: FontPlatform) -> Result<()> {
+fn unregister_installed_font(path: &Path, platform: FontPlatform) -> Result<()> {
+    if matches!(platform, FontPlatform::Windows) {
+        #[cfg(target_os = "windows")]
+        {
+            return windows_font_manager::unregister(path);
+        }
+        #[cfg(not(target_os = "windows"))]
+        {
+            bail!("Windows font unregistration is only available on Windows");
+        }
+    }
     if matches!(platform, FontPlatform::Macos) {
         #[cfg(target_os = "macos")]
         {
-            return macos_font_manager::unregister(_path);
+            return macos_font_manager::unregister(path);
         }
         #[cfg(not(target_os = "macos"))]
         {
