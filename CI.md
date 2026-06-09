@@ -220,7 +220,11 @@ Release artifact workflow:
 
 Dependency and supply-chain checks:
 
-- For dependency/security failures, inspect the `cargo-tree-normal.txt` artifact and [DEPENDENCY_SUPPLY_CHAIN.md](DEPENDENCY_SUPPLY_CHAIN.md).
+- For dependency/security failures, inspect the `cargo-tree-normal.txt` artifact and `deny.toml`.
+- `cargo deny check` uses `deny.toml` for advisory scanning, license policy, duplicate-version warnings, and source registry restrictions.
+- `cargo audit` checks RustSec advisories.
+- `cargo tree --locked -e normal` is exported as a review artifact and is useful when tracking transitive native dependencies.
+- Temporary advisory exception: `RUSTSEC-2024-0436` (`paste`) is ignored in `deny.toml` because it is transitively pulled by AVIF encoding (`rav1e` via `ravif`) with no drop-in `image` upgrade path yet.
 - Native codec dependencies can break hosted runners even when local builds succeed.
   - Symptom: transitive native dependency pressure from the `image` AVIF native stack (`dav1d`/`dav1d-sys`) increased CI fragility.
   - Fix used: removed `avif-native` from `image` features (`8c4e7bc`), keeping AVIF support without requiring that native dependency chain on CI.

@@ -258,7 +258,6 @@ Useful docs:
 - [CI.md](CI.md)
 - [RELEASE.md](RELEASE.md)
 - [CONTRIBUTING.md](CONTRIBUTING.md)
-- [DEPENDENCY_SUPPLY_CHAIN.md](DEPENDENCY_SUPPLY_CHAIN.md)
 
 Useful environment variables:
 
