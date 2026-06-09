@@ -1,32 +1,29 @@
-# petiglyph v0.1.3
+# petiglyph next patch release
 
 ## Summary
 
-- Version: `0.1.3`
+- Version: `TBD (next patch after 0.1.4)`
 - Date: `2026-06-09`
 - Release type: patch
 
-This release is primarily a documentation and wording update on top of
-`v0.1.2`. It adds a detailed tuning reference to the README, syncs agent-facing
-repo instructions with the current CLI/TUI contract, and replaces the `Th`
-abbreviation with `Threshold` in the Home creation workflow popup. There are no
-behavioral CLI, JSON API, build-output, install, or font-runtime changes.
+This patch release focuses on Windows font installation reliability. Installed
+fonts are now registered in the current-user Windows Fonts registry and loaded
+through the Windows font APIs so they behave like real user-installed fonts
+instead of only being copied into petiglyph-managed storage. The release also
+documents the Windows Terminal fallback-family setup needed to render petiglyph
+glyphs alongside a primary terminal font.
 
 ## Changes
 
-- Added a new README tuning reference that explains threshold, invert,
-  grayscale preprocessing, rows, columns, bleed, FPS, and project-level
-  rendering knobs such as `glyph_size`, `codepoint_start`, `input_dir`, and
-  `out_dir`.
-- Documented the actual defaults, accepted ranges, and practical visual effect
-  of each image-processing control so users can predict how a change will alter
-  imported imagery before rebuilding.
-- Updated agent-facing repo guidance to match the current project terminology,
-  CLI/TUI contract, code layout, generated paths, TUI guardrails, and `hty`
-  E2E workflow expectations.
-- Consolidated dependency supply-chain guidance into the current docs layout.
-- Replaced the abbreviated `Th` label with `Threshold` in the Home creation
-  workflow popup for wording consistency.
+- Windows font install now writes the installed family into
+  `HKCU\\Software\\Microsoft\\Windows NT\\CurrentVersion\\Fonts` and registers
+  the TTF with `AddFontResourceExW`, making the font discoverable as a
+  user-installed Windows font.
+- Windows font uninstall now removes the loaded font resource and deletes the
+  matching current-user Fonts registry entry when present.
+- Added README guidance for Windows Terminal 1.21+ to configure a petiglyph
+  family as a fallback font after the primary terminal font, for example
+  `"Cascadia Mono, my-font Petiglyph"`.
 
 ## Compatibility
 
