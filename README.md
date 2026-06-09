@@ -93,6 +93,32 @@ petiglyph use-project my-font tui
 
 Project discovery searches the current directory and descendants through depth 2 without following directory symlinks. Inaccessible descendant directories are skipped. Duplicate basenames are rejected with candidate paths.
 
+### Using Petiglyph Fonts in Another Application
+
+You can use petiglyph to create a TTF file for another tool or application.  
+The TTF files are standard fonts files using the PUA space.  
+Use the TUI to import, tune, and preview your glyphs:
+
+```bash
+petiglyph
+```
+
+Install it, reboot terminal/computer to preview it, then if you need programmatic generation, you can build the font without installing it too:
+
+```bash
+petiglyph use-project my-project build
+petiglyph use-project my-project build --json
+```
+
+The generated TTF is written to `build/` by default. Your application can embed
+that file and manage its installation and removal on its users' machines. To
+test the font on your own machine, you can install it with petiglyph.
+
+Embedding petiglyph itself inside another application is possible, but not
+currently recommended: every user would also need to install `ffmpeg`
+independently. FFmpeg may be bundled with petiglyph in the future, after its redistribution and
+licensing requirements are addressed, but it's not the case yet.
+
 ### Create Glyphs
 
 The four creation types match the TUI:
