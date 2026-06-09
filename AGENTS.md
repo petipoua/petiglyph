@@ -17,31 +17,20 @@
 ### Current CLI/TUI Contract (No Backward Compatibility Layer)
 
 - Primary commands:
-  - `petiglyph create <name>`
-  - `petiglyph create <name> --no-launch`
-  - `petiglyph list`
-  - `petiglyph delete`
-  - `petiglyph set-threshold <image> <threshold>`
-  - `petiglyph clear-threshold <image>`
-  - `petiglyph glyph ...`
-  - `petiglyph grid ...`
-  - `petiglyph composition ...`
-  - `petiglyph animation ...`
-  - `petiglyph` (or `petiglyph tui`) for interactive TUI
-  - `petiglyph build`
-  - `petiglyph sample`
-  - `petiglyph install-font`
-  - `petiglyph uninstall-font`
+  - `petiglyph new-project <name>`
+  - `petiglyph use-project <project> ...`
+  - `petiglyph list projects`
+  - `petiglyph list installed-fonts`
+  - `petiglyph delete-project <project>...`
+  - `petiglyph uninstall-font <installed-family>...`
   - `petiglyph uninstall-all-fonts`
   - `petiglyph doctor`
+  - `petiglyph` (or `petiglyph tui`) for interactive TUI
 - If no subcommand is provided, `petiglyph` launches the interactive workspace TUI.
 - `ffmpeg` is enforced before command dispatch, so a missing `ffmpeg` blocks both interactive and automation entrypoints until it is installed or auto-installed.
-- `petiglyph uninstall` is a hidden, intentionally ambiguous stub that exits with guidance to use `uninstall-font` or `uninstall-all-fonts`.
 - In non-interactive contexts (no TTY), TUI launch fails with an explicit terminal-required error.
-- Manifest auto-detection when `--manifest` is omitted checks:
-  - `./petiglyph.toml` first
-  - then one directory level below current directory
-- If exactly one project is found, it is auto-selected; otherwise the Home panel opens for selection/creation.
+- Manifest/project discovery when `--manifest` is omitted searches the current directory and descendants through depth 2 without following directory symlinks.
+- If exactly one project is found, it is auto-selected; otherwise the workspace TUI opens for selection/creation when launched interactively, and manifest-resolving commands fail with an explicit ambiguity/no-project error.
 - `doctor` runs global checks without a manifest and runs project checks when a project is resolvable.
 - Default manifest values:
   - `input_dir = "images"`
