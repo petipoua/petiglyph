@@ -2,6 +2,12 @@
 
 `petiglyph` is a TUI and CLI tool for turning images and videos into custom font glyphs.
 
+twerking amogus in terminal has been achieved internally 😎  
+<a href="https://raw.githubusercontent.com/petipoua/petiglyph/main/readme-assets/amogus_twerking_in_TUI.mp4">
+  <img src="https://raw.githubusercontent.com/petipoua/petiglyph/main/readme-assets/amogus_twerking_in_TUI.gif" alt="amogus in TUI" width="500">
+</a>
+
+### Video Tutorial:
 [![Demo video](https://raw.githubusercontent.com/petipoua/petiglyph/main/readme-assets/petiglyph-demo.gif)](https://raw.githubusercontent.com/petipoua/petiglyph/main/readme-assets/petiglyph-demo.mp4)
 
 ## Quickstart
