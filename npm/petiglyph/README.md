@@ -85,13 +85,7 @@ Pressing ENTER on the animated glyphs copies all frames inside the clipboard. To
 
 ## Documentation
 
-### CLI Workflows
-
-Create an automation-oriented project:
-
-```bash
-petiglyph new-project my-font
-```
+### Project Model And Discovery
 
 Each project is self-contained:
 
@@ -100,25 +94,61 @@ my-font/
   petiglyph.toml
   images/
   build/
+  petiglyph.lock
 ```
 
-`images/` holds source images and imported animation frames, `build/` holds generated artifacts, and `petiglyph.toml` holds project config.
+`petiglyph.toml` stores configuration, `images/` stores project-local sources and
+imported frames, `build/` stores generated artifacts, and `petiglyph.lock`
+preserves glyph-to-codepoint assignments after the first build.
 
-Bare `petiglyph` and `petiglyph tui` open the workspace TUI. Scripted project operations use an exact project directory basename:
+Create a project with:
 
 ```bash
-petiglyph use-project my-font build
-petiglyph use-project my-font install-font
-petiglyph use-project my-font show-sample
-petiglyph use-project my-font doctor --repair
-petiglyph use-project my-font tui
+petiglyph new-project my-font
 ```
 
-Project discovery searches the current directory and descendants through depth 2 without following directory symlinks. Inaccessible descendant directories are skipped. Duplicate basenames are rejected with candidate paths.
+Without a subcommand, `petiglyph` opens the workspace TUI. Project discovery
+searches the current directory and descendants through depth 2, without
+following directory symlinks. One discovered project is selected automatically.
+Multiple projects open the workspace selector in an interactive terminal;
+automation commands instead report the ambiguity. `use-project` selects by exact
+project directory basename and rejects duplicate matches with candidate paths.
 
-### Create Glyphs
+### CLI Reference
 
-The four creation types match the TUI:
+| Command | Purpose and important options |
+| --- | --- |
+| `petiglyph` or `petiglyph tui` | Open the workspace TUI. Requires an interactive terminal. |
+| `petiglyph new-project <name>` | Create `<name>/petiglyph.toml`, `images/`, and `build/`. |
+| `petiglyph use-project <project> tui` | Open one selected project in the TUI. |
+| `petiglyph use-project <project> create glyph ...` | Import one or more static glyph sources. |
+| `petiglyph use-project <project> create grid-glyph ...` | Import a source split into `--rows` by `--cols`. |
+| `petiglyph use-project <project> create animated-glyph ...` | Import GIF/video frames as glyphs; requires `--fps`. |
+| `petiglyph use-project <project> create animated-grid-glyph ...` | Import frames split into a grid; requires `--fps`, `--rows`, and `--cols`. |
+| `petiglyph use-project <project> configure glyph <source> ...` | Set or clear a source threshold and set invert. |
+| `petiglyph use-project <project> configure grid-glyph <source> ...` | Configure grid dimensions, bleed, threshold, and invert. |
+| `petiglyph use-project <project> configure animation <name> ...` | Configure FPS, threshold, invert, and grid-only settings. |
+| `petiglyph use-project <project> delete animation <name>` | Remove an animation definition. |
+| `petiglyph use-project <project> build` | Generate project artifacts. `--force-remap` discards prior codepoint assignments. |
+| `petiglyph use-project <project> install-font` | Build and install the selected project's managed font. |
+| `petiglyph use-project <project> show-sample` | Print the existing `build/glyph-sample.txt`; it does not build. |
+| `petiglyph use-project <project> doctor` | Run global and selected-project checks; `--repair` applies supported repairs. |
+| `petiglyph list projects` | List discovered projects and malformed-manifest warnings. |
+| `petiglyph list installed-fonts` | List managed installed families and ownership details. |
+| `petiglyph delete-project <project>...` | Validate the full batch, then delete project directories. |
+| `petiglyph uninstall-font <installed-family>...` | Uninstall exact managed family names from `list installed-fonts`. |
+| `petiglyph uninstall-all-fonts` | Remove all managed Petiglyph fonts and metadata. |
+| `petiglyph doctor` | Run global checks and any resolvable project checks. |
+
+Global `--debug` enables project-local pipeline diagnostics.
+`--ffmpeg-auto-install` allows the detected package-manager command to run when
+FFmpeg is missing. Automation-capable commands accept `--json`; creation also
+accepts `--build` and `--install`, where `--install` implies a build. Use
+`petiglyph <command> --help` for exhaustive flag syntax and accepted values.
+
+### Creating And Configuring Glyphs
+
+The CLI exposes the same four creation types as the TUI:
 
 ```bash
 # One image per glyph
@@ -133,207 +163,280 @@ petiglyph use-project my-font create grid-glyph \
 petiglyph use-project my-font create animated-glyph \
   --input spinner.gif --name spinner --fps 8
 
-# Each GIF/video frame split as a grid
+# Each frame split into grid cells
 petiglyph use-project my-font create animated-grid-glyph \
   --input dashboard.mp4 --name dashboard --fps 10 \
   --rows 2 --cols 4
 ```
 
-One `--input` accepts multiple paths. Creation imports and configures sources without installing by default.
-
-- `--build` also generates BDF, TTF, mapping, sample, and preview artifacts.
-- `--install` implies build, performs managed installation and cache refresh, and prints the sample.
-- `--threshold` defaults to `64`.
-- `--invert` accepts `on` or `off`.
-- Brightness, contrast, and gamma options control grayscale preprocessing.
-- Static grayscale preprocessing defaults off; animated preprocessing defaults on.
-- Grid horizontal bleed defaults to `weak`; vertical bleed defaults to `off`.
-
-Supported static inputs are `png`, `jpg`, `jpeg`, `webp`, `bmp`, `gif`, `svg`, and `avif`. AVIF is converted to project-local PNG. Animation media supports `gif`, `mp4`, `mov`, `mkv`, `webm`, `avi`, and `m4v`.
-
-### Configure Sources
+One `--input` accepts multiple paths. Creation imports and configures sources
+without building or installing unless requested. Static build inputs are `png`,
+`jpg`, `jpeg`, `webp`, `bmp`, `gif`, and `svg`. `avif` is import-only and is
+converted to project-local PNG. Animation media supports `gif`, `mp4`, `mov`,
+`mkv`, `webm`, `avi`, and `m4v`.
 
 ```bash
 petiglyph use-project my-font configure glyph logo.png \
   --threshold 88 --invert on
-
 petiglyph use-project my-font configure glyph logo.png \
   --clear-threshold
-
 petiglyph use-project my-font configure grid-glyph icons.png \
-  --rows 2 --cols 8 \
-  --horizontal-bleed strong --vertical-bleed off
-
+  --rows 2 --cols 8 --horizontal-bleed strong --vertical-bleed off
 petiglyph use-project my-font configure animation spinner \
   --fps 12 --threshold 72 --invert off
-
 petiglyph use-project my-font delete animation spinner
 ```
 
-Grid dimensions and bleed are rejected for non-grid animations. Clap rejects mutually exclusive threshold operations.
+Grid dimensions and bleed are valid only for grid sources and grid animations.
 
-### Tuning Parameters And What They Do
+### Tuning Parameters
 
-All image-facing tuning in petiglyph follows the same broad pipeline:
+The image pipeline performs optional grayscale import processing, aspect-fit
+scaling, thresholding, optional inversion, and then optional grid-edge bleed.
+All previews preserve the source or glyph aspect ratio with one uniform scale;
+empty vertical rows may be cropped before fitting, but previews are never
+stretched to fill spare width or height.
 
-1. Optional grayscale preprocessing during import.
-2. Aspect-fit scaling into the glyph or grid canvas.
-3. Thresholding into on/off pixels.
-4. Optional invert after thresholding.
-5. Optional grid bleed when adjacent grid tiles become final font outlines.
+| Setting | Range/default | Effect |
+| --- | --- | --- |
+| `threshold` | `0..=255`, default `64` | Higher values retain fewer pixels; lower values produce fuller shapes. The project default can be overridden per source. |
+| `invert` | `on` or `off`, default `off` | Flips the thresholded result. |
+| `grayscale_enabled` | Static default off; animated default on | Rewrites imported raster pixels through grayscale tone processing. SVG files are not rewritten. |
+| `grayscale_brightness` | `-80..=80`, default `0` | Brightens or darkens grayscale values. |
+| `grayscale_contrast` | `-80..=80`, default `0` | Increases or reduces tonal separation. |
+| `grayscale_gamma_percent` | `50..=200`, default `100` | Adjusts midtones; processing order is gamma, contrast, brightness, then threshold. |
+| `rows`, `cols` | Both greater than `0` | Fit the full source to a grid, then split it into glyph cells. |
+| `horizontal_bleed` | `off`, `weak`, `strong`; default `weak` | Extends outlines slightly across internal left/right grid boundaries to reduce seams. |
+| `vertical_bleed` | `off`, `weak`, `strong`; default `off` | Extends outlines across internal top/bottom boundaries; support varies by renderer. |
+| `fps` | `1..=30` | Stores Petiglyph preview/playback timing metadata. TTF files contain static glyphs and do not animate themselves. |
+| `glyph_size` | Default `64` | Sets the raster working size used before font outline generation. |
 
-The same ideas show up in both the TUI and the CLI. The Home popup gives you live previews; CLI `create` and `configure` commands write the saved settings into `petiglyph.toml`.
+`off` keeps grid edges clipped, `weak` adds a small overlap, and `strong` adds a
+larger overlap. Bleed changes final outline geometry, not thresholding.
 
-#### Threshold And Invert
+### Manifest Reference
 
-- `threshold`: `0..=255`, default `64`.
-  Higher values keep only darker or more opaque pixels, so glyphs usually become thinner, cleaner, and more selective. Lower values include lighter grays and softer antialiasing, so glyphs usually become fuller or heavier.
-- `invert`: `on` or `off`, default `off`.
-  This flips the thresholded result after thresholding. Use it when your source has the opposite polarity from what you want, for example light foreground on dark background instead of dark foreground on light background.
-- Manifest behavior:
-  The top-level `threshold` value is the project-wide default. Per-source changes are stored in `threshold_overrides` and `invert_overrides`, keyed by paths relative to `images/`. `--clear-threshold` removes a per-source threshold override and falls back to the project default.
+Normal reads and builds may rewrite `petiglyph.toml` to create or normalize
+managed fields, so keep it writable.
 
-#### Grayscale Preprocessing
+| Field | Type and default | Meaning |
+| --- | --- | --- |
+| `input_dir` | String, `"images"` | Project-relative source directory. |
+| `out_dir` | String, `"build"` | Project-relative build directory. |
+| `font_name` | String, `"Petiglyph"` | Generated font family name. |
+| `glyph_size` | Integer, `64` | Raster working size. |
+| `threshold` | Integer, `64` | Project-wide threshold. |
+| `codepoint_start` | Codepoint string, `"U+100000"` | Preferred start of the project's supplementary private-use range. |
+| `project_id` | Managed string | Stable project identity. Missing or blank values are generated automatically. |
+| `threshold_overrides` | Table, empty | Per-source thresholds keyed by paths relative to `input_dir`. |
+| `invert_overrides` | Table, empty | Per-source booleans keyed by paths relative to `input_dir`. |
+| `compositions` | Table, empty | Static grid definitions keyed by source path. |
+| `animations` | Array of tables, empty | Standard or grid animation definitions. |
 
-- `grayscale_enabled`:
-  Controls whether petiglyph first converts imported raster media to grayscale and applies tone adjustments before later thresholding. Default is `off` for static image creation and `on` for animated GIF/video creation.
-- `grayscale_brightness`: `-80..=80`, default `0`.
-  Adds or subtracts brightness from the grayscale image. Positive values brighten the whole source and can wash out faint dark detail. Negative values darken the source and can make weak strokes survive thresholding.
-- `grayscale_contrast`: `-80..=80`, default `0`.
-  Pushes tones away from or toward mid-gray. Positive values increase separation between dark and light areas, which can make edges crisper at a given threshold. Negative values flatten the image and keep transitions softer.
-- `grayscale_gamma_percent`: `50..=200`, default `100` which is gamma `1.00`.
-  Remaps midtones before contrast and brightness. Values above `100` brighten midtones; values below `100` darken them. This is often the most useful control when the source is neither clearly too dark nor clearly too bright.
-- Processing order:
-  Petiglyph converts to grayscale, applies gamma, then contrast, then brightness, then threshold.
-- Import behavior:
-  In the Home creation workflow these controls update the preview live before you continue. For imported raster files they also affect the imported pixels that petiglyph keeps in the project for future builds. SVG sources are not rewritten, and AVIF imports are first converted to PNG.
+Grid compositions contain `rows`, `cols`, `horizontal_bleed`, and
+`vertical_bleed`. Omitted bleed values normalize to `weak` horizontally and
+`off` vertically.
 
-#### Grid Slicing And Seam Controls
+```toml
+[compositions."icons.png"]
+rows = 4
+cols = 4
+horizontal_bleed = "weak"
+vertical_bleed = "off"
 
-- `rows` and `cols`: both must be `> 0`.
-  These define how a grid source is split. More rows or columns means more glyph cells and less detail per cell. Petiglyph fits the whole source to the full grid first, then slices it into cells, so changing the grid changes the composition of every tile.
-- `horizontal_bleed`: `off`, `weak`, or `strong`, default `weak`.
-  Allows neighboring grid glyphs to overlap slightly across left/right internal boundaries in the generated outlines. Use it to reduce visible seams when adjacent grid tiles are displayed together. This is fairly compatible across terminal emulators, so `weak`` is good usually.
-- `vertical_bleed`: `off`, `weak`, or `strong`, default `off`.
-  Same idea for top/bottom internal boundaries. This is NOT very compatible across terminal emulators, and it can make round shapes appear wobbly because shapes are just propagated in a straight line. That's why the default is `off`. Stripes over a consistent shape is better than weird wobbly shapes that are not consistent across terminals you render them on.
-- Bleed strength:
-  `off` keeps cell edges hard-clipped, `weak` adds mild overlap, and `strong` doubles that overlap. Bleed affects the final outline geometry, not the thresholding math itself.
-- Scope:
-  Bleed settings only apply to grid glyphs and animated grid glyphs. Standard single-glyph animations do not use rows, cols, or bleed.
+[[animations]]
+name = "spinner"
+type = "standard"
+fps = 8
+frames = ["spinner-0001.png", "spinner-0002.png"]
 
-#### Animation Controls
+[[animations]]
+name = "dashboard"
+type = "grid"
+fps = 10
+frames = ["dashboard-0001.png", "dashboard-0002.png"]
+rows = 2
+cols = 4
+horizontal_bleed = "weak"
+vertical_bleed = "off"
+```
 
-- `fps`: `1..=30`.
-  Controls animation playback speed only. It changes how quickly frames advance in the installed font sample and other animation outputs; it does not modify the frame images themselves.
-- `name`:
-  The manifest identifier for an animation. It affects how you refer to the animation later with `configure animation ...` or `delete animation ...`, but it does not change the pixels.
-- Home popup `Frames` control:
-  Chooses which imported frame you are previewing while tuning. It is preview-only and does not change the saved animation.
-- Home popup `Export Test` count: `1..=120`.
-  Chooses how many frames the popup exports for a temporary test image/export flow. It does not change the saved animation or its FPS.
+Animation frame paths are relative source keys. Standard animations must not
+define grid fields. Grid animations require positive `rows` and `cols`.
+Animation entries may also contain `grayscale_processing`, which records
+`grayscale_enabled` plus a nested `grayscale` table with `gamma_percent`,
+`contrast`, and `brightness`. Tone values are normalized to their supported
+ranges on read.
 
-#### Project-Level Rendering Knobs
-
-- `glyph_size`, default `64`.
-  Controls the raster working size used when fitting source imagery into glyph cells. Higher values preserve more detail and subtle edges before thresholding, but they can also preserve more noise. Lower values simplify shapes sooner.
-- `font_name`:
-  Controls the generated font family name. It affects installation and display naming, not image processing.
-- `codepoint_start`, default `U+100000`.
-  Sets the first Unicode codepoint assigned to generated glyphs. It affects mapping and interoperability, not rasterization.
-- `input_dir` and `out_dir`, defaults `images` and `build`.
-  Control where petiglyph reads project-local sources from and where it writes artifacts.
-
-### Build And Install
+### Building And Codepoint Stability
 
 ```bash
 petiglyph use-project my-font build
-petiglyph use-project my-font install-font
-petiglyph use-project my-font show-sample
+petiglyph use-project my-font build --force-remap
 ```
 
-Installation is always explicit. `show-sample` only reads `build/glyph-sample.txt`; it does not build or install and reports the required build command when the artifact is absent.
+| Artifact | Location and purpose |
+| --- | --- |
+| TTF | `build/<slugified-font-name>.ttf`: standard font for applications and managed installation. |
+| BDF | `build/<slugified-font-name>.bdf`: bitmap font representation. |
+| Mapping | `build/glyph-map.json`: source/glyph names and assigned Unicode codepoints. |
+| Sample | `build/glyph-sample.txt`: copyable text using the assigned codepoints. |
+| Previews | `build/previews/*.png`: thresholded preview image for each generated glyph. |
+| Glyph lock | `petiglyph.lock`: project-root assignment history used by future builds. |
 
-### List And Delete
+Existing source mappings remain stable through `petiglyph.lock`. Removed
+mappings may remain inactive so their codepoints are not accidentally reused.
+Petiglyph reserves non-overlapping supplementary private-use ranges for managed
+projects. A normal build can relocate and remap a project automatically if its
+owned range must grow and existing assignments cannot be preserved.
+
+`--force-remap` intentionally discards the existing assignments and allocates a
+fresh mapping. Text stored with old codepoints can then render the wrong glyphs
+or no glyph at all.
+
+The generated TTF can be embedded in another application like any standard
+font. Embedding the Petiglyph executable itself also requires FFmpeg to be
+available on each user's system.
+
+### Installing And Uninstalling
 
 ```bash
-petiglyph list projects
+petiglyph use-project my-font install-font
 petiglyph list installed-fonts
-petiglyph delete-project my-font another-project
 petiglyph uninstall-font "my-font Petiglyph"
 petiglyph uninstall-all-fonts
-petiglyph doctor --repair
 ```
 
-`list installed-fonts` prints the exact managed family identifier accepted by `uninstall-font`. Batch deletion and uninstall validate all targets before changing files.
+Installation is explicit, managed, and owned by project metadata. Reinstalling
+a project replaces that project's previous managed artifact. Petiglyph refreshes
+or broadcasts font-cache state where the platform supports it.
 
-Project listing includes directory name, relative path, font name, manifest path, project ID, and malformed-manifest warnings. Installed-font listing includes family, ownership, TTF path, manifest path, and stale metadata/artifact warnings.
+Managed locations:
+
+| Platform | Location |
+| --- | --- |
+| Linux | `~/.local/share/fonts/petiglyph/` |
+| macOS | TTFs in `~/Library/Fonts/`; metadata in `~/Library/Fonts/petiglyph/` |
+| Windows | `%LOCALAPPDATA%/Microsoft/Windows/Fonts/petiglyph/` |
+
+Use `list installed-fonts` for the exact family names accepted by
+`uninstall-font`. Uninstall commands select managed artifacts through Petiglyph
+metadata and do not remove unrelated fonts. Restart applications after changing
+fonts so they reload font state; a full system reboot is only a fallback.
+
+On Windows Terminal 1.21 or newer, add the installed family after the primary
+terminal font as a fallback, for example
+`"Cascadia Mono, my-font Petiglyph"`.
+
+### Doctor And Recovery
+
+`petiglyph doctor` always checks global managed-install and Unicode registry
+state. It also runs project checks when one or more manifests can be resolved.
+`petiglyph use-project my-font doctor` selects one project explicitly.
+
+| Finding | Meaning |
+| --- | --- |
+| `info` | A successful check or informational state. |
+| `warning` | A recoverable inconsistency or missing expected state. |
+| `error` | Invalid state that can block correct operation. |
+| `repaired` status | The reported issue was changed successfully during this run. |
+
+Checks cover stale global and project locks, malformed install metadata,
+orphaned metadata and managed TTFs, Unicode registry structure and range
+conflicts, manifest validity, source visibility, and glyph-lock identity,
+entries, codepoints, and source references.
+
+```bash
+petiglyph doctor --repair
+petiglyph use-project my-font doctor --repair
+```
+
+`--repair` performs only supported repairs, such as removing stale locks and
+orphans, removing invalid glyph-lock entries, or recreating a missing project
+range assignment. It does not rebuild or reinstall a project.
 
 ### JSON Automation
 
-Add `--json` to automation commands:
+Add `--json` to supported commands:
 
 ```bash
 petiglyph list projects --json
-petiglyph use-project my-font create glyph --input logo.svg --build --json
+petiglyph use-project my-font create glyph \
+  --input logo.svg --build --json
 petiglyph use-project my-font doctor --json
 ```
 
-Output uses a stable envelope:
+Successful and failed commands use one envelope:
 
 ```json
 {
-  "ok": true,
+  "ok": false,
   "command": "use-project.create.glyph",
   "version": "0.1.5",
-  "data": {},
-  "error": null
+  "data": {
+    "completed_stages": ["resolve", "import", "configure"]
+  },
+  "error": {
+    "code": "creation_stage_failed",
+    "stage": "build",
+    "message": "build failed",
+    "causes": [],
+    "hints": [
+      "Imported files and manifest changes were retained.",
+      "Fix the reported cause, then run the project build or install command."
+    ]
+  }
 }
 ```
 
-Failures return a non-zero exit code and include `error.message` plus nested causes.
+| Field | Meaning |
+| --- | --- |
+| `ok` | `true` on success, otherwise `false`. |
+| `command` | Stable command identifier. |
+| `version` | Petiglyph version that produced the response. |
+| `data` | Command-specific payload; failed creation includes completed stages. |
+| `error` | `null` on success, otherwise the structured failure. |
+| `error.code` | Machine-readable failure category. |
+| `error.stage` | Failed creation stage when applicable. |
+| `error.message` | Primary user-facing error. |
+| `error.causes` | Nested error-chain messages. |
+| `error.hints` | Recovery guidance. |
+| `error.candidates` | Candidate matches when supplied; omitted when empty. |
 
-### Runtime Notes
+Failures return a non-zero exit code. A multi-stage creation failure can retain
+completed imports and manifest changes; inspect `data.completed_stages`, fix the
+reported cause, then run build or install again.
 
-`ffmpeg` is checked before every command:
+### Runtime, Debugging, And Troubleshooting
 
-- Pass `--ffmpeg-auto-install` to run the detected platform install command.
-- Set `PETIGLYPH_NO_FFMPEG_PROMPT=1` to suppress the interactive hint.
+FFmpeg is checked before command dispatch, including TUI launch. Install it on
+`PATH`, pass `--ffmpeg-auto-install`, or set
+`PETIGLYPH_NO_FFMPEG_PROMPT=1` to suppress the interactive install hint.
 
-The TUI requires a terminal. Its Home panel supports project selection, all four creation workflows, previewing, tuning, building, installing, and copying samples. On Windows, creation workflows use a native file picker.
+`--debug` or a truthy `PETIGLYPH_DEBUG` enables image-pipeline diagnostics in
+the selected project's `debug/pipeline.log` and `debug/artifacts/`.
+`PETIGLYPH_DEBUG_CELL=<width>x<height>` overrides terminal cell geometry used by
+debug preview rendering.
 
-Managed install roots:
+Set `PETIGLYPH_TUI_DEBUG=1` for TUI event logging. Logs use the platform
+temporary directory by default; `PETIGLYPH_TUI_DEBUG_LOG=/path/to/log` overrides
+the path.
 
-- Linux: `~/.local/share/fonts/petiglyph/`
-- macOS: TTFs under `~/Library/Fonts/`, metadata under `~/Library/Fonts/petiglyph/`
-- Windows: `%LOCALAPPDATA%/Microsoft/Windows/Fonts/petiglyph/`
+| Problem | Action |
+| --- | --- |
+| FFmpeg is missing | Install FFmpeg on `PATH` or use `--ffmpeg-auto-install`, then rerun Petiglyph. |
+| No project is found | Run from a directory containing a project within depth 2, or create one with `new-project`. |
+| Project selection is ambiguous | Use `use-project <exact-directory-basename>` from a workspace where that basename is unique. |
+| Manifest is malformed | Fix the reported TOML field or value; `list projects` reports malformed manifests without treating them as valid projects. |
+| Media is unsupported | Convert it to a supported static or animation format; AVIF must enter through an import workflow. |
+| TUI fails outside a terminal | Run it in an interactive terminal, or use CLI commands with `--json` in automation. |
+| Codepoint or registry conflict | Run `doctor`; use `--repair` for supported fixes. Use build `--force-remap` only when changing old mappings is acceptable. |
+| A stale lock blocks work | Run `doctor --repair`; stale locks are recognized after ten minutes. |
+| Installed glyphs do not render | Confirm the exact family with `list installed-fonts`, configure it in the application, then fully restart that application. |
+| Clipboard copy fails | Install an available provider: `wl-copy` or `xclip` on Linux/Unix, `pbcopy` on macOS, or PowerShell/`clip.exe` on Windows. |
 
-After installation, fully restart applications that need to reload font state. On Windows
-Terminal 1.21 or newer, add the installed petiglyph family after the primary terminal font
-as a fallback, for example `"Cascadia Mono, my-font Petiglyph"`.
-
-### Manifest Defaults
-
-```toml
-input_dir = "images"
-out_dir = "build"
-font_name = "Petiglyph"
-glyph_size = 64
-threshold = 64
-codepoint_start = "U+100000"
-```
-
-`project_id` is managed automatically. Threshold and invert overrides use source keys relative to `images/`.
-
-### Development
-
-Useful docs:
+### Development Links
 
 - [CI.md](CI.md)
 - [RELEASE.md](RELEASE.md)
 - [CONTRIBUTING.md](CONTRIBUTING.md)
-
-Useful environment variables:
-
-- `PETIGLYPH_NO_FFMPEG_PROMPT=1`
-- `PETIGLYPH_TUI_DEBUG=1`
-- `PETIGLYPH_TUI_DEBUG_LOG=/path/to/log`
